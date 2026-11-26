@@ -10,6 +10,11 @@
 //! * **Ambience:** surf, wind, rain (thunder now and then), birds by day, a
 //!   machine drone at night - mixed by weather, time of day and whether you
 //!   are indoors.
+//! * **Sound packs:** any sound can be replaced by recordings. Put WAV files
+//!   in a `sounds` folder (next to the game, in the working directory, or in
+//!   the settings folder) named after the sound - `shot_3.wav`, `step.wav`,
+//!   `step_wood.wav`, `explosion.wav`... - and add `_2`, `_3` for extra takes.
+//!   See [`file_name`] for the names.
 
 use crate::{fx::PlaySfx, settings::Settings, view::WorldCamera};
 use bevy::{
@@ -48,9 +53,62 @@ impl Plugin for AudioFxPlugin {
     }
 }
 
+/// The file name a sound pack uses for a sound: `Shot(3)` -> `shot_3`, `StepWood` -> `step_wood`.
+pub fn file_name(sfx: Sfx) -> String {
+    let debug = format!("{sfx:?}").replace(['(', ')'], "_");
+    let mut name = String::new();
+    for (i, c) in debug.trim_end_matches('_').chars().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 && !name.ends_with('_') {
+            name.push('_');
+        }
+        name.push(c.to_ascii_lowercase());
+    }
+    name
+}
+
+/// Folders searched for sound-pack WAV files.
+fn pack_folders() -> Vec<std::path::PathBuf> {
+    let mut folders = vec![std::path::PathBuf::from("sounds")];
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|p| p.join("sounds"))) {
+        folders.push(dir);
+    }
+    if let Some(dir) = crate::settings::config_dir() {
+        folders.push(dir.join("sounds"));
+    }
+    folders
+}
+
+/// Recorded takes for a sound from a sound pack, if any.
+fn pack_takes(folders: &[std::path::PathBuf], sfx: Sfx) -> Vec<Vec<u8>> {
+    let name = file_name(sfx);
+    let mut takes = Vec::new();
+    for folder in folders {
+        for suffix in std::iter::once(String::new()).chain((1..10).map(|n| format!("_{n}"))) {
+            if let Ok(bytes) = std::fs::read(folder.join(format!("{name}{suffix}.wav"))) {
+                takes.push(bytes);
+            }
+        }
+        if !takes.is_empty() {
+            break;
+        }
+    }
+    takes
+}
+
 fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
     let mut clips: HashMap<(Sfx, Space), Vec<Handle<AudioSource>>> = HashMap::default();
+    let folders = pack_folders();
     for sfx in Sfx::all() {
+        // Recordings from a sound pack win over the synthesiser.
+        let recorded = pack_takes(&folders, sfx);
+        if !recorded.is_empty() {
+            info!("sound pack: {} take(s) for {}", recorded.len(), file_name(sfx));
+            let takes: Vec<Handle<AudioSource>> = recorded.into_iter().map(|bytes| sources.add(AudioSource { bytes: bytes.into() })).collect();
+            for space in [Space::Open, Space::Room, Space::Far] {
+                clips.insert((sfx, space), takes.clone());
+            }
+            continue;
+        }
         let spaces: &[Space] = if sfx.spatial_variants() { &[Space::Open, Space::Room, Space::Far] } else { &[Space::Open] };
         for space in spaces {
             let takes = (0..sfx.variants()).map(|take| sources.add(AudioSource { bytes: synth::wav(&synth::render_in(sfx, take, *space)).into() })).collect();
@@ -68,6 +126,10 @@ fn listen(mut commands: Commands, cameras: Query<Entity, (With<WorldCamera>, Wit
     for camera in &cameras {
         commands.entity(camera).insert(SpatialListener::new(0.35));
     }
+}
+
+fn footstep(sfx: Sfx) -> bool {
+    matches!(sfx, Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy | Sfx::StepWood | Sfx::Crawl | Sfx::Land | Sfx::Jump)
 }
 
 /// Is there a roof over this point?
@@ -135,14 +197,18 @@ fn play(
         bank.last.insert(key, now);
 
         let muffle = if occluded { 0.55 } else { 1.0 };
-        let gain = event.volume * settings.volume * muffle * (1.0 - deafened * 0.85);
+        // Nothing plays at exactly the same level twice.
+        let musical = matches!(event.sfx, Sfx::UiMove | Sfx::UiAccept | Sfx::UiDeny | Sfx::Buy | Sfx::Dawn | Sfx::Horn | Sfx::Kill | Sfx::Streak | Sfx::Medal | Sfx::Headshot);
+        let jitter = ((*seed >> 4) & 0xfff) as f32 / 4096.0 - 0.5;
+        let level = if musical { 1.0 } else { 1.0 + jitter * if footstep(event.sfx) { 0.5 } else { 0.25 } };
+        // 0.7 of headroom so a firefight's many layers do not clip when they stack.
+        let gain = 0.7 * event.volume * level * settings.volume * muffle * (1.0 - deafened * 0.85);
         if gain < 0.01 {
             continue;
         }
         // A little random pitch stops repeated sounds from feeling machine-stamped.
         let wobble = (*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
-        let musical = matches!(event.sfx, Sfx::UiMove | Sfx::UiAccept | Sfx::UiDeny | Sfx::Buy | Sfx::Dawn | Sfx::Horn | Sfx::Kill | Sfx::Streak | Sfx::Medal | Sfx::Headshot);
-        let speed = if musical { 1.0 } else { 1.0 + wobble * 0.14 };
+        let speed = if musical { 1.0 } else { 1.0 + wobble * if footstep(event.sfx) { 0.22 } else { 0.12 } };
         let playback = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain)).with_speed(speed);
         match event.at {
             Some(at) if distance > 0.5 => {
@@ -219,5 +285,18 @@ fn engines(mut commands: Commands, bank: Res<SoundBank>, settings: Res<Settings>
         };
         let Some(clip) = bank.clips.get(&(sfx, Space::Open)).and_then(|t| t.first()).cloned() else { continue };
         commands.entity(entity).insert(Engine).with_child((AudioPlayer::new(clip), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.5 * settings.volume)).with_spatial(true), Transform::IDENTITY));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sound_pack_names() {
+        assert_eq!(file_name(Sfx::Shot(3)), "shot_3");
+        assert_eq!(file_name(Sfx::StepWood), "step_wood");
+        assert_eq!(file_name(Sfx::Explosion), "explosion");
+        assert_eq!(file_name(Sfx::ImpactConcrete), "impact_concrete");
     }
 }

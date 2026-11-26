@@ -21,7 +21,7 @@ use oz_sim::{player::limb, prelude::*};
 
 pub const HIDE_HEAD: u8 = 16;
 pub const HIDE_ALL: u8 = 32;
-const DEBRIS_SECONDS: f32 = 12.0;
+const DEBRIS_SECONDS: f32 = 90.0;
 const MAX_DEBRIS: usize = 160;
 
 #[derive(Component)]

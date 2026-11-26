@@ -59,6 +59,8 @@ enum Seg {
     Gear(u8),
     Blip(u8),
     Tick(u8),
+    /// One pixel of the hit marker X: (diagonal 0-3, pixel along it 0-2).
+    Mark(u8, u8),
     /// The sun / moon marker riding the day track.
     Orb,
 }
@@ -330,6 +332,12 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
         hud.spawn(at(Node { left: Val::Percent(50.0), top: Val::Percent(50.0), ..default() })).with_children(|cross| {
             for i in 0..4 {
                 cross.spawn((Seg::Tick(i), at(Node::default()), BackgroundColor(ui::TEXT)));
+            }
+            // The hit marker: an X of chunky pixels that pops out on every hit.
+            for d in 0..4 {
+                for p in 0..3 {
+                    cross.spawn((Seg::Mark(d, p), at(Node { width: Val::Px(3.0), height: Val::Px(3.0), ..default() }), BackgroundColor(Color::NONE)));
+                }
             }
         });
 
@@ -617,6 +625,25 @@ fn update_shapes(
                 set(&mut node.width, Val::Px(w));
                 set(&mut node.height, Val::Px(h));
                 if show_cross { cross_color } else { Color::NONE }
+            }
+            Seg::Mark(d, p) => {
+                // Pops out big, then shrinks back in as it fades; bigger for headshots and kills.
+                let life = if view.head_hit || view.limb_hit > 0.0 { 0.22 } else { 0.14 };
+                let k = (view.hit / life).clamp(0.0, 1.0);
+                let reach = if view.kill { 9.0 } else if view.head_hit { 7.5 } else { 6.0 } + 5.0 * k;
+                let (sx, sy) = [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)][d as usize];
+                let r = reach + p as f32 * 3.0;
+                let size = if view.kill || view.head_hit { 4.0 } else { 3.0 };
+                set(&mut node.left, Val::Px((sx * r - size * 0.5).round()));
+                set(&mut node.top, Val::Px((sy * r - size * 0.5).round()));
+                set(&mut node.width, Val::Px(size));
+                set(&mut node.height, Val::Px(size));
+                if view.hit > 0.0 && health.alive() {
+                    let color = if view.kill { RED } else if view.head_hit || view.limb_hit > 0.0 { Color::srgb(1.0, 0.85, 0.3) } else { Color::WHITE };
+                    color.with_alpha(k.sqrt())
+                } else {
+                    Color::NONE
+                }
             }
             Seg::Orb => {
                 // The sun slides from dawn to dusk; at night a pale moon sits at the end.

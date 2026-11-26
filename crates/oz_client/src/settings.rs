@@ -36,12 +36,17 @@ impl Default for Settings {
     }
 }
 
-fn path() -> Option<PathBuf> {
+/// The game's folder in the user's config directory.
+pub fn config_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
-        .map(|dir| dir.join("opnix-zone").join("settings.txt"))
+        .map(|dir| dir.join("opnix-zone"))
+}
+
+fn path() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join("settings.txt"))
 }
 
 impl Settings {

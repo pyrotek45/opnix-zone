@@ -464,11 +464,12 @@ fn pose_players(
         if footfalls != rig.steps {
             rig.steps = footfalls;
             if !local && health.alive() && pose.speed.abs() > 0.8 {
+                // Loud enough to place: sprinters carry far, crouch-walkers barely at all.
                 let (sfx, volume) = match pose.stance {
                     stance::PRONE => (Sfx::Crawl, 0.5),
-                    stance::CROUCH => (Sfx::StepSoft, 0.55),
-                    _ if pose.sprinting => (Sfx::StepHeavy, 1.0),
-                    _ => (Sfx::Step, 0.85),
+                    stance::CROUCH => (Sfx::StepSoft, 0.6),
+                    _ if pose.sprinting => (Sfx::StepHeavy, 1.6),
+                    _ => (Sfx::Step, 1.2),
                 };
                 sounds.write(crate::fx::PlaySfx::new(sfx, Some(transform.translation)).quiet(volume));
             }

@@ -556,7 +556,27 @@ impl World {
             };
             self.solid(aabb, paint);
         }
-        // Sills under windows read better with a dark ledge.
+        // Remember every opening: doors get doors, windows get glass.
+        for (u0, u1, y0, y1) in openings.iter().copied() {
+            let mid = start + (u0 + u1) * 0.5;
+            let across = (fixed.0 + fixed.1) * 0.5;
+            let center = if along_x { Vec3::new(mid, base + y0, across) } else { Vec3::new(across, base + y0, mid) };
+            if y0 <= 0.0 {
+                self.doors.push(DoorSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
+            } else {
+                self.windows.push(WindowSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
+            }
+        }
+        // Sills under windows read better with a dark ledge, and a lintel over each opening.
+        for (u0, u1, _, y1) in openings.iter().copied() {
+            let (a, b) = (start + u0 - 0.08, start + u1 + 0.08);
+            let lintel = if along_x {
+                Aabb::span(Vec3::new(a, base + y1, fixed.0 - 0.05), Vec3::new(b, base + y1 + 0.12, fixed.1 + 0.05))
+            } else {
+                Aabb::span(Vec3::new(fixed.0 - 0.05, base + y1, a), Vec3::new(fixed.1 + 0.05, base + y1 + 0.12, b))
+            };
+            self.decor(lintel, Paint::Dark);
+        }
         for (u0, u1, y0, _) in openings.iter().copied().filter(|o| o.2 > 0.0) {
             let (a, b) = (start + u0, start + u1);
             let ledge = if along_x {
@@ -590,11 +610,15 @@ impl World {
         out
     }
 
-    /// One building: floor, walls with doors and windows, optional upper storey
-    /// with stairs and a railed stairwell, a roof, furniture and lamps.
+    /// One building: foundation, walls with doors and windows, up to three
+    /// storeys joined by switchback stairs, interior rooms, roof, detailing,
+    /// and sometimes a ladder up to the roof.
     fn building(&mut self, rng: &mut Rng, c: Vec2, half: Vec2, floors: u32) {
         const T: f32 = 0.3;
         const STOREY: f32 = 3.2;
+        const STEPS: usize = 11;
+        const RUN: f32 = 0.42;
+        const LANE: f32 = 1.2;
         let (hx, hz) = (half.x, half.y);
         let (x0, x1, z0, z1) = (c.x - hx, c.x + hx, c.y - hz, c.y + hz);
         let mut g = f32::MIN;
@@ -603,13 +627,14 @@ impl World {
         }
         let g = g + 0.12;
         let paint = *rng.pick(&[Paint::Concrete, Paint::Rust, Paint::Bone, Paint::Teal, Paint::Steel, Paint::Sand]).unwrap_or(&Paint::Concrete);
+        let trim = if matches!(paint, Paint::Bone | Paint::Sand | Paint::Concrete) { Paint::Steel } else { Paint::Bone };
         let roof_y = g + floors as f32 * STOREY;
 
         // Foundation and floor.
         self.solid(Aabb::span(Vec3::new(x0, g - 1.0, z0), Vec3::new(x1, g, z1)), Paint::Concrete);
         self.decor(Aabb::span(Vec3::new(x0 + T, g, z0 + T), Vec3::new(x1 - T, g + 0.012, z1 - T)), Paint::Wood);
 
-        // Doors go on up to two sides; two-storey houses keep the stair wall (north) solid.
+        // Doors go on up to two sides; buildings with stairs keep the stair walls (north, and south above two storeys) solid.
         let mut doors = [false; 4];
         doors[rng.below(if floors > 1 { 3 } else { 4 })] = true;
         if rng.chance(0.6) {
@@ -633,37 +658,90 @@ impl World {
             self.decor(Aabb::new(Vec3::new(c.x, base + STOREY - 0.3, c.y - hz * 0.3), Vec3::new(0.35, 0.03, 0.35)), Paint::Glow);
         }
 
-        // Upper floor, stairs and stairwell.
-        if floors > 1 {
-            let steps = 11;
-            let rise = STOREY / steps as f32;
-            let run = 0.42;
-            let (zs0, zs1) = (z1 - T - 1.2, z1 - T);
-            let sx = x0 + T + 0.4;
-            let sx_end = sx + steps as f32 * run;
-            for i in 0..steps {
-                let top = g + (i + 1) as f32 * rise;
-                let step = Aabb::span(Vec3::new(sx + i as f32 * run, g, zs0), Vec3::new(sx + (i + 1) as f32 * run, top, zs1));
+        // Stairs: flight k climbs from floor k to k+1. Flights alternate between a lane along the
+        // north wall (climbing east) and one along the south wall (climbing west), so every floor
+        // has a solid landing beside the hole the flight below comes up through.
+        let rise = STOREY / STEPS as f32;
+        let span = STEPS as f32 * RUN;
+        let lane = |k: u32| -> (f32, f32, f32, f32) {
+            if k.is_multiple_of(2) {
+                let sx = x0 + T + 0.4;
+                (sx, sx + span, z1 - T - LANE, z1 - T)
+            } else {
+                let sx = x1 - T - 0.4;
+                (sx - span, sx, z0 + T, z0 + T + LANE)
+            }
+        };
+        for k in 0..floors.saturating_sub(1) {
+            let base = g + k as f32 * STOREY;
+            let (lx0, lx1, lz0, lz1) = lane(k);
+            for i in 0..STEPS {
+                let top = base + (i + 1) as f32 * rise;
+                let (a, b) = if k % 2 == 0 { (lx0 + i as f32 * RUN, lx0 + (i + 1) as f32 * RUN) } else { (lx1 - (i + 1) as f32 * RUN, lx1 - i as f32 * RUN) };
+                let step = Aabb::span(Vec3::new(a, base, lz0), Vec3::new(b, top, lz1));
                 self.solid(step, if i % 2 == 0 { Paint::Wood } else { Paint::Steel });
             }
-            let slab = |a: Vec3, b: Vec3| Aabb::span(a, b);
-            let floor_top = g + STOREY;
-            self.solid(slab(Vec3::new(x0, floor_top - 0.25, z0), Vec3::new(x1, floor_top, zs0 - 0.05)), Paint::Concrete);
-            self.solid(slab(Vec3::new(sx_end + 0.1, floor_top - 0.25, zs0 - 0.05), Vec3::new(x1, floor_top, z1)), Paint::Concrete);
-            self.decor(slab(Vec3::new(x0 + T, floor_top, z0 + T), Vec3::new(x1 - T, floor_top + 0.012, zs0 - 0.05)), Paint::Wood);
-            // Railing along the open side of the stairwell; the top step is the way in.
-            self.solid(slab(Vec3::new(sx, floor_top, zs0 - 0.12), Vec3::new(sx_end - 1.0, floor_top + 0.95, zs0 - 0.04)), Paint::Dark);
-            self.decor(slab(Vec3::new(sx, floor_top + 0.92, zs0 - 0.14), Vec3::new(sx_end - 1.0, floor_top + 1.0, zs0 - 0.02)), Paint::Gold);
-            // Something to hide behind up there.
-            let p = Vec2::new(rng.range(x0 + 1.5, x1 - 1.5), rng.range(z0 + 1.2, zs0 - 1.4));
-            self.solid(Aabb::span(Vec3::new(p.x - 0.55, floor_top, p.y - 0.55), Vec3::new(p.x + 0.55, floor_top + 1.0, p.y + 0.55)), Paint::Teal);
+        }
+        // Floor slabs, each with a hole above the flight that arrives through it.
+        for k in 1..floors {
+            let top = g + k as f32 * STOREY;
+            let (hx0, hx1, hz0, hz1) = lane(k - 1);
+            // The hole runs the length of the flight, one step short so the top step meets solid floor.
+            let (hx0, hx1) = if (k - 1) % 2 == 0 { (hx0, hx1 - RUN * 0.5) } else { (hx0 + RUN * 0.5, hx1) };
+            let pieces = [
+                (x0, x1, z0, hz0 - 0.05),
+                (x0, x1, hz1 + 0.05, z1),
+                (x0, hx0 - 0.05, hz0 - 0.05, hz1 + 0.05),
+                (hx1 + 0.05, x1, hz0 - 0.05, hz1 + 0.05),
+            ];
+            for (a0, a1, b0, b1) in pieces {
+                if a1 - a0 > 0.05 && b1 - b0 > 0.05 {
+                    self.solid(Aabb::span(Vec3::new(a0, top - 0.25, b0), Vec3::new(a1, top, b1)), Paint::Concrete);
+                    self.decor(Aabb::span(Vec3::new(a0.max(x0 + T), top, b0.max(z0 + T)), Vec3::new(a1.min(x1 - T), top + 0.012, b1.min(z1 - T))), Paint::Wood);
+                }
+            }
+            // Railing along the open side of the hole; the high end is left open as the way in.
+            let rail_z = if (k - 1) % 2 == 0 { hz0 - 0.08 } else { hz1 + 0.08 };
+            let (r0, r1) = if (k - 1) % 2 == 0 { (hx0, hx1 - 1.0) } else { (hx0 + 1.0, hx1) };
+            self.solid(Aabb::span(Vec3::new(r0, top, rail_z - 0.04), Vec3::new(r1, top + 0.95, rail_z + 0.04)), Paint::Dark);
+            self.decor(Aabb::span(Vec3::new(r0, top + 0.92, rail_z - 0.06), Vec3::new(r1, top + 1.0, rail_z + 0.06)), Paint::Gold);
+            // Something to hide behind up here.
+            let p = Vec2::new(rng.range(x0 + 1.5, x1 - 1.5), c.y + rng.range(-0.8, 0.8));
+            self.solid(Aabb::span(Vec3::new(p.x - 0.55, top, p.y - 0.55), Vec3::new(p.x + 0.55, top + 1.0, p.y + 0.55)), Paint::Teal);
+        }
+
+        // Ground-floor rooms: a partition with a doorway, clear of the stairs.
+        let partition = x0 + T + 0.4 + span + 1.3;
+        if floors > 1 && x1 - partition > 2.6 {
+            let length = 2.0 * hz - 2.0 * T - LANE - 0.1;
+            let door = Self::openings(rng, length, true, false);
+            self.wall(false, (partition, partition + 0.2), z0 + T, length, g, STOREY - 0.25, &door, trim);
         }
 
         // Furniture on the ground floor: a counter or table, away from the doors and stairs.
         for _ in 0..2 {
             let p = Vec2::new(rng.range(x0 + 1.6, x1 - 1.6), rng.range(z0 + 1.6, z1 - 1.6 - if floors > 1 { 1.4 } else { 0.0 }));
+            if (p.x - partition).abs() < 1.2 {
+                continue;
+            }
             let size = if rng.chance(0.5) { Vec2::new(rng.range(0.7, 1.4), 0.4) } else { Vec2::new(0.5, 0.5) };
             self.solid(Aabb::span(Vec3::new(p.x - size.x, g, p.y - size.y), Vec3::new(p.x + size.x, g + 0.95, p.y + size.y)), Paint::Wood);
+        }
+
+        // Detailing: a dark plinth, corner pilasters, a drainpipe, the odd air-conditioning unit.
+        let o = 0.06;
+        self.decor(Aabb::span(Vec3::new(x0 - o, g, z0 - o), Vec3::new(x1 + o, g + 0.4, z1 + o)), Paint::Dark);
+        for (x, z) in [(x0, z0), (x1, z0), (x0, z1), (x1, z1)] {
+            self.decor(Aabb::new(Vec3::new(x, g + (roof_y - g) * 0.5, z), Vec3::new(0.2, (roof_y - g) * 0.5, 0.2)), trim);
+        }
+        self.decor(Aabb::span(Vec3::new(x1 + 0.02, g, z1 - 0.6), Vec3::new(x1 + 0.14, roof_y, z1 - 0.48)), Paint::Steel);
+        for floor in 0..floors {
+            if rng.chance(0.35) {
+                let y = g + floor as f32 * STOREY + 2.4;
+                let z = rng.range(z0 + 1.0, z1 - 1.0);
+                self.decor(Aabb::span(Vec3::new(x0 - 0.45, y, z - 0.35), Vec3::new(x0, y + 0.45, z + 0.35)), Paint::Metal);
+                self.decor(Aabb::span(Vec3::new(x0 - 0.47, y + 0.1, z - 0.2), Vec3::new(x0 - 0.45, y + 0.35, z + 0.2)), Paint::Dark);
+            }
         }
 
         // Roof, parapet and rooftop clutter.
@@ -675,6 +753,27 @@ impl World {
         if rng.chance(0.4) {
             self.decor(Aabb::new(Vec3::new(c.x + hx * 0.5, roof_y + 1.6, c.y), Vec3::new(0.04, 1.3, 0.04)), Paint::Metal);
             self.decor(Aabb::new(Vec3::new(c.x + hx * 0.5, roof_y + 2.95, c.y), Vec3::new(0.08, 0.08, 0.08)), Paint::Red);
+        } else if rng.chance(0.5) {
+            // A flag on a pole; it waves in the wind.
+            self.decor(Aabb::new(Vec3::new(c.x - hx * 0.5, roof_y + 2.0, c.y), Vec3::new(0.05, 1.7, 0.05)), Paint::Metal);
+            self.flags.push(Vec3::new(c.x - hx * 0.5, roof_y + 3.55, c.y));
+        }
+
+        // A ladder up a side wall without a door, onto the roof.
+        if rng.chance(0.55) {
+            let east = !doors[2] && (doors[1] || rng.chance(0.5));
+            let (x, out) = if east { (x1 + 0.22, 1.0) } else { (x0 - 0.22, -1.0) };
+            let z = c.y + rng.range(-hz * 0.4, hz * 0.4);
+            let foot = Vec3::new(x, self.height(x, z), z);
+            for side in [-0.3, 0.3] {
+                self.decor(Aabb::span(Vec3::new(x - 0.04, foot.y, z + side - 0.04), Vec3::new(x + 0.04, roof_y + 1.0, z + side + 0.04)), Paint::Iron);
+            }
+            let mut y = foot.y + 0.3;
+            while y < roof_y + 0.6 {
+                self.decor(Aabb::new(Vec3::new(x, y, z), Vec3::new(0.03, 0.03, 0.3)), Paint::Iron);
+                y += 0.35;
+            }
+            self.ladders.push(Ladder { foot, top: roof_y + 0.3, out: Vec2::new(out, 0.0) });
         }
     }
 

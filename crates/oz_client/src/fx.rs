@@ -10,6 +10,10 @@ use oz_sim::prelude::*;
 
 const MAX_PARTICLES: usize = 500;
 
+/// A bullet hole left in a wall (the oldest are cleared past a cap).
+#[derive(Component)]
+pub struct BulletHole;
+
 #[derive(Component)]
 pub struct Particle {
     velocity: Vec3,
@@ -117,6 +121,7 @@ fn spawn_effects(
     particles: Query<(), With<Particle>>,
     cameras: Query<&Transform, With<WorldCamera>>,
     (role, mut death, statics, bodies, map): (Res<NetRole>, ResMut<DeathInfo>, Res<Statics>, Query<(&Player, &Transform)>, Res<Map>),
+    (rigs, joints, holes): (Query<(&crate::avatar::Rig, &Player)>, Query<&GlobalTransform>, Query<Entity, With<BulletHole>>),
     mut rng: Local<Option<Rng>>,
 ) {
     let me = local.single().map_or(255, |player| player.id);
@@ -150,6 +155,25 @@ fn spawn_effects(
                 }
             }
             FxEvent::Shot { by, sound, from, to, beam, tracer, quiet, .. } => {
+                // Tracers leave the real muzzle: our viewmodel's, or the shooter robot's gun.
+                let muzzle = if *by == me && view.muzzle != Vec3::ZERO {
+                    Some(camera.translation + camera.rotation * view.muzzle)
+                } else {
+                    rigs.iter().find(|(_, p)| p.id == *by).and_then(|(rig, _)| joints.get(rig.gun).ok()).map(|g| g.translation() + g.forward().as_vec3() * 0.55)
+                };
+                let from = &muzzle.unwrap_or(*from);
+                if *by != me && !*quiet && !*beam {
+                    // Their muzzle flash, big enough to spot a shooter by.
+                    let size = Vec3::new(0.18, 0.18, 0.35);
+                    let flare = Transform::from_translation(*from).looking_to(*to - *from, Vec3::Y).with_scale(size);
+                    fx.particle(Shape::Shard, Paint::Spark, flare, Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.05, initial: 0.05, size, grow: 1.5 });
+                }
+                if *by == me && !*quiet && !*beam {
+                    // A wisp of smoke off the barrel.
+                    let puff = Vec3::splat(0.012);
+                    let drift = Vec3::new(fx.rng.range(-0.05, 0.05), 0.18, fx.rng.range(-0.05, 0.05));
+                    fx.particle(Shape::Shard, Paint::Iron, Transform::from_translation(*from).with_scale(puff), Particle { velocity: drift, gravity: 0.0, life: 0.5, initial: 0.5, size: puff, grow: 2.0 });
+                }
                 if *beam {
                     fx.streak(*from, *to, 0.035, Paint::Aether, 0.11);
                     fx.burst(*to, 1, &[Paint::Aether, Paint::Spark], 2.0, 0.06, 0.25);
@@ -159,7 +183,52 @@ fn spawn_effects(
                     // Suppressed shots leave faint tracers; special ammo shows its colour.
                     let width = if *quiet { 0.012 } else { 0.022 };
                     fx.streak(start, *to, width, if *by == 255 { Paint::Blue } else { *tracer }, 0.055);
-                    fx.burst(*to, 3, &[Paint::Spark, Paint::Dark], 3.5, 0.07, 0.3);
+                    // The impact: dust off the ground, chips and sparks off walls, sparks off robots,
+                    // and a hole that stays in the wall.
+                    let robot = bodies.iter().any(|(_, t)| (t.translation + Vec3::Y).distance(*to) < 0.9);
+                    let ground = to.y - map.height(to.x, to.z) < 0.2;
+                    let dir = (*to - *from).normalize_or(Vec3::NEG_Z);
+                    if robot {
+                        fx.burst(*to, 8, &[Paint::Spark, Paint::Glow, Paint::Steel], 6.0, 0.06, 0.35);
+                    } else {
+                        let dust = if ground { Paint::Sand } else { Paint::Bone };
+                        fx.burst(*to, 5, &[Paint::Spark, dust, Paint::Dark], 4.0, 0.07, 0.4);
+                        for _ in 0..2 {
+                            let puff = Vec3::splat(fx.rng.range(0.1, 0.18));
+                            let drift = -dir * fx.rng.range(0.4, 1.0) + Vec3::Y * fx.rng.range(0.2, 0.6);
+                            fx.particle(Shape::Shard, dust, Transform::from_translation(*to - dir * 0.05).with_scale(puff), Particle { velocity: drift, gravity: 0.0, life: 0.6, initial: 0.6, size: puff, grow: 1.8 });
+                        }
+                        // Bullet hole: a dark chip in the surface, facing out of it.
+                        let normal = if ground {
+                            Vec3::Y
+                        } else {
+                            statics
+                                .raycast(*to - dir * 0.3, dir, 0.6)
+                                .and_then(|(_, index)| statics.aabb(index))
+                                .map(|b| {
+                                    let local = (*to - b.center) / b.half.max(Vec3::splat(1e-3));
+                                    let a = local.abs();
+                                    if a.x >= a.y && a.x >= a.z { Vec3::X * local.x.signum() } else if a.y >= a.z { Vec3::Y * local.y.signum() } else { Vec3::Z * local.z.signum() }
+                                })
+                                .unwrap_or(-dir)
+                        };
+                        let count = holes.iter().len();
+                        if count > 500 {
+                            if let Some(oldest) = holes.iter().next() {
+                                fx.commands.entity(oldest).despawn();
+                            }
+                        }
+                        let size = Vec3::new(0.07, 0.07, 0.01) * fx.rng.range(0.8, 1.3);
+                        let at = *to + normal * 0.012;
+                        fx.commands.spawn((
+                            MatchEntity,
+                            BulletHole,
+                            Mesh3d(fx.art.primitive(Shape::Cube)),
+                            MeshMaterial3d(fx.art.paint(Paint::Dark)),
+                            Transform::from_translation(at).looking_to(-normal, if normal.y.abs() > 0.9 { Vec3::X } else { Vec3::Y }).with_scale(size),
+                            NotShadowCaster,
+                        ));
+                    }
                     // A hot flash where the round lands.
                     let size = Vec3::splat(0.07);
                     fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(*to).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.07, initial: 0.07, size, grow: 2.5 });
@@ -206,6 +275,24 @@ fn spawn_effects(
                     fx.particle(Shape::Shard, Paint::Dark, Transform::from_translation(at).with_scale(puff), Particle { velocity: drift, gravity: 0.0, life: 0.9, initial: 0.9, size: puff, grow: 1.6 });
                 }
                 fx.burst(*at, 22, &[Paint::Glow, Paint::Spark, Paint::Dark, Paint::Rust], 9.0, 0.22, 0.9);
+                // A scorch mark that stays: a dark blast circle on the ground, singed walls nearby.
+                let ground = map.height(at.x, at.z).max(statics.support(at.x, at.z, at.y + 0.5));
+                if at.y - ground < radius * 0.6 {
+                    for i in 0..5 {
+                        let angle = i as f32 * 2.4 + at.x;
+                        let spread = if i == 0 { 0.0 } else { radius * 0.22 };
+                        let spot = Vec3::new(at.x + angle.cos() * spread, ground + 0.015 + i as f32 * 0.002, at.z + angle.sin() * spread);
+                        let size = Vec3::new(radius * 0.32, 0.01, radius * 0.32) * if i == 0 { 1.0 } else { 0.55 };
+                        fx.commands.spawn((
+                            MatchEntity,
+                            BulletHole,
+                            Mesh3d(fx.art.primitive(Shape::Shard)),
+                            MeshMaterial3d(fx.art.paint(if i == 0 { Paint::Dark } else { Paint::Steel })),
+                            Transform::from_translation(spot).with_rotation(Quat::from_rotation_y(angle)).with_scale(size),
+                            NotShadowCaster,
+                        ));
+                    }
+                }
                 view.shake += rumble(*at, radius * 0.45);
                 sounds.write(PlaySfx::new(Sfx::Explosion, Some(*at)));
                 // Bits of the street rain back down.

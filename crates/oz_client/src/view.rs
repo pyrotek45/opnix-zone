@@ -102,6 +102,12 @@ pub struct ViewState {
     pub head_hit: bool,
     /// Seconds left of the "limb off" marker flare.
     pub limb_hit: f32,
+    /// Where the gun's muzzle is, in camera space (tracers start here).
+    pub muzzle: Vec3,
+    /// Per-shot random twist of the gun and flash, so automatic fire feels alive.
+    kick_roll: f32,
+    kick_side: f32,
+    shot_count: u32,
     /// 1 right after a shot, decaying over the weapon's cycle time (bolt / pump / slide animation).
     cycle: f32,
     /// Seconds left of the weapon inspect animation.
@@ -255,6 +261,13 @@ fn follow_player(
             view.shake += recoil * 0.1;
             view.kick = (view.kick + recoil * 0.9).min(2.5);
             view.cycle = 1.0;
+            // Each shot twists and shoves the gun a little differently.
+            view.shot_count = view.shot_count.wrapping_add(1);
+            let count = view.shot_count;
+            let r = |k: u32| ((count.wrapping_mul(2654435761).wrapping_add(k)) >> 16) as f32 / 65536.0 * 2.0 - 1.0;
+            view.kick_roll = (view.kick_roll + r(1) * 0.09 * recoil.sqrt()).clamp(-0.25, 0.25);
+            view.kick_side = (view.kick_side + r(2) * 0.012 * recoil.sqrt()).clamp(-0.04, 0.04);
+            view.shake += recoil * 0.12;
             // Brass hits the floor a moment later.
             if def.mode == oz_core::arsenal::FireMode::Hitscan && def.mag > 0 {
                 sounds.write(crate::fx::PlaySfx::new(Sfx::Shell, None).quiet(0.35).later(0.38));
@@ -300,6 +313,8 @@ fn follow_player(
     view.swap = (view.swap - dt * 5.0).max(0.0);
     view.kick = (view.kick - dt * 9.0 * view.kick.max(0.3)).max(0.0);
     view.punch = (view.punch - dt * 5.0).max(0.0);
+    view.kick_roll *= (-dt * 10.0).exp();
+    view.kick_side *= (-dt * 12.0).exp();
     view.limb_hit = (view.limb_hit - dt).max(0.0);
     view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).clamp(0.0, 2.5);
     view.sway = (view.sway + controls.look * 0.6).clamp_length_max(0.06) * (-dt * 12.0).exp();
@@ -370,7 +385,10 @@ fn follow_player(
     let t = time.elapsed_secs();
     let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
     let head = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob + view.lean;
-    camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x, input.pitch + view.recoil * 0.012 + shake.y, roll + shake.z);
+    // Holding a gun up is never perfectly still: a slow drift down the sights, less when crouched or prone.
+    let hold = view.ads * stance::steadiness(input.stance) * 0.0035;
+    let drift = Vec2::new((t * 0.8).sin() + 0.5 * (t * 1.9).sin(), (t * 1.3).cos() * 0.7) * hold;
+    camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x + drift.x, input.pitch + view.recoil * 0.012 + shake.y + drift.y, roll + shake.z);
     // In cover the camera pulls back over the right shoulder, stopping short of walls.
     let shoulder = camera.rotation * Vec3::new(0.65, 0.35, 2.6) * view.third;
     let length = shoulder.length();
@@ -540,15 +558,21 @@ fn viewmodel(
 
     let ads_pos = Vec3::new(0.0, -stats.sight * GUN_SCALE, -0.40);
     let sprint = view.sprint * (1.0 - view.ads);
+    // Breathing: the gun drifts in a slow figure eight, much less down the sights.
+    let breath = Vec3::new((t * 0.9).sin() * 0.006, (t * 1.8).sin() * 0.004, 0.0) * (1.0 - view.ads * 0.7);
     transform.translation = GUN_POS.lerp(ads_pos, view.ads)
+        + breath
         + Vec3::new(
             view.bob.sin() * 0.018 * walking + view.sway.x * 0.5 - 0.06 * show + 0.04 * sprint,
             (view.bob * 2.0).sin() * 0.016 * walking - dip - view.swap * 0.22 - view.land * 0.05 - view.sway.y * 0.5 + (t * 1.3).sin() * 0.003 + 0.05 * show - 0.06 * sprint,
-            view.recoil * 0.05 + 0.04 * sprint,
-        );
-    transform.rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint)
-        * Quat::from_rotation_x(view.recoil * 0.07 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip)
-        * Quat::from_rotation_z(roll + view.sway.x * 1.6 + 1.2 * flip + 0.25 * sprint);
+            view.recoil * 0.085 + 0.04 * sprint,
+        )
+        + Vec3::X * view.kick_side;
+    transform.rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint + view.kick_side * 2.0)
+        * Quat::from_rotation_x(view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip)
+        * Quat::from_rotation_z(roll + view.sway.x * 1.6 + 1.2 * flip + 0.25 * sprint + view.kick_roll + (t * 0.7).sin() * 0.012 * (1.0 - view.ads * 0.6));
+    // Tracers leave from here, sights up or not.
+    view.muzzle = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.05) * GUN_SCALE);
 
     for (group, mut piece, mut seen) in &mut groups {
         let (offset, visible) = match group {
@@ -568,7 +592,9 @@ fn viewmodel(
         let lit = view.flash > 0.0 && health.alive() && def.mag > 0 && view.scoped < 0.5 && !stats.quiet && !spectate.enabled;
         *flash_visibility = if lit { Visibility::Inherited } else { Visibility::Hidden };
         flash_transform.translation = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.08) * GUN_SCALE);
-        flash_transform.scale = Vec3::new(0.06, 0.06, 0.15) * (0.7 + view.flash * 14.0);
-        flash_transform.rotation = Quat::from_rotation_z(t * 31.0);
+        // A big, ragged star of flame that is different every shot.
+        let size = 0.8 + view.flash * 18.0 * (1.0 + 0.3 * (view.shot_count as f32 * 1.7).sin());
+        flash_transform.scale = Vec3::new(0.07, 0.07, 0.2) * size;
+        flash_transform.rotation = transform.rotation * Quat::from_rotation_z(view.shot_count as f32 * 2.399);
     }
 }

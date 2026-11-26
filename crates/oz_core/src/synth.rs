@@ -247,6 +247,209 @@ fn reverb(out: &mut Vec<f32>, size: f32, wet: f32) {
 }
 
 fn render_take(sfx: Sfx, take: u32) -> Vec<f32> {
+    // Guns and feet are modelled from their physics; everything else uses the voice synth.
+    if let Some(mut out) = modeled(sfx, take) {
+        // Slap-back off the town, then soft saturation like a real recording of a loud bang.
+        match sfx {
+            Sfx::Shot(8) => echo(&mut out, &[(0.16, 0.3), (0.38, 0.18), (0.7, 0.1)]),
+            Sfx::Shot(_) => echo(&mut out, &[(0.085, 0.2), (0.19, 0.1)]),
+            _ => {}
+        }
+        for sample in &mut out {
+            *sample = (*sample * 1.3).tanh();
+        }
+        trim(&mut out);
+        return out;
+    }
+    render_voices(sfx, take)
+}
+
+/// Cuts the inaudible end off a sound (keeps a short fade so nothing clicks).
+fn trim(out: &mut Vec<f32>) {
+    let end = out.iter().rposition(|s| s.abs() > 0.004).map_or(0, |i| i + 1);
+    let fade = (SAMPLE_RATE as usize / 50).min(end);
+    for i in 0..fade {
+        out[end - fade + i] *= 1.0 - i as f32 / fade as f32;
+    }
+    out.truncate(end);
+}
+
+/// An RBJ-cookbook biquad filter.
+#[derive(Clone, Copy)]
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    x: [f32; 2],
+    y: [f32; 2],
+}
+
+impl Biquad {
+    fn new(kind: u8, freq: f32, q: f32) -> Self {
+        let w = TAU * freq.min(SAMPLE_RATE as f32 * 0.45) / SAMPLE_RATE as f32;
+        let (sin, cos) = w.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let (b, a0, a) = match kind {
+            // Low-pass.
+            0 => ([(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0], 1.0 + alpha, [-2.0 * cos, 1.0 - alpha]),
+            // High-pass.
+            1 => ([(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0], 1.0 + alpha, [-2.0 * cos, 1.0 - alpha]),
+            // Band-pass (constant peak gain).
+            _ => ([alpha, 0.0, -alpha], 1.0 + alpha, [-2.0 * cos, 1.0 - alpha]),
+        };
+        Self { b: b.map(|v| v / a0), a: a.map(|v| v / a0), x: [0.0; 2], y: [0.0; 2] }
+    }
+
+    fn lowpass(freq: f32) -> Self {
+        Self::new(0, freq, 0.707)
+    }
+
+    fn highpass(freq: f32) -> Self {
+        Self::new(1, freq, 0.707)
+    }
+
+    fn bandpass(freq: f32, q: f32) -> Self {
+        Self::new(2, freq, q)
+    }
+
+    fn run(&mut self, x: f32) -> f32 {
+        let y = self.b[0] * x + self.b[1] * self.x[0] + self.b[2] * self.x[1] - self.a[0] * self.y[0] - self.a[1] * self.y[1];
+        self.x = [x, self.x[0]];
+        self.y = [y, self.y[0]];
+        y
+    }
+}
+
+/// Mixes a burst of filtered noise into `out`: near-instant attack, exponential decay (`tau` seconds).
+fn burst(out: &mut Vec<f32>, rng: &mut Rng, start: f32, attack: f32, tau: f32, filters: &[Biquad], gain: f32) {
+    let length = ((attack + tau * 7.0) * SAMPLE_RATE as f32) as usize;
+    let offset = (start * SAMPLE_RATE as f32) as usize;
+    if out.len() < offset + length {
+        out.resize(offset + length, 0.0);
+    }
+    let mut chain = filters.to_vec();
+    for i in 0..length {
+        let t = i as f32 / SAMPLE_RATE as f32;
+        let envelope = if t < attack { t / attack.max(1e-5) } else { (-(t - attack) / tau).exp() };
+        let mut x = rng.range(-1.0, 1.0);
+        for filter in chain.iter_mut() {
+            x = filter.run(x);
+        }
+        out[offset + i] += x * envelope * gain;
+    }
+}
+
+/// A falling sine "thump" for the body of a bang or a heel strike.
+fn thump(out: &mut Vec<f32>, start: f32, from: f32, to: f32, tau: f32, gain: f32) {
+    let length = (tau * 7.0 * SAMPLE_RATE as f32) as usize;
+    let offset = (start * SAMPLE_RATE as f32) as usize;
+    if out.len() < offset + length {
+        out.resize(offset + length, 0.0);
+    }
+    let mut phase = 0.0f32;
+    for i in 0..length {
+        let t = i as f32 / SAMPLE_RATE as f32;
+        let freq = to + (from - to) * (-t / (tau * 0.5)).exp();
+        phase += freq / SAMPLE_RATE as f32;
+        let attack = (t / 0.0015).min(1.0);
+        out[offset + i] += (phase * TAU).sin() * attack * (-t / tau).exp() * gain;
+    }
+}
+
+/// Tiny high clicks scattered over `spread` seconds: actions cycling, grit under a boot.
+fn grains(out: &mut Vec<f32>, rng: &mut Rng, start: f32, spread: f32, count: usize, band: (f32, f32), gain: f32) {
+    for _ in 0..count {
+        let at = start + rng.range(0.0, spread);
+        let filter = Biquad::bandpass(rng.range(band.0, band.1), 3.0);
+        let (tau, level) = (rng.range(0.0015, 0.004), gain * rng.range(0.4, 1.0));
+        burst(out, rng, at, 0.0002, tau, &[filter], level);
+    }
+}
+
+/// Physically shaped takes for gunfire and footsteps; `None` for everything else.
+fn modeled(sfx: Sfx, take: u32) -> Option<Vec<f32>> {
+    let mut rng = Rng::new(sfx_seed(sfx) ^ (take as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    let mut out = Vec::new();
+    let tone = 1.0 + (take as f32 - 1.0) * 0.05;
+    // A gunshot: supersonic crack, muzzle blast, chamber body, chest-thumping low end,
+    // the action cycling, and the rumble of the surroundings.
+    struct Gun {
+        crack: f32,
+        blast_cut: f32,
+        blast_tau: f32,
+        body_freq: f32,
+        body_tau: f32,
+        thump: f32,
+        thump_tau: f32,
+        tail: f32,
+        tail_tau: f32,
+        action: f32,
+        gain: f32,
+    }
+    let gun = |g: Gun, out: &mut Vec<f32>, rng: &mut Rng| {
+        burst(out, rng, 0.0, 0.0002, 0.0035, &[Biquad::highpass(2500.0 * tone)], g.crack * g.gain);
+        burst(out, rng, 0.0003, 0.0007, g.blast_tau, &[Biquad::lowpass(g.blast_cut * tone), Biquad::highpass(90.0)], 1.25 * g.gain);
+        burst(out, rng, 0.001, 0.002, g.body_tau, &[Biquad::bandpass(g.body_freq * tone, 0.9)], 1.6 * g.gain);
+        thump(out, 0.0, 95.0 * tone, 42.0, g.thump_tau, g.thump * g.gain);
+        burst(out, rng, 0.006, 0.02, g.tail_tau, &[Biquad::lowpass(420.0), Biquad::highpass(40.0)], g.tail * g.gain * 2.5);
+        if g.action > 0.0 {
+            grains(out, rng, 0.03, 0.05, 6, (2800.0, 6500.0), g.action * g.gain);
+        }
+    };
+    match sfx {
+        // Pistol: snappy and bright.
+        Sfx::Shot(0) => gun(Gun { crack: 0.7, blast_cut: 2400.0, blast_tau: 0.016, body_freq: 260.0, body_tau: 0.035, thump: 0.55, thump_tau: 0.05, tail: 0.18, tail_tau: 0.22, action: 0.25, gain: 0.9 }, &mut out, &mut rng),
+        // SMG: short and tight so bursts stay distinct.
+        Sfx::Shot(1) => gun(Gun { crack: 0.5, blast_cut: 2800.0, blast_tau: 0.011, body_freq: 300.0, body_tau: 0.025, thump: 0.35, thump_tau: 0.035, tail: 0.12, tail_tau: 0.15, action: 0.2, gain: 0.8 }, &mut out, &mut rng),
+        // Shotgun: a deep, wide boom, then the pump racked.
+        Sfx::Shot(2) => {
+            gun(Gun { crack: 0.45, blast_cut: 1100.0, blast_tau: 0.05, body_freq: 150.0, body_tau: 0.1, thump: 1.0, thump_tau: 0.11, tail: 0.32, tail_tau: 0.5, action: 0.0, gain: 1.0 }, &mut out, &mut rng);
+            grains(&mut out, &mut rng, 0.34, 0.02, 3, (1500.0, 3000.0), 0.45);
+            grains(&mut out, &mut rng, 0.46, 0.02, 3, (1200.0, 2600.0), 0.5);
+        }
+        // Rifles: a hard crack and a full, ringing report.
+        Sfx::Shot(3) => gun(Gun { crack: 0.85, blast_cut: 2100.0, blast_tau: 0.028, body_freq: 190.0, body_tau: 0.07, thump: 0.7, thump_tau: 0.08, tail: 0.26, tail_tau: 0.42, action: 0.22, gain: 1.0 }, &mut out, &mut rng),
+        // Sniper and magnum: enormous crack and a long rolling tail.
+        Sfx::Shot(8) => {
+            gun(Gun { crack: 1.1, blast_cut: 1600.0, blast_tau: 0.05, body_freq: 140.0, body_tau: 0.12, thump: 1.0, thump_tau: 0.12, tail: 0.42, tail_tau: 0.9, action: 0.0, gain: 1.0 }, &mut out, &mut rng);
+            grains(&mut out, &mut rng, 0.55, 0.03, 4, (1800.0, 3500.0), 0.35);
+        }
+        // Rocket launcher: a thump of ignition and a tearing whoosh.
+        Sfx::Shot(5) => {
+            thump(&mut out, 0.0, 120.0, 45.0, 0.1, 0.9);
+            burst(&mut out, &mut rng, 0.0, 0.05, 0.25, &[Biquad::bandpass(900.0 * tone, 0.6)], 1.4);
+            burst(&mut out, &mut rng, 0.0, 0.002, 0.04, &[Biquad::lowpass(1500.0)], 0.9);
+        }
+        // Footsteps: heel then toe, with what the ground sounds like.
+        Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy => {
+            let (weight, grit) = match sfx {
+                Sfx::StepSoft => (0.45, 0.25),
+                Sfx::StepHeavy => (1.25, 1.2),
+                _ => (0.85, 0.8),
+            };
+            for (at, part) in [(0.0, 1.0), (0.055 * tone, 0.55)] {
+                burst(&mut out, &mut rng, at, 0.003, 0.018, &[Biquad::lowpass(380.0 * tone), Biquad::highpass(60.0)], 1.5 * weight * part);
+                thump(&mut out, at, 110.0 * tone, 70.0, 0.018, 0.35 * weight * part);
+                grains(&mut out, &mut rng, at, 0.06, (14.0 * grit) as usize, (2500.0, 7000.0), 0.22 * grit * part);
+            }
+            if sfx == Sfx::StepHeavy {
+                // Kit bouncing on a running body.
+                grains(&mut out, &mut rng, 0.02, 0.05, 4, (1800.0, 3200.0), 0.18);
+            }
+        }
+        // Wooden floors: a hollow knock that rings briefly.
+        Sfx::StepWood => {
+            for (at, part) in [(0.0, 1.0), (0.05 * tone, 0.6)] {
+                burst(&mut out, &mut rng, at, 0.001, 0.03, &[Biquad::bandpass(185.0 * tone, 5.0)], 3.5 * part);
+                burst(&mut out, &mut rng, at, 0.001, 0.02, &[Biquad::bandpass(430.0 * tone, 6.0)], 2.2 * part);
+                burst(&mut out, &mut rng, at, 0.0005, 0.004, &[Biquad::highpass(2000.0)], 0.25 * part);
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
+fn render_voices(sfx: Sfx, take: u32) -> Vec<f32> {
     const B: Voice = Voice::BASE;
     let mut out = Vec::new();
     // Each take nudges the pitch and reseeds the noise.
