@@ -33,16 +33,26 @@ pub struct PlaySfx {
     pub sfx: Sfx,
     pub at: Option<Vec3>,
     pub volume: f32,
+    /// Seconds to wait before playing (casings landing, a reload's second click).
+    pub delay: f32,
 }
 
 impl PlaySfx {
     pub fn new(sfx: Sfx, at: Option<Vec3>) -> Self {
-        Self { sfx, at, volume: 1.0 }
+        Self { sfx, at, volume: 1.0, delay: 0.0 }
     }
 
     /// A non-positional interface sound.
     pub fn ui(sfx: Sfx) -> Self {
         Self::new(sfx, None)
+    }
+
+    pub fn later(self, delay: f32) -> Self {
+        Self { delay, ..self }
+    }
+
+    pub fn quiet(self, volume: f32) -> Self {
+        Self { volume, ..self }
     }
 }
 
@@ -106,7 +116,7 @@ fn spawn_effects(
     local: Query<&Player, With<LocalPlayer>>,
     particles: Query<(), With<Particle>>,
     cameras: Query<&Transform, With<WorldCamera>>,
-    (role, mut death, statics, bodies): (Res<NetRole>, ResMut<DeathInfo>, Res<Statics>, Query<(&Player, &Transform)>),
+    (role, mut death, statics, bodies, map): (Res<NetRole>, ResMut<DeathInfo>, Res<Statics>, Query<(&Player, &Transform)>, Res<Map>),
     mut rng: Local<Option<Rng>>,
 ) {
     let me = local.single().map_or(255, |player| player.id);
@@ -127,6 +137,8 @@ fn spawn_effects(
                 // The robot comes apart: sparks, plates and a puff of smoke.
                 if let Some((_, body)) = bodies.iter().find(|(p, _)| p.id == *victim) {
                     let chest = body.translation + Vec3::Y * 1.1;
+                    sounds.write(PlaySfx::new(Sfx::LimbOff, Some(chest)).quiet(0.6));
+                    sounds.write(PlaySfx::new(Sfx::Debris, Some(body.translation)).quiet(0.7).later(0.35));
                     fx.burst(chest, 14, &[Paint::Spark, Paint::Glow, Paint::Steel, Paint::Metal, Paint::Dark], 6.5, 0.12, 0.9);
                     let size = Vec3::splat(0.25);
                     fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(chest).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.12, initial: 0.12, size, grow: 3.0 });
@@ -160,6 +172,26 @@ fn spawn_effects(
                     }
                 }
                 sounds.write(PlaySfx { volume: if *quiet { 0.3 } else { 1.0 }, ..PlaySfx::new(Sfx::Shot(*sound), (*by != me).then_some(*from)) });
+                if !*beam {
+                    // Where it lands: dirt, a wall, or a robot.
+                    let ground = to.y - map.height(to.x, to.z) < 0.2;
+                    let robot = bodies.iter().any(|(_, t)| (t.translation + Vec3::Y).distance(*to) < 0.9);
+                    let (impact, volume) = if robot { (Sfx::ImpactMetal, 0.7) } else if ground { (Sfx::ImpactDirt, 0.5) } else { (Sfx::ImpactConcrete, 0.55) };
+                    sounds.write(PlaySfx::new(impact, Some(*to)).quiet(volume));
+                    if !robot && !ground && fx.rng.chance(0.14) {
+                        sounds.write(PlaySfx::new(Sfx::Ricochet, Some(*to)).quiet(0.45));
+                    }
+                    // Rounds that pass close by snap past your head.
+                    if *by != me {
+                        let span = *to - *from;
+                        let length = span.length().max(1e-3);
+                        let along = ((camera.translation - *from).dot(span) / length).clamp(0.0, length);
+                        let nearest = *from + span / length * along;
+                        if nearest.distance(camera.translation) < 2.5 && along > 2.0 && along < length - 0.5 {
+                            sounds.write(PlaySfx::new(Sfx::Whizz, Some(nearest)));
+                        }
+                    }
+                }
             }
             FxEvent::Explosion { at, radius } => {
                 // A short hot core, an orange fireball, then dark smoke and debris.
@@ -176,6 +208,8 @@ fn spawn_effects(
                 fx.burst(*at, 22, &[Paint::Glow, Paint::Spark, Paint::Dark, Paint::Rust], 9.0, 0.22, 0.9);
                 view.shake += rumble(*at, radius * 0.45);
                 sounds.write(PlaySfx::new(Sfx::Explosion, Some(*at)));
+                // Bits of the street rain back down.
+                sounds.write(PlaySfx::new(Sfx::Debris, Some(*at)).quiet(0.5).later(0.45));
             }
             FxEvent::Smoke { at, radius, seconds } => {
                 // The host already made the cloud in its own simulation.
@@ -183,7 +217,7 @@ fn spawn_effects(
                     fx.commands.spawn((MatchEntity, SmokeCloud { radius: *radius, time: *seconds }, Transform::from_translation(*at)));
                 }
                 fx.burst(*at, 8, &[Paint::Iron, Paint::Bone], 3.0, 0.2, 0.6);
-                sounds.write(PlaySfx { volume: 0.6, ..PlaySfx::new(Sfx::Reload, Some(*at)) });
+                sounds.write(PlaySfx::new(Sfx::SmokeHiss, Some(*at)).quiet(0.8));
             }
             FxEvent::Flash { at, radius, seconds } => {
                 let size = Vec3::splat(0.4);
@@ -199,6 +233,8 @@ fn spawn_effects(
                     let strength = (1.0 - distance / radius) * (0.3 + 0.7 * facing * facing);
                     view.blind = view.blind.max(seconds * strength + 0.3);
                     view.shake += 0.6;
+                    // Ears ring; the deafness itself is in the mixer (see `audio`).
+                    sounds.write(PlaySfx::new(Sfx::FlashRing, None).quiet((strength * 1.4).min(1.0)));
                 }
             }
             FxEvent::Flyby { from, to } => {
@@ -241,7 +277,13 @@ fn spawn_effects(
                     sounds.write(PlaySfx { volume: 0.5, ..PlaySfx::new(Sfx::Headshot, None) });
                 }
             }
-            FxEvent::LimbLost { by, .. } if *by == me => {
+            FxEvent::LimbLost { player, by, .. } if *by == me || *player == me || bodies.iter().any(|(p, _)| p.id == *player) => {
+                if let Some((_, body)) = bodies.iter().find(|(p, _)| p.id == *player) {
+                    sounds.write(PlaySfx::new(Sfx::LimbOff, Some(body.translation + Vec3::Y)).quiet(0.9));
+                }
+                if *by != me {
+                    continue;
+                }
                 // A limb came off: the marker flares and a crunchy tick plays.
                 view.hit = 0.25;
                 view.limb_hit = 0.35;

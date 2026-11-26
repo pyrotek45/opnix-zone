@@ -93,6 +93,25 @@ fn prop_model(prop: &Prop) -> BlockModel {
             .cube(Paint::Teal, [0.0, 3.8 * s + 0.08, 0.0], [1.5, 0.16, 1.5])
             .cube(Paint::Glow, [0.0, 2.6 * s, -0.71], [0.5, 0.12, 0.03]),
         PropKind::Crate => BlockModel::new().cube(Paint::Teal, [0.0, 0.55, 0.0], [1.25, 1.1, 1.25]).cube(Paint::Gold, [0.0, 0.56, 0.636], [0.84, 0.16, 0.035]),
+        PropKind::Tree => {
+            // A trunk with a branch, and a crown of chunky leaf clusters.
+            let mut model = BlockModel::new().cylinder(Paint::Wood, [0.0, s * 0.35, 0.0], [0.34, s * 0.7, 0.34]).segment(Paint::Wood, [0.0, s * 0.5, 0.0], [0.6, s * 0.75, 0.2], 0.14);
+            for n in 0..7 {
+                let angle = n as f32 * 2.39996 + prop.yaw;
+                let r = if n == 0 { 0.0 } else { s * 0.28 };
+                let at = [angle.cos() * r, s * (0.82 + 0.1 * (n % 3) as f32), angle.sin() * r];
+                let size = s * (0.42 - 0.03 * (n % 3) as f32);
+                model = model.shard(if n % 3 == 0 { Paint::LeafLight } else { Paint::Leaf }, at, [size, size * 0.8, size]);
+            }
+            model
+        }
+        PropKind::Bush => BlockModel::new()
+            .shard(Paint::Leaf, [0.0, 0.45 * s, 0.0], [1.0 * s, 0.7 * s, 0.9 * s])
+            .shard(Paint::LeafLight, [0.35 * s, 0.6 * s, 0.2], [0.6 * s, 0.5 * s, 0.6 * s]),
+        PropKind::Lamp => BlockModel::new()
+            .cube(Paint::Dark, [0.0, 1.9, 0.0], [0.12, 3.8, 0.12])
+            .cube(Paint::Dark, [0.25, 3.75, 0.0], [0.6, 0.08, 0.1])
+            .cube(Paint::Glow, [0.45, 3.65, 0.0], [0.28, 0.1, 0.18]),
     }
 }
 
@@ -142,7 +161,7 @@ fn build_scene(
         let key = ((prop.pos.x / PROP_REGION).floor() as i32, (prop.pos.z / PROP_REGION).floor() as i32);
         let (lit, unlit) = regions.entry(key).or_default();
         // Boxy props stay axis-aligned so they match their collision boxes.
-        let yaw = if matches!(prop.kind, PropKind::Palm | PropKind::Rock) { prop.yaw } else { 0.0 };
+        let yaw = if matches!(prop.kind, PropKind::Palm | PropKind::Rock | PropKind::Bush | PropKind::Lamp) { prop.yaw } else { 0.0 };
         art.add_model(lit, unlit, &prop_model(prop), Transform::from_translation(prop.pos).with_rotation(Quat::from_rotation_y(yaw)));
     }
     // Architecture: every wall, floor, stair and trim, merged with the props of its region.

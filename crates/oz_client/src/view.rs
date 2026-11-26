@@ -81,6 +81,10 @@ pub struct ViewState {
     kick: f32,
     was_grounded: bool,
     fall_speed: f32,
+    /// Last frame's stance, aim and reload progress, for one-shot sounds on changes.
+    last_stance: u8,
+    was_aiming: bool,
+    reload_p: f32,
     step: i32,
     last_weapon: Option<u8>,
     last_shots: u32,
@@ -251,6 +255,10 @@ fn follow_player(
             view.shake += recoil * 0.1;
             view.kick = (view.kick + recoil * 0.9).min(2.5);
             view.cycle = 1.0;
+            // Brass hits the floor a moment later.
+            if def.mode == oz_core::arsenal::FireMode::Hitscan && def.mag > 0 {
+                sounds.write(crate::fx::PlaySfx::new(Sfx::Shell, None).quiet(0.35).later(0.38));
+            }
         }
     }
     if controls.inspect && arsenal.reload <= 0.0 && view.ads < 0.1 {
@@ -272,6 +280,20 @@ fn follow_player(
         view.land = (-view.fall_speed / 9.0).min(1.3);
         sounds.write(crate::fx::PlaySfx::new(Sfx::Land, None));
     }
+    // Leaving the ground under your own power.
+    if view.was_grounded && !mover.grounded && mover.vertical > 2.0 {
+        sounds.write(crate::fx::PlaySfx::new(Sfx::Jump, None));
+    }
+    // Kit rustles when you change stance or shoulder the gun.
+    if input.stance != view.last_stance {
+        view.last_stance = input.stance;
+        sounds.write(crate::fx::PlaySfx::new(Sfx::Cloth, None).quiet(if input.stance == stance::PRONE { 1.0 } else { 0.7 }));
+    }
+    let aiming_now = input.held(buttons::AIM);
+    if aiming_now && !view.was_aiming {
+        sounds.write(crate::fx::PlaySfx::new(Sfx::Cloth, None).quiet(0.4));
+    }
+    view.was_aiming = aiming_now;
     view.was_grounded = mover.grounded;
     view.fall_speed = mover.vertical;
     view.land = (view.land - dt * 5.0).max(0.0);
@@ -293,12 +315,21 @@ fn follow_player(
     view.hit = (view.hit - dt).max(0.0);
     let walking = (mover.speed / 5.4).min(1.6) * mover.grounded as u8 as f32;
     view.bob += dt * 9.5 * walking;
-    // One footstep per half bob cycle.
+    // One footstep per half bob cycle; what it sounds like depends on how you move and what is underfoot.
     let step = (view.bob / std::f32::consts::PI) as i32;
     if step != view.step {
         view.step = step;
-        if walking > 0.3 && health.alive() {
-            sounds.write(crate::fx::PlaySfx::new(Sfx::Step, None));
+        if walking > 0.15 && health.alive() {
+            let feet = player.translation;
+            let on_floor = feet.y - statics.support(feet.x, feet.z, feet.y + 0.1) < 0.06;
+            let (sfx, volume) = match input.stance {
+                stance::PRONE => (Sfx::Crawl, 0.6),
+                stance::CROUCH => (Sfx::StepSoft, 0.7),
+                _ if sprinting => (Sfx::StepHeavy, 1.0),
+                _ if on_floor => (Sfx::StepWood, 0.9),
+                _ => (Sfx::Step, 0.9),
+            };
+            sounds.write(crate::fx::PlaySfx::new(sfx, None).quiet(volume));
         }
     }
 
@@ -382,6 +413,7 @@ fn viewmodel(
     mut groups: Query<(&GunGroup, &mut Transform, &mut Visibility), (Without<GunRoot>, Without<MuzzleFlash>)>,
     mut flash: Query<(&mut Transform, &mut Visibility), (With<MuzzleFlash>, Without<GunRoot>, Without<GunGroup>)>,
     spectate: Res<crate::spectate::Spectate>,
+    mut sounds: EventWriter<crate::fx::PlaySfx>,
 ) {
     let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
     let (Some((arsenal, health, mover, input, _)), Ok((root, mut transform, mut visibility))) = (pick, gun.single_mut()) else { return };
@@ -427,6 +459,29 @@ fn viewmodel(
     // Reload choreography, chosen by the weapon's reload style.
     let reloading = arsenal.reload > 0.0 && arsenal.reload_total > 0.0;
     let p = if reloading { 1.0 - arsenal.reload / arsenal.reload_total } else { 0.0 };
+    // The reload's mechanical beats, timed to the animation.
+    let crossed = |at: f32| view.reload_p < at && p >= at;
+    if reloading {
+        match def.reload_style {
+            ReloadStyle::Single => {
+                if crossed(0.55) {
+                    sounds.write(crate::fx::PlaySfx::new(Sfx::MagIn, None).quiet(0.6));
+                }
+            }
+            _ => {
+                if crossed(0.12) {
+                    sounds.write(crate::fx::PlaySfx::new(Sfx::MagOut, None));
+                }
+                if crossed(0.7) {
+                    sounds.write(crate::fx::PlaySfx::new(Sfx::MagIn, None));
+                }
+                if arsenal.reload_empty && crossed(0.86) {
+                    sounds.write(crate::fx::PlaySfx::new(Sfx::Bolt, None));
+                }
+            }
+        }
+    }
+    view.reload_p = p;
     let (mut tilt, mut dip, mut roll, mut mag, mut mag_hidden, mut slide, mut shell) = (0.0, 0.0, 0.0, Vec3::ZERO, false, Vec3::ZERO, None);
     if reloading {
         match def.reload_style {

@@ -113,6 +113,8 @@ pub struct Rig {
     pub(crate) reload: f32,
     /// Which way it falls when it dies (robot-local, x right / z back) and how hard.
     pub(crate) fall: Vec3,
+    /// Footfalls so far, so each new one can be heard.
+    pub(crate) steps: i32,
 }
 
 /// A damped spring for procedural motion.
@@ -376,7 +378,7 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
     Rig {
         body, hips, thighs, shins, torso, head, aim, arms, gun: gun_root, faces, team, hidden: 0, phase: 0.0, dead_for: 0.0, blink: 2.0, angry: 0.0, hurt: 0.0,
         last_hp: 0.0, last_pos: Vec3::NAN, held: None, crouch: 0.0, prone: 0.0, moving: 0.0,
-        hip: Spring { value: HIP, velocity: 0.0 }, kick: Spring::default(), reload_t: 0.0, slapped: false, reload: 0.0, fall: Vec3::Z,
+        hip: Spring { value: HIP, velocity: 0.0 }, kick: Spring::default(), reload_t: 0.0, slapped: false, reload: 0.0, fall: Vec3::Z, steps: 0,
     }
 }
 
@@ -450,9 +452,27 @@ fn hold_weapons(
     }
 }
 
-fn pose_players(time: Res<Time>, mut robots: Query<(&mut Rig, &mut Pose, &Transform, &Player, &PlayerInput, &Health), With<PlayerRobot>>) {
+fn pose_players(
+    time: Res<Time>,
+    mut robots: Query<(&mut Rig, &mut Pose, &Transform, &Player, &PlayerInput, &Health, Has<LocalPlayer>), With<PlayerRobot>>,
+    mut sounds: EventWriter<crate::fx::PlaySfx>,
+) {
     let dt = time.delta_secs().max(1e-4);
-    for (mut rig, mut pose, transform, player, input, health) in &mut robots {
+    for (mut rig, mut pose, transform, player, input, health, local) in &mut robots {
+        // Everyone else's feet are heard where they fall: listen for people coming.
+        let footfalls = (rig.phase / PI).floor() as i32;
+        if footfalls != rig.steps {
+            rig.steps = footfalls;
+            if !local && health.alive() && pose.speed.abs() > 0.8 {
+                let (sfx, volume) = match pose.stance {
+                    stance::PRONE => (Sfx::Crawl, 0.5),
+                    stance::CROUCH => (Sfx::StepSoft, 0.55),
+                    _ if pose.sprinting => (Sfx::StepHeavy, 1.0),
+                    _ => (Sfx::Step, 0.85),
+                };
+                sounds.write(crate::fx::PlaySfx::new(sfx, Some(transform.translation)).quiet(volume));
+            }
+        }
         let moved = if rig.last_pos.is_finite() { transform.translation - rig.last_pos } else { Vec3::ZERO };
         rig.last_pos = transform.translation;
         let forward = transform.rotation * Vec3::NEG_Z;

@@ -84,6 +84,33 @@ pub enum Layout {
     Town,
 }
 
+/// Sky and air for a map; purely visual.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Weather {
+    Clear,
+    Overcast,
+    Rain,
+    Fog,
+}
+
+impl Weather {
+    pub const ALL: [Weather; 4] = [Weather::Clear, Weather::Overcast, Weather::Rain, Weather::Fog];
+
+    /// A seed's natural weather (mostly clear).
+    pub fn from_seed(seed: u64) -> Weather {
+        [Weather::Clear, Weather::Clear, Weather::Overcast, Weather::Rain, Weather::Fog, Weather::Clear][(seed % 6) as usize]
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Weather::Clear => "CLEAR",
+            Weather::Overcast => "OVERCAST",
+            Weather::Rain => "RAIN",
+            Weather::Fog => "FOG",
+        }
+    }
+}
+
 /// Everything needed to rebuild a map. This is what travels over the network.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorldRecipe {
@@ -96,15 +123,16 @@ pub struct WorldRecipe {
     pub main_radius: f32,
     pub islets: usize,
     pub layout: Layout,
+    pub weather: Weather,
 }
 
 impl WorldRecipe {
     pub fn archipelago(seed: u64, biome: Biome) -> Self {
-        Self { seed, biome, half_extent: 160.0, cell: 2.0, main_radius: 46.0, islets: 5, layout: Layout::Archipelago }
+        Self { seed, biome, half_extent: 160.0, cell: 2.0, main_radius: 46.0, islets: 5, layout: Layout::Archipelago, weather: Weather::from_seed(seed) }
     }
 
     pub fn town(seed: u64, biome: Biome) -> Self {
-        Self { seed, biome, half_extent: 96.0, cell: 2.0, main_radius: 68.0, islets: 0, layout: Layout::Town }
+        Self { seed, biome, half_extent: 96.0, cell: 2.0, main_radius: 68.0, islets: 0, layout: Layout::Town, weather: Weather::from_seed(seed) }
     }
 }
 
@@ -123,6 +151,12 @@ pub enum PropKind {
     Ruin,
     Pylon,
     Crate,
+    /// A broadleaf tree: trunk and a blocky crown.
+    Tree,
+    /// Waist-high shrubs: hide in them, they stop nothing.
+    Bush,
+    /// A lamp post.
+    Lamp,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,6 +178,9 @@ impl Prop {
             PropKind::Ruin => Some(Vec3::new(1.6 * s, 0.9 * s, 0.35 * s)),
             PropKind::Pylon => Some(Vec3::new(0.7, 1.9 * s, 0.7)),
             PropKind::Crate => Some(Vec3::new(0.62, 0.55, 0.62)),
+            PropKind::Tree => Some(Vec3::new(0.3, s * 0.5, 0.3)),
+            PropKind::Bush => None,
+            PropKind::Lamp => Some(Vec3::new(0.12, 1.9, 0.12)),
         }
     }
 }
@@ -156,6 +193,37 @@ pub struct Block {
     pub aabb: Aabb,
     pub paint: Paint,
     pub solid: bool,
+}
+
+/// A doorway that holds a door (it can be opened, closed and blown off).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DoorSpec {
+    /// Bottom centre of the opening.
+    pub center: Vec3,
+    /// The wall runs along X (else Z).
+    pub along_x: bool,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// A glazed window opening.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSpec {
+    pub center: Vec3,
+    pub along_x: bool,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// A ladder up an outside wall to a roof.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ladder {
+    /// Ground point at its foot.
+    pub foot: Vec3,
+    /// Height of the roof it reaches.
+    pub top: f32,
+    /// Horizontal direction from the wall out to the climber.
+    pub out: Vec2,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -189,6 +257,15 @@ pub struct World {
     pub pads: Vec<Vec2>,
     /// Spawn points per team for versus modes (empty on co-op maps).
     pub team_spawns: [Vec<Vec2>; 2],
+    pub doors: Vec<DoorSpec>,
+    pub windows: Vec<WindowSpec>,
+    pub ladders: Vec<Ladder>,
+    /// Tufts of grass (render only).
+    pub grass: Vec<Vec3>,
+    /// The top of the fountain's spout, if the map has one.
+    pub fountain: Option<Vec3>,
+    /// Flag pole tops (flags wave in the wind).
+    pub flags: Vec<Vec3>,
     side: usize,
     heights: Vec<f32>,
 }
@@ -215,6 +292,7 @@ impl World {
         let mut world = World {
             recipe, water: WATER_LEVEL, islands, props: Vec::new(), blocks: Vec::new(), deposits: Vec::new(), landings: Vec::new(),
             core: Vec2::ZERO, spawn: Vec2::new(0.0, 6.0), pads: Vec::new(), team_spawns: [Vec::new(), Vec::new()], side, heights: Vec::new(),
+            doors: Vec::new(), windows: Vec::new(), ladders: Vec::new(), grass: Vec::new(), fountain: None, flags: Vec::new(),
         };
         world.heights = (0..side * side)
             .map(|i| {

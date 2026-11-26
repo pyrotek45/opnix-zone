@@ -229,7 +229,8 @@ pub fn fire_weapons(
                 };
                 if let Some(shot) = shot {
                     spawn_projectile(&mut commands, &mut ids, eye + dir * 0.7, shot);
-                    fx.write(FxEvent::Sound { sfx: Sfx::Swap, at: Some(eye) });
+                    fx.write(FxEvent::Sound { sfx: Sfx::PinPull, at: Some(eye) });
+                    fx.write(FxEvent::Sound { sfx: Sfx::Throw, at: Some(eye) });
                 }
             }
 
