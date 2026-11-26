@@ -54,11 +54,19 @@ Listen-server model: the host owns the simulation and also plays.
 * **Lag compensation** (`oz_sim::lagcomp`): the host records every player's
   true pose each frame. Inputs carry the client's playback time; when a remote
   player fires, `weapons` tests the shot against everyone rewound to that
-  time (capped at 0.35 s).
+  time (capped at 0.35 s). Poses include the lean offset. While guests are
+  connected, co-op enemies' hit spheres are recorded too and rewound the
+  same way.
 * **Prediction** (`oz_client::predict`): on a client, the trigger, fire rate
   and bursts run locally so your shots, recoil and ammo count are instant. The
   host's shot counter confirms them; the host's echo of your own shots is
-  dropped.
+  dropped. Rockets and thrown gear spawn a local `Ghost` projectile; the
+  host's replicated copy (tagged with its owner) stays hidden for you.
+* **Reconnecting**: `C2S::Hello` carries a per-install token. The host keeps a
+  departed player's seat (id, team, score, class, arsenal) for ten minutes and
+  restores it on a hello with the same token, kicking any stale connection
+  that still holds it. Clients record a `LostHost` when the host vanishes and
+  `oz_client::reconnect` retries it.
 * One-shot effects travel as `FxEvent` batches, so every machine replays the
   same tracers, explosions and sounds.
 * Pings run once a second; silent connections are dropped (6 s on a client,
@@ -84,11 +92,16 @@ and decorative trims. The same list drives rendering and collision.
 
 ## Bots
 
-`oz_sim::nav` builds a 1 m walkability grid from the map and collision at
-match start, then answers A* queries smoothed into straight legs. Bots
+`oz_sim::nav` builds a layered half-metre grid from the map and collision at
+match start: each column holds one node per surface you can stand on (the
+ground, every stair step, upper floors, roofs), and neighbours connect when
+the height change is walkable, so stairs join floors. A* runs over the nodes
+and the result is smoothed into straight legs that never jump floors. Bots
 (`oz_sim::bots`) only ever write `PlayerInput`, exactly like a human: they
 travel by path, engage at ranges that suit their weapon, crouch or go prone
-for long shots, and have reaction time and aim error scaled by difficulty.
+for long shots, lean out from cover when an enemy is only visible that way,
+are stunned by flashbangs and blind behind smoke, and have reaction time and
+aim error scaled by difficulty.
 Searches are limited per frame so a full lobby never spikes.
 
 ## Versus

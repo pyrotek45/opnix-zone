@@ -49,14 +49,18 @@ What makes it play well online:
   buffer (smooth even with jitter), and every input tells the host what
   moment you were looking at. When you fire, the host rewinds everyone to
   that moment (up to 0.35 s) before checking the hit: if it was on your
-  screen, it hits.
+  screen, it hits. In co-op the sea creatures are rewound the same way.
 * **Instant shooting.** Your own recoil, muzzle flash, sound, tracer and ammo
   count happen immediately on your machine; the host confirms in the
-  background. Quick taps between network sends are never lost, and weapon
-  swaps show at once.
+  background. Rockets and thrown gear leave your hand at once too. Quick taps
+  between network sends are never lost, and weapon swaps show at once.
 * **Clean failures.** Ping is on the scoreboard (and in the corner with
   *FPS / PING* on). Silent connections time out on both sides, and you are
   told why you were disconnected.
+* **Reconnecting.** If your connection drops, the game retries the host on
+  its own (and leaves a RECONNECT button if that fails). The host keeps your
+  seat for ten minutes: you come back on the same team with your score,
+  class and weapons.
 * **Players:** name tags over teammates, enemy names under your crosshair,
   text chat (**T**), a kill-cam on your killer while you wait to respawn,
   spawn protection, spawns away from the enemy, duplicate names told apart,
@@ -82,11 +86,12 @@ over the shoulder; the camera cuts to whoever is in a firefight.
 |--------|------------------|---------|
 | Move / look | WASD / mouse | left / right stick |
 | Fire / aim | LMB / RMB | RT / LT |
-| Reload / use station | R / E | X |
+| Reload / use station | R / F | X |
 | Jump / sprint | Space / Shift | A / click left stick |
 | Crouch / prone | C or Ctrl / Z | tap B / hold B |
 | Hold breath (scoped) | Shift | click left stick |
-| Weapons | 1-9, wheel, Q | Y next, LB previous |
+| Weapons | 1-9, wheel | Y next, LB previous |
+| Lean left / right | hold Q / E | D-pad left / right (toggle) |
 | Gear | G | RB |
 | Inspect weapon | I | D-pad up |
 | Change class / scoreboard (Iron Town) | L / hold Tab | D-pad down / hold Back |
@@ -94,8 +99,40 @@ over the shoulder; the camera cuts to whoever is in a firefight.
 | Pause / back | Esc | Start / B |
 | Menus | mouse, or arrows + Enter | D-pad or stick + A, LB / RB for tabs |
 
+Every keyboard and mouse binding can be changed in **SETTINGS > CONTROLS**:
+pick an action, press the new key. A key already in use swaps places.
+
 Stations are walk-up terminals: stand next to one, press **Use**, and a window
 opens. Everything in it can be clicked or navigated with a pad.
+
+## Cover and gear (Iron Town)
+
+Lean around corners like the old tactical shooters: hold **Q** or **E**. Your
+head and shoulders move out (never through a wall), the view tilts, and
+everyone sees your robot lean - and can shoot what sticks out. Bots peek
+corners too. You move at half speed while leaning and cannot sprint.
+
+Gear, one kind per class:
+
+| Gear | What it does |
+|------|--------------|
+| Frag grenade | Thrown explosive on a short fuse |
+| Smoke grenade | A cloud that blocks sight: bots cannot see through it and name tags vanish behind it |
+| Flashbang | Whites out the screen of anyone who sees it go off (worse looking straight at it); bots are stunned |
+| Proximity mine | Thrown, arms after a second, goes off when an enemy comes close |
+| Throwing knife | Fast and silent, deadly on a direct hit |
+| Stim | Heals and puts out fire |
+| Ammo pack | Refills reserve ammo for you and nearby teammates |
+
+Perks: Lightweight, Plate Carrier, Fast Hands, Deadeye, Scavenger (kills refill
+a magazine), Ghost (never on radar), Flak Jacket (less explosive damage),
+Quick Draw (faster aiming and swaps) and Steady Hands (tighter hip fire).
+
+The create-a-class screen shows each weapon's fire mode, calibre, damage,
+rate of fire, magazine, reload time and stat bars with its fitted parts.
+Fourteen weapons: pistol, revolver, SMG, PDW, shotgun, auto shotgun,
+carbine, burst rifle, battle rifle, DMR, sniper, minigun, rocket launcher
+and an energy lance.
 
 ## Weapons
 

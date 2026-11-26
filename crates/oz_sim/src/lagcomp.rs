@@ -11,8 +11,13 @@
 //! asks the history where everyone was *at that moment* and tests the shot
 //! against those poses - so if it was on your screen, it hits. Rewinds are
 //! capped at [`MAX_REWIND`] so very laggy players cannot shoot far into the past.
+//!
+//! In co-op the same goes for enemies: while guests are connected the host
+//! also keeps every enemy's hit sphere per frame, and a guest's hitscan and
+//! beam shots test against the swarm as that guest saw it.
 
 use crate::{
+    combat::{Grid, GridItem, ray_sphere},
     net::Remote,
     player::{Health, Player, PlayerInput},
 };
@@ -37,7 +42,8 @@ pub struct Pose {
 
 #[derive(Resource, Default)]
 pub struct LagHistory {
-    frames: VecDeque<(f32, Vec<Pose>)>,
+    /// (time, player poses, enemy hit spheres). Enemies are only kept while guests are connected.
+    frames: VecDeque<(f32, Vec<Pose>, Vec<GridItem>)>,
 }
 
 /// The server time of the world a remote player was looking at when they sent their latest input.
@@ -46,11 +52,15 @@ pub struct ViewTime(pub f32);
 
 impl LagHistory {
     pub fn record(&mut self, time: f32, poses: Vec<Pose>) {
-        if self.frames.back().is_some_and(|(t, _)| *t >= time) {
+        self.record_with_enemies(time, poses, Vec::new());
+    }
+
+    pub fn record_with_enemies(&mut self, time: f32, poses: Vec<Pose>, enemies: Vec<GridItem>) {
+        if self.frames.back().is_some_and(|(t, ..)| *t >= time) {
             return;
         }
-        self.frames.push_back((time, poses));
-        while self.frames.front().is_some_and(|(t, _)| *t < time - KEEP) {
+        self.frames.push_back((time, poses, enemies));
+        while self.frames.front().is_some_and(|(t, ..)| *t < time - KEEP) {
             self.frames.pop_front();
         }
     }
@@ -65,8 +75,8 @@ impl LagHistory {
 
     /// Where `entity` was at `time`, interpolated between recorded frames.
     pub fn pose_at(&self, time: f32, entity: Entity) -> Option<Pose> {
-        let find = |frame: &(f32, Vec<Pose>)| frame.1.iter().find(|p| p.entity == entity).copied();
-        let after = self.frames.iter().position(|(t, _)| *t >= time);
+        let find = |frame: &(f32, Vec<Pose>, Vec<GridItem>)| frame.1.iter().find(|p| p.entity == entity).copied();
+        let after = self.frames.iter().position(|(t, ..)| *t >= time);
         match after {
             None => self.frames.back().and_then(find),
             Some(0) => self.frames.front().and_then(find),
@@ -88,6 +98,22 @@ impl LagHistory {
         }
     }
 
+    /// The first enemy a ray hits, with every enemy where it was at `time`.
+    /// `None` when nothing was recorded for then (fall back to the live grid).
+    pub fn enemy_raycast(&self, time: f32, origin: Vec3, dir: Vec3, max: f32) -> Option<Option<(f32, GridItem)>> {
+        let index = self.frames.iter().position(|(t, ..)| *t >= time).unwrap_or(self.frames.len().saturating_sub(1));
+        let (_, _, enemies) = self.frames.get(index)?;
+        if enemies.is_empty() {
+            return None;
+        }
+        Some(
+            enemies
+                .iter()
+                .filter_map(|item| ray_sphere(origin, dir, item.pos, item.radius).filter(|d| *d <= max).map(|d| (d, *item)))
+                .min_by(|a, b| a.0.total_cmp(&b.0)),
+        )
+    }
+
     /// Clamps a requested rewind time to what is allowed and available.
     pub fn clamp(&self, now: f32, view: f32) -> f32 {
         view.clamp(now - MAX_REWIND, now)
@@ -96,7 +122,14 @@ impl LagHistory {
 
 /// Authority: records every player's true position this frame.
 /// Remote players are recorded at their latest reported position, not the smoothed one.
-pub fn record_history(time: Res<Time>, statics: Res<crate::session::Statics>, mut history: ResMut<LagHistory>, players: Query<(Entity, &Transform, &PlayerInput, &Health, Option<&Remote>), With<Player>>) {
+pub fn record_history(
+    time: Res<Time>,
+    statics: Res<crate::session::Statics>,
+    link: Res<crate::net::NetLink>,
+    grid: Res<Grid>,
+    mut history: ResMut<LagHistory>,
+    players: Query<(Entity, &Transform, &PlayerInput, &Health, Option<&Remote>), With<Player>>,
+) {
     let poses = players
         .iter()
         .map(|(entity, transform, input, health, remote)| {
@@ -104,7 +137,9 @@ pub fn record_history(time: Res<Time>, statics: Res<crate::session::Statics>, mu
             Pose { entity, feet, stance: input.stance, yaw, alive: health.alive(), lean: crate::player::lean_offset(&statics, feet, &PlayerInput { yaw, ..*input }) }
         })
         .collect();
-    history.record(time.elapsed_secs(), poses);
+    // Enemies are only worth remembering when someone is shooting at them from across the network.
+    let enemies = if link.remote_players() > 0 { grid.items() } else { Vec::new() };
+    history.record_with_enemies(time.elapsed_secs(), poses, enemies);
 }
 
 #[cfg(test)]
@@ -128,5 +163,23 @@ mod tests {
         let mid = history.pose_at(1.06, e).unwrap().feet.x;
         assert!(mid == 10.0 || mid == 60.0);
         assert_eq!(history.clamp(2.0, 0.5), 2.0 - MAX_REWIND);
+    }
+
+    #[test]
+    fn guests_shoot_enemies_where_they_saw_them() {
+        let mut world = World::new();
+        let e = world.spawn_empty().id();
+        let mut history = LagHistory::default();
+        // An enemy running along +x at 10 m/s.
+        for i in 0..=10 {
+            let t = i as f32 * 0.1;
+            history.record_with_enemies(t, Vec::new(), vec![GridItem { entity: e, pos: Vec3::new(t * 10.0, 1.0, -20.0), radius: 0.6 }]);
+        }
+        // Aimed at where it was 0.3 s ago: a hit then, a miss now.
+        let (origin, dir) = (Vec3::new(7.0, 1.0, 0.0), Vec3::NEG_Z);
+        assert!(history.enemy_raycast(0.7, origin, dir, 50.0).unwrap().is_some_and(|(_, item)| item.entity == e));
+        assert!(history.enemy_raycast(1.0, origin, dir, 50.0).unwrap().is_none());
+        // Nothing recorded (no guests): fall back to the live grid.
+        assert!(LagHistory::default().enemy_raycast(0.5, origin, dir, 50.0).is_none());
     }
 }

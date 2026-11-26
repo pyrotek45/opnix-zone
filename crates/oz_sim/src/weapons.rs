@@ -173,8 +173,13 @@ pub fn fire_weapons(
         let look = input.look();
         let me = bodies.iter().position(|body| body.entity == entity);
         // Lag compensation: remote shooters hit the world as they saw it.
-        let rewound: Option<Vec<Body>> = view.filter(|_| rules.pvp && !history.is_empty()).map(|view| {
-            let at = history.clamp(now, view.0);
+        let rewind_at = view.filter(|_| !history.is_empty()).map(|view| history.clamp(now, view.0));
+        // Enemies as this shooter saw them (co-op guests), else as they are now.
+        let enemy_ray = |origin: Vec3, dir: Vec3, max: f32| match rewind_at.and_then(|at| history.enemy_raycast(at, origin, dir, max)) {
+            Some(hit) => hit,
+            None => grid.raycast(origin, dir, max),
+        };
+        let rewound: Option<Vec<Body>> = rewind_at.filter(|_| rules.pvp).map(|at| {
             bodies
                 .iter()
                 .filter_map(|b| match history.pose_at(at, b.entity) {
@@ -326,7 +331,7 @@ pub fn fire_weapons(
             FireMode::Beam => {
                 let dir = look * Vec3::NEG_Z;
                 let reach = obstruction(&map, &statics, &solids, eye, dir, BEAM_RANGE);
-                let enemy = grid.raycast(eye, dir, reach);
+                let enemy = enemy_ray(eye, dir, reach);
                 let ore = ores
                     .iter_mut()
                     .filter(|(_, node)| node.amount > 0.0)
@@ -372,7 +377,7 @@ pub fn fire_weapons(
                     }
                     let end = eye + dir * reach;
                     let mut end_at = end;
-                    if let Some((d, item)) = grid.raycast(eye, dir, reach) {
+                    if let Some((d, item)) = enemy_ray(eye, dir, reach) {
                         end_at = eye + dir * d;
                         hits.write(hit_from(&stats, item.entity, stats.damage * falloff(d), player.id));
                         if stats.splash > 0.0 {

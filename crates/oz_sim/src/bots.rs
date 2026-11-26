@@ -26,8 +26,8 @@ pub struct Bot {
     think: f32,
     target: Option<Entity>,
     /// Where the bot wants to go, and the path it is following there.
-    goal: Vec2,
-    path: Vec<Vec2>,
+    goal: Vec3,
+    path: Vec<Vec3>,
     repath: f32,
     stuck: f32,
     last: Vec3,
@@ -185,12 +185,15 @@ pub fn drive_bots(
             bot.target = target;
             let miss = 0.07 / rules.difficulty.max(0.25);
             bot.aim_error = Vec2::new(rng.0.range(-miss, miss), rng.0.range(-miss, miss) * 0.6);
-            if bot.target.is_none() && (bot.path.is_empty() || bot.goal.distance(feet.xz()) < 4.0 || bot.stuck > 1.5) {
+            if bot.target.is_none() && (bot.path.is_empty() || bot.goal.distance(feet) < 4.0 || bot.stuck > 1.5) {
                 // Hunt: head for an enemy's last position, or sweep through the town.
-                let enemies: Vec<Vec2> = fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| at.xz()).collect();
+                let enemies: Vec<Vec3> = fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).collect();
                 bot.goal = match rng.0.pick(&enemies) {
                     Some(enemy) if rng.0.chance(0.65) => *enemy,
-                    _ => Vec2::new(rng.0.range(-40.0, 40.0), rng.0.range(-40.0, 40.0)),
+                    _ => {
+                        let (x, z) = (rng.0.range(-40.0, 40.0), rng.0.range(-40.0, 40.0));
+                        Vec3::new(x, map.height(x, z), z)
+                    }
                 };
                 bot.path.clear();
                 bot.stuck = 0.0;
@@ -237,7 +240,7 @@ pub fn drive_bots(
                 wanted_stance = if class == GunClass::Sniper && distance > 35.0 { stance::PRONE } else { stance::CROUCH };
                 wish *= 0.4;
             }
-            bot.goal = enemy.xz();
+            bot.goal = enemy;
             bot.path.clear();
         } else if let Some(nav) = nav.as_deref() {
             // Travel along a path; search again when it runs out or goes stale.
@@ -245,13 +248,13 @@ pub fn drive_bots(
             if (bot.path.is_empty() || bot.repath <= 0.0) && budget.0 > 0 {
                 budget.0 -= 1;
                 bot.repath = 3.0;
-                bot.path = nav.path(&mut scratch, feet.xz(), bot.goal).unwrap_or_default();
+                bot.path = nav.path(&mut scratch, feet, bot.goal).unwrap_or_default();
             }
-            while bot.path.first().is_some_and(|p| p.distance(feet.xz()) < 0.9) {
+            while bot.path.first().is_some_and(|p| p.xz().distance(feet.xz()) < 0.6 && (p.y - feet.y).abs() < 1.6) {
                 bot.path.remove(0);
             }
             if let Some(next) = bot.path.first() {
-                wish = (*next - feet.xz()).normalize_or_zero();
+                wish = (next.xz() - feet.xz()).normalize_or_zero();
                 input.yaw = turn(input.yaw, yaw_to(wish), 6.0 * dt);
                 input.pitch *= 1.0 - (4.0 * dt).min(1.0);
                 held |= buttons::SPRINT;

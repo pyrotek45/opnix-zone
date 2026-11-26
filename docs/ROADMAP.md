@@ -11,20 +11,17 @@
 
 ## Known limitations
 
-* **Bots navigate the ground floor only.** Players use stairs and upper floors;
-  bots path through doors and around furniture but do not climb yet.
 * **Remote players' attachments** are shown with each gun's factory parts on
   other clients (the host sees bots' real parts). Stats are always correct.
-* **Co-op enemies are not rewound.** Lag compensation covers players in
-  versus modes; Ember Atoll's sea creatures are hit where the host has them.
-* **Grenades and rockets are not predicted** on clients; they appear after a
-  round trip.
+* **Thrown gear is predicted, not reconciled.** Your own grenades and rockets
+  fly at once on your screen; the host's copy decides where they land, and
+  the two can differ slightly when spread or a moving target is involved.
 * **Movement is owner-authoritative.** It feels instant but trusts clients;
   there is no anti-cheat.
 * **TCP transport, direct connections.** The host tries UPnP; routers without
   it need a forwarded port or a mesh VPN. There is no relay, internet server
   browser or NAT punch-through.
-* **No key rebinding** yet; the bindings are fixed (see the README).
+* **Gamepad buttons are fixed;** keyboard and mouse can be rebound.
 * **Snapshots are full-state.** They are compact, but very large matches will
   want delta compression and interest management.
 * **Mining logistics are abstract.** Drills feed the shared stock directly;
@@ -33,5 +30,5 @@
 ## Engine wishlist
 
 More map layouts (mountains, woods, larger towns with enterable buildings),
-weapon types (charge, burst, melee), per-enemy hit flashes, a scoreboard,
-key rebinding, saved progress, and a newer Bevy release.
+weapon types (charge, melee), per-enemy hit flashes, bots that use gear,
+gamepad rebinding, saved progress, and a newer Bevy release.

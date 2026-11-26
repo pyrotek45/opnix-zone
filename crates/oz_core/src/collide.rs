@@ -139,6 +139,17 @@ impl StaticWorld {
         best
     }
 
+    /// Tops of every box under (x, z): the surfaces something could stand on there.
+    pub fn tops_at(&self, x: f32, z: f32) -> Vec<f32> {
+        let mut tops = Vec::new();
+        self.near(x, z, 0.2, |_, b| {
+            if b.touches(x, z, 0.12) {
+                tops.push(b.top());
+            }
+        });
+        tops
+    }
+
     /// Does any box intersect this volume? `except` skips boxes centred within 0.6 m of a point.
     pub fn overlaps(&self, center: Vec3, half: Vec3, except: Option<Vec3>) -> bool {
         let mut hit = false;

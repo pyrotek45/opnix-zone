@@ -87,6 +87,11 @@ impl Grid {
         self.count += 1;
     }
 
+    /// Every item, in no particular order.
+    pub fn items(&self) -> Vec<GridItem> {
+        self.cells.iter().flatten().copied().collect()
+    }
+
     /// Visits every item whose cell overlaps the circle (x, z, radius).
     pub fn for_each_near(&self, center: Vec3, radius: f32, mut visit: impl FnMut(&GridItem)) {
         let (x0, x1) = (self.coord(center.x - radius), self.coord(center.x + radius));
