@@ -51,12 +51,18 @@ impl MeshBuilder {
     }
 
     pub fn build(self) -> Mesh {
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        Mesh::new(PrimitiveTopology::TriangleList, KEEP_FOR_BOUNDS)
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.colors)
     }
 }
+
+/// Meshes keep their vertex data on the CPU as well as the GPU. Bevy can only
+/// compute a mesh's bounding box (used for culling) while that data exists,
+/// and shared meshes are spawned long after they are built: without it,
+/// robots and props were culled while in plain view and flickered in and out.
+pub const KEEP_FOR_BOUNDS: RenderAssetUsages = RenderAssetUsages::all();
 
 pub fn linear(paint: Paint) -> [f32; 4] {
     let [r, g, b] = paint.rgb().map(srgb_to_linear);
@@ -183,7 +189,7 @@ fn setup_art(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     for (shape, mesh, flat) in shapes {
         let template = Template::new(mesh, flat);
         // Stand-alone primitives reuse the flattened data so they match baked models exactly.
-        let standalone = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        let standalone = Mesh::new(PrimitiveTopology::TriangleList, KEEP_FOR_BOUNDS)
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, template.positions.iter().map(|p| p.to_array()).collect::<Vec<_>>())
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, template.normals.iter().map(|n| n.to_array()).collect::<Vec<_>>());
         primitives.insert(shape, meshes.add(standalone));
@@ -203,4 +209,25 @@ fn setup_art(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
         unlit: materials.add(StandardMaterial { unlit: true, ..default() }),
         paints,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shared meshes are spawned long after they are built. If their vertex
+    /// data were dropped after upload, Bevy could not compute their bounds and
+    /// robots would be culled while in plain view (the "flickering robot" bug).
+    #[test]
+    fn meshes_keep_what_culling_needs() {
+        let mut builder = MeshBuilder::default();
+        builder.positions = vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [0.0, 2.0, 1.0]];
+        builder.normals = vec![[0.0, 1.0, 0.0]; 3];
+        builder.colors = vec![[1.0; 4]; 3];
+        let mesh = builder.build();
+        assert!(mesh.asset_usage.contains(RenderAssetUsages::MAIN_WORLD));
+        use bevy::render::mesh::MeshAabb;
+        let aabb = mesh.compute_aabb().expect("bounds");
+        assert!((aabb.half_extents.y - 1.0).abs() < 1e-5);
+    }
 }

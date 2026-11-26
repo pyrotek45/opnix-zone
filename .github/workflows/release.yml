@@ -1,0 +1,68 @@
+# Builds the downloadable games: an AppImage per game for Linux and an .exe
+# (plus a zip with the dedicated server) per game for Windows.
+# Run it from the Actions tab, or push a tag like v0.2.0 to also publish a
+# GitHub release with the files attached.
+name: Release builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # The oldest supported runner: AppImages need a glibc at least this old.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libfuse2
+      - name: Build AppImages
+        run: packaging/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimages
+          path: dist/*.AppImage
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p iron_town -p ember_atoll --bins
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($g in @(@("iron_town","IronTown","iron_server"), @("ember_atoll","EmberAtoll","ember_server"))) {
+            $stage = "target/zip/$($g[1])"
+            New-Item -ItemType Directory -Force $stage | Out-Null
+            Copy-Item "target/release/$($g[0]).exe" "dist/$($g[1]).exe"
+            Copy-Item "target/release/$($g[0]).exe" "$stage/$($g[1]).exe"
+            Copy-Item "target/release/$($g[2]).exe" "$stage/$($g[1])-Server.exe"
+            Compress-Archive -Force -Path $stage -DestinationPath "dist/$($g[1])-windows.zip"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-builds
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

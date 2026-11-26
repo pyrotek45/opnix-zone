@@ -96,6 +96,23 @@ over the shoulder; the camera cuts to whoever is in a firefight. Press **B**
 while spectating (or launch with `--spectate-fp`) to watch through their own
 eyes instead: their gun, recoil, aiming, reloads and HUD.
 
+## Downloads and builds
+
+Ready-to-run builds come from the **Release builds** workflow
+(`.github/workflows/release.yml`): run it from the Actions tab, or push a
+`v*` tag to publish a release. It produces:
+
+* `IronTown-x86_64.AppImage` / `EmberAtoll-x86_64.AppImage` - Linux: make it
+  executable and run it. `./IronTown-x86_64.AppImage server` starts the
+  dedicated server instead.
+* `IronTown.exe` / `EmberAtoll.exe` - Windows, a single file each, plus
+  `*-windows.zip` with the game and its dedicated server.
+
+To build them yourself: `packaging/build-appimage.sh` (Linux) and
+`packaging/build-windows.sh` (cross-compiles the Windows builds from Linux
+with MinGW). Everything is generated in code, so each game is one file with
+no asset folder to ship.
+
 ## Controls
 
 | Action | Keyboard / mouse | Gamepad |

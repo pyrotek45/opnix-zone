@@ -140,7 +140,7 @@ fn build_scene(
             if chunk.positions.is_empty() {
                 continue;
             }
-            let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+            let mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::art::KEEP_FOR_BOUNDS)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, chunk.positions)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, chunk.normals)
                 .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, chunk.colors);
