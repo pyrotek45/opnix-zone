@@ -7,7 +7,12 @@
 //! rectangle, updated only when its value changes.
 
 use crate::{ClientSet, input::Controls, stations::{Nearby, Placement}, ui::{self, Screen}, view::ViewState};
-use bevy::{ecs::hierarchy::ChildSpawnerCommands, prelude::*};
+use bevy::{
+    asset::RenderAssetUsages,
+    ecs::hierarchy::ChildSpawnerCommands,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
 use oz_core::arsenal::resolve;
 use oz_sim::prelude::*;
 
@@ -93,6 +98,66 @@ enum Zone {
 #[derive(Component)]
 struct HudRoot;
 
+/// Full-screen scope mask, shown while aiming through magnified optics.
+#[derive(Component)]
+struct ScopeOverlay;
+
+#[derive(Component)]
+struct ScopeGlass;
+
+/// One limb of the little stance figure: 0 head, 1 body, 2 legs.
+#[derive(Component, Clone, Copy)]
+struct StanceLimb(u8);
+
+#[derive(Resource)]
+struct ScopeImages([Handle<Image>; 2]);
+
+/// A round scope mask: black outside the glass, a reticle inside. `kind` 1 = ACOG chevron, 2 = sniper crosshair.
+fn scope_image(kind: u8) -> Image {
+    let size = 256usize;
+    let c = size as f32 / 2.0;
+    let mut pixels = vec![0u8; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+            let d = (dx * dx + dy * dy).sqrt() / c;
+            let mut rgba = [0u8, 0, 0, 0];
+            if d > 0.97 {
+                rgba = [0, 0, 0, 255];
+            } else if d > 0.93 {
+                rgba = [18, 22, 26, 255];
+            } else if d > 0.86 {
+                // Vignette inside the rim.
+                rgba = [0, 0, 0, ((d - 0.86) / 0.07 * 170.0) as u8];
+            }
+            let line = |v: f32, w: f32| v.abs() < w;
+            if kind == 2 {
+                // Heavy posts from the edge, fine cross in the middle, mil dots.
+                let post = (line(dx, 3.0) && dy.abs() > c * 0.45) || (line(dy, 3.0) && dx.abs() > c * 0.45);
+                let fine = (line(dx, 0.7) || line(dy, 0.7)) && d < 0.93;
+                let dot = (line(dx, 1.5) || line(dy, 1.5)) && ((dx.abs().max(dy.abs()) / (c * 0.09)).fract() < 0.12) && dx.abs().max(dy.abs()) > 4.0 && d < 0.45;
+                if (post && d < 0.93) || fine || dot {
+                    rgba = [8, 8, 10, 255];
+                }
+            } else if kind == 1 {
+                // An amber chevron with a fine stadia line below it.
+                let up = dy - 2.0;
+                let chevron = up >= 0.0 && up < c * 0.12 && (dx.abs() - up * 0.9).abs() < 1.6;
+                let stadia = line(dx, 0.7) && dy > c * 0.14 && dy < c * 0.6;
+                if chevron {
+                    rgba = [255, 190, 70, 255];
+                } else if stadia || (line(dy, 0.7) && dx.abs() > c * 0.55 && d < 0.93) {
+                    rgba = [10, 10, 10, 230];
+                }
+            }
+            pixels[(y * size + x) * 4..(y * size + x) * 4 + 4].copy_from_slice(&rgba);
+        }
+    }
+    let mut image = Image::new(Extent3d { width: size as u32, height: size as u32, depth_or_array_layers: 1 }, TextureDimension::D2, pixels, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::RENDER_WORLD);
+    image.sampler = bevy::image::ImageSampler::linear();
+    image
+}
+
 #[derive(Component)]
 struct HurtOverlay;
 
@@ -102,7 +167,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Notices>()
             .add_systems(OnEnter(MatchPhase::Active), spawn_hud)
-            .add_systems(Update, (update_text, update_shapes).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (update_text, update_shapes, scope_and_stance).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -130,8 +195,23 @@ fn framed(node: Node) -> impl Bundle {
     (Node { padding: UiRect::all(Val::Px(8.0)), border: UiRect::all(Val::Px(2.0)), ..node }, BackgroundColor(FRAME), BorderColor(Color::srgba(0.30, 0.40, 0.42, 0.8)))
 }
 
-fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>) {
+fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: ResMut<Assets<Image>>) {
     notices.0.clear();
+    let scopes = [images.add(scope_image(1)), images.add(scope_image(2))];
+    commands
+        .spawn((
+            MatchEntity,
+            ScopeOverlay,
+            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+            GlobalZIndex(-45),
+            Visibility::Hidden,
+        ))
+        .with_children(|overlay| {
+            overlay.spawn((Node { flex_grow: 1.0, height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::BLACK)));
+            overlay.spawn((ScopeGlass, ImageNode::new(scopes[1].clone()), Node { height: Val::Percent(100.0), aspect_ratio: Some(1.0), ..default() }));
+            overlay.spawn((Node { flex_grow: 1.0, height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::BLACK)));
+        });
+    commands.insert_resource(ScopeImages(scopes));
     let full = || at(Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() });
     commands.spawn((MatchEntity, HurtOverlay, full(), BackgroundColor(Color::NONE), GlobalZIndex(-50)));
     commands.spawn((MatchEntity, HudRoot, full(), GlobalZIndex(-40))).with_children(|hud| {
@@ -147,10 +227,18 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>) {
                 }
                 number(bar, Num::Health, 15.0, ui::TEXT);
             });
-            panel.spawn(row(4.0)).with_children(|gear| {
-                for i in 0..GEAR_PIPS {
-                    gear.spawn((Seg::Gear(i), block(10.0, 10.0, OFF)));
-                }
+            panel.spawn(row(10.0)).with_children(|line| {
+                // A tiny figure that stands, crouches or lies down with you.
+                line.spawn(Node { width: Val::Px(26.0), height: Val::Px(24.0), ..default() }).with_children(|figure| {
+                    for limb in 0..3 {
+                        figure.spawn((StanceLimb(limb), at(Node::default()), BackgroundColor(ui::TEXT)));
+                    }
+                });
+                line.spawn(row(4.0)).with_children(|gear| {
+                    for i in 0..GEAR_PIPS {
+                        gear.spawn((Seg::Gear(i), block(10.0, 10.0, OFF)));
+                    }
+                });
             });
         });
 
@@ -460,5 +548,46 @@ fn update_shapes(
             }
         };
         set(&mut color.0, tint);
+    }
+}
+
+/// Scope mask while aiming through magnified glass, and the stance figure.
+fn scope_and_stance(
+    view: Res<ViewState>,
+    screen: Res<Screen>,
+    images: Option<Res<ScopeImages>>,
+    players: Query<&PlayerInput, With<LocalPlayer>>,
+    mut overlay: Query<&mut Visibility, With<ScopeOverlay>>,
+    mut glass: Query<&mut ImageNode, With<ScopeGlass>>,
+    mut limbs: Query<(&StanceLimb, &mut Node)>,
+) {
+    if let Ok(mut visibility) = overlay.single_mut() {
+        let wanted = if view.scoped > 0.5 && *screen == Screen::None { Visibility::Inherited } else { Visibility::Hidden };
+        set(&mut *visibility, wanted);
+    }
+    if let (Ok(mut glass), Some(images)) = (glass.single_mut(), images) {
+        let handle = &images.0[if view.scope_kind >= 2 { 1 } else { 0 }];
+        if glass.image != *handle {
+            glass.image = handle.clone();
+        }
+    }
+    let Ok(input) = players.single() else { return };
+    for (limb, mut node) in &mut limbs {
+        // (left, top, width, height) for head, body, legs in each stance.
+        let (x, y, w, h) = match (input.stance, limb.0) {
+            (stance::PRONE, 0) => (20.0, 14.0, 6.0, 6.0),
+            (stance::PRONE, 1) => (8.0, 16.0, 12.0, 5.0),
+            (stance::PRONE, _) => (0.0, 17.0, 8.0, 4.0),
+            (stance::CROUCH, 0) => (12.0, 4.0, 6.0, 6.0),
+            (stance::CROUCH, 1) => (11.0, 10.0, 6.0, 7.0),
+            (stance::CROUCH, _) => (7.0, 17.0, 10.0, 5.0),
+            (_, 0) => (10.0, 0.0, 6.0, 6.0),
+            (_, 1) => (10.0, 7.0, 6.0, 9.0),
+            _ => (10.0, 16.0, 6.0, 8.0),
+        };
+        set(&mut node.left, Val::Px(x));
+        set(&mut node.top, Val::Px(y));
+        set(&mut node.width, Val::Px(w));
+        set(&mut node.height, Val::Px(h));
     }
 }

@@ -5,6 +5,7 @@
 //! authoritative simulation, the client, and any future tooling.
 //!
 //! * [`rng`], [`noise`] - deterministic randomness.
+//! * [`collide`] - static collision boxes for walls, floors and props.
 //! * [`model`] - block models: every visual asset is a list of painted primitives.
 //! * [`worldgen`] - procedural maps (heightfield, props, ore, spawn points).
 //! * [`arsenal`] - weapons, attachments, mods and the stat pipeline.
@@ -16,6 +17,7 @@
 
 
 pub mod arsenal;
+pub mod collide;
 pub mod content;
 pub mod economy;
 pub mod kit;

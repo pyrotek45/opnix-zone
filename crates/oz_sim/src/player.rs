@@ -1,26 +1,28 @@
-//! Players: input, first-person movement, health and respawn.
+//! Players: input, stances, first-person movement over terrain and
+//! buildings, health, burning and respawn.
 
 use crate::{
     bots::Bot,
     combat::Solid,
-    session::{Content, Map},
+    session::{Content, Map, Statics},
     sim_dt,
-    state::{FxEvent, MatchState, Rules},
+    state::{FxEvent, MatchState, Phase, Rules},
 };
 use bevy::prelude::*;
 use oz_core::{
-    arsenal::WeaponState,
+    arsenal::{WeaponState, resolve},
+    collide::StaticWorld,
     content::{Catalog, PerkEffect, UpgradeEffect},
     synth::Sfx,
-    worldgen::World as GameMap,
+    worldgen::{WADE_DEPTH, World as GameMap},
 };
 use serde::{Deserialize, Serialize};
 
-/// Eye height above the feet.
+/// Standing eye height above the feet.
 pub const EYE: f32 = 1.68;
 pub const WALK_SPEED: f32 = 5.4;
 pub const SPRINT_SPEED: f32 = 8.2;
-const JUMP_SPEED: f32 = 5.6;
+const JUMP_SPEED: f32 = 6.2;
 const GRAVITY: f32 = 15.0;
 const BODY_RADIUS: f32 = 0.3;
 
@@ -35,6 +37,43 @@ pub mod buttons {
     pub const GEAR: u8 = 32;
 }
 
+/// How a body is holding itself. Stored in [`PlayerInput::stance`].
+pub mod stance {
+    pub const STAND: u8 = 0;
+    pub const CROUCH: u8 = 1;
+    pub const PRONE: u8 = 2;
+
+    /// Eye height for a stance.
+    pub fn eye(stance: u8) -> f32 {
+        [super::EYE, 1.12, 0.42][(stance as usize).min(2)]
+    }
+
+    /// Headroom a stance needs.
+    pub fn height(stance: u8) -> f32 {
+        [1.75, 1.25, 0.6][(stance as usize).min(2)]
+    }
+
+    pub fn speed(stance: u8) -> f32 {
+        [1.0, 0.55, 0.28][(stance as usize).min(2)]
+    }
+
+    /// Spread multiplier: steadier when low.
+    pub fn steadiness(stance: u8) -> f32 {
+        [1.0, 0.75, 0.55][(stance as usize).min(2)]
+    }
+}
+
+/// Presentation bits in [`Player::flags`], replicated so others see what you are doing.
+pub mod flags {
+    /// Two bits of stance.
+    pub const STANCE: u8 = 3;
+    pub const AIMING: u8 = 4;
+    pub const RELOADING: u8 = 8;
+    pub const SPRINTING: u8 = 16;
+    /// Fired an unsuppressed weapon recently: shows on enemy radar.
+    pub const LOUD: u8 = 32;
+}
+
 #[derive(Component, Clone, Debug)]
 pub struct Player {
     pub id: u8,
@@ -47,7 +86,10 @@ pub struct Player {
     pub calm: f32,
     /// Seconds since the last (re)spawn.
     pub life: f32,
+    pub kills: u16,
     pub deaths: u16,
+    /// Lobby: ready to start.
+    pub ready: bool,
     /// Index into `Catalog::perks`.
     pub perk: u8,
     /// Index into `Catalog::gear`, and uses left this life.
@@ -56,11 +98,24 @@ pub struct Player {
     pub gear_latch: bool,
     /// Loadout to apply at the next spawn.
     pub loadout: Option<Loadout>,
+    /// Burn damage per second, seconds left, and who lit it.
+    pub burn: f32,
+    pub burn_time: f32,
+    pub burn_by: Option<u8>,
+    /// See [`flags`].
+    pub flags: u8,
 }
 
 impl Player {
     pub fn new(id: u8, name: impl Into<String>, team: u8) -> Self {
-        Self { id, name: name.into(), team, respawn: 0.0, calm: 0.0, life: 0.0, deaths: 0, perk: 0, gear: 0, gear_left: 0, gear_latch: false, loadout: None }
+        Self {
+            id, name: name.into(), team, respawn: 0.0, calm: 0.0, life: 0.0, kills: 0, deaths: 0, ready: false, perk: 0, gear: 0, gear_left: 0,
+            gear_latch: false, loadout: None, burn: 0.0, burn_time: 0.0, burn_by: None, flags: 0,
+        }
+    }
+
+    pub fn stance(&self) -> u8 {
+        self.flags & flags::STANCE
     }
 }
 
@@ -97,17 +152,19 @@ pub fn apply_loadout(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsen
 pub fn refill(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsenal) {
     for (weapon, def) in arsenal.weapons.iter_mut().zip(&catalog.weapons) {
         if weapon.owned {
-            weapon.ammo = oz_core::arsenal::resolve(def, weapon, &catalog.attachments).mag.min(if def.mag == 0 { 0 } else { u16::MAX });
+            weapon.ammo = resolve(def, weapon, &catalog.attachments).mag;
             weapon.reserve = weapon.reserve.max(def.reserve);
         }
     }
     arsenal.reload = 0.0;
+    arsenal.burst = 0;
     player.gear_left = catalog.gear.get(player.gear as usize).map_or(0, |gear| gear.count);
 }
 
 /// Hurts a player and handles the kill: score, feed, hit marker. Returns true on a kill.
+/// `attacker` is (name, team, id).
 pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, attacker: Option<(&str, u8, u8)>, state: &mut MatchState, fx: &mut EventWriter<FxEvent>) -> bool {
-    if !health.alive() {
+    if !health.alive() || state.phase == Phase::Lobby {
         return false;
     }
     health.hp -= amount;
@@ -116,11 +173,13 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
     let killed = !health.alive();
     if killed {
         victim.deaths += 1;
+        victim.burn_time = 0.0;
     }
     if let Some((name, team, id)) = attacker {
         fx.write(FxEvent::HitMarker { player: id, kill: killed });
-        if killed {
+        if killed && id != victim.id {
             state.scores[(team as usize).min(1)] += 1;
+            state.credits.push(id);
             fx.write(FxEvent::notice(format!("{name}  >  {}", victim.name)));
         }
     }
@@ -131,8 +190,8 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
 #[derive(Component)]
 pub struct LocalPlayer;
 
-/// What a player wants to do this frame. Produced by the client's input layer,
-/// replicated to the host, consumed by movement and weapons.
+/// What a player wants to do this frame. Produced by the client's input layer
+/// (or a bot), replicated to the host, consumed by movement and weapons.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlayerInput {
     /// x = strafe right, y = forward; length <= 1.
@@ -142,6 +201,8 @@ pub struct PlayerInput {
     pub buttons: u8,
     /// Desired weapon slot.
     pub weapon: u8,
+    /// See [`stance`].
+    pub stance: u8,
 }
 
 impl PlayerInput {
@@ -155,6 +216,10 @@ impl PlayerInput {
 
     pub fn aim_dir(&self) -> Vec3 {
         self.look() * Vec3::NEG_Z
+    }
+
+    pub fn eye(&self) -> f32 {
+        stance::eye(self.stance)
     }
 }
 
@@ -196,10 +261,18 @@ pub struct Arsenal {
     pub cooldown: f32,
     /// Seconds of reload remaining; 0 = not reloading.
     pub reload: f32,
+    /// Total length of the reload in progress (for animation).
+    pub reload_total: f32,
+    /// The reload started on an empty gun (the action must be worked).
+    pub reload_empty: bool,
+    /// Rounds left in the current burst.
+    pub burst: u8,
     /// Trigger was held last frame (semi-auto gating).
     pub trigger: bool,
-    /// Total shots fired; the client watches this to play recoil.
+    /// Total shots fired; the client watches this to play recoil and action animations.
     pub shots: u32,
+    /// Seconds an unsuppressed shot keeps you on enemy radar.
+    pub loud: f32,
 }
 
 impl Arsenal {
@@ -212,20 +285,28 @@ impl Arsenal {
     }
 }
 
-/// Can a body with its feet at `feet` stand at (x, z)?
-pub fn can_stand(map: &GameMap, x: f32, z: f32, feet: f32, solids: &Query<(&Transform, &Solid), Without<Player>>) -> bool {
+/// Can a body of `height` with its feet at `feet` stand at (x, z)?
+pub fn can_stand(map: &GameMap, statics: &StaticWorld, solids: &Query<(&Transform, &Solid), Without<Player>>, x: f32, z: f32, feet: f32, height: f32) -> bool {
     let ground = map.height(x, z);
     // Walking further out to sea is blocked, walking back up the beach never is.
-    if !map.in_bounds(x, z) || (ground < map.water - oz_core::worldgen::WADE_DEPTH && ground < feet - 0.02) {
+    if !map.in_bounds(x, z) || (ground < map.water - WADE_DEPTH && ground < feet - 0.02) {
+        return false;
+    }
+    if statics.blocked(x, z, feet, height, BODY_RADIUS) {
         return false;
     }
     solids.iter().all(|(transform, solid)| {
         let p = solid.center(transform);
-        !(feet + 1.6 > p.y - solid.half.y
-            && feet + 0.35 < p.y + solid.half.y
+        !(feet + height > p.y - solid.half.y
+            && feet + oz_core::collide::STEP < p.y + solid.half.y
             && (x - p.x).abs() < solid.half.x + BODY_RADIUS
             && (z - p.z).abs() < solid.half.z + BODY_RADIUS)
     })
+}
+
+/// What a walker stands on at (x, z): terrain, shallow sea floor, or a floor / step / crate.
+pub fn ground_under(map: &GameMap, statics: &StaticWorld, x: f32, z: f32, feet: f32) -> f32 {
+    map.height(x, z).max(map.water - WADE_DEPTH).max(statics.support(x, z, feet))
 }
 
 /// Moves every player this machine controls: its own (movement is
@@ -233,48 +314,62 @@ pub fn can_stand(map: &GameMap, x: f32, z: f32, feet: f32, solids: &Query<(&Tran
 pub fn move_players(
     time: Res<Time>,
     map: Res<Map>,
+    statics: Res<Statics>,
     content: Res<Content>,
-    mut players: Query<(&mut Transform, &PlayerInput, &mut Mover, &Health, &Player), Or<(With<LocalPlayer>, With<Bot>)>>,
+    mut players: Query<(&mut Transform, &PlayerInput, &mut Mover, &Health, &Player, &Arsenal), Or<(With<LocalPlayer>, With<Bot>)>>,
     solids: Query<(&Transform, &Solid), Without<Player>>,
 ) {
     let dt = sim_dt(&time);
-    for (mut transform, input, mut mover, health, player) in &mut players {
+    for (mut transform, input, mut mover, health, player, arsenal) in &mut players {
         if !health.alive() {
             mover.speed = 0.0;
             continue;
         }
         let wish = input.movement.clamp_length_max(1.0);
-        let sprinting = input.held(buttons::SPRINT) && wish.y > 0.3 && !input.held(buttons::AIM);
+        let standing = input.stance == stance::STAND;
+        let sprinting = standing && input.held(buttons::SPRINT) && wish.y > 0.3 && !input.held(buttons::AIM);
         let perk_speed = match perk(&content, player) {
             Some(PerkEffect::Speed(multiplier)) => multiplier,
             _ => 1.0,
         };
-        let speed = perk_speed * if sprinting { SPRINT_SPEED } else if input.held(buttons::AIM) { WALK_SPEED * 0.6 } else { WALK_SPEED };
+        let weapon_speed = content
+            .weapons
+            .get(arsenal.current as usize)
+            .zip(arsenal.state())
+            .map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).mobility);
+        let gait = if sprinting { SPRINT_SPEED } else if input.held(buttons::AIM) { WALK_SPEED * 0.6 } else { WALK_SPEED };
+        let speed = gait * perk_speed * weapon_speed * stance::speed(input.stance);
         let step = Quat::from_rotation_y(input.yaw) * Vec3::new(wish.x, 0.0, -wish.y) * speed * dt;
+        let height = stance::height(input.stance);
 
         let mut pos = transform.translation;
         let before = pos;
         // Axis-separated so the player slides along walls.
-        if can_stand(&map, pos.x + step.x, pos.z, pos.y, &solids) {
+        if can_stand(&map, &statics, &solids, pos.x + step.x, pos.z, pos.y, height) {
             pos.x += step.x;
         }
-        if can_stand(&map, pos.x, pos.z + step.z, pos.y, &solids) {
+        if can_stand(&map, &statics, &solids, pos.x, pos.z + step.z, pos.y, height) {
             pos.z += step.z;
         }
 
-        let ground = map.height(pos.x, pos.z).max(map.water - oz_core::worldgen::WADE_DEPTH);
-        if mover.grounded && input.held(buttons::JUMP) {
+        let ground = ground_under(&map, &statics, pos.x, pos.z, pos.y);
+        if mover.grounded && standing && input.held(buttons::JUMP) {
             mover.vertical = JUMP_SPEED;
             mover.grounded = false;
         }
-        if mover.grounded && pos.y - ground < 0.45 {
-            pos.y = ground; // Stick to slopes.
+        if mover.grounded && pos.y - ground < oz_core::collide::STEP {
+            pos.y = ground; // Stick to slopes and stairs.
         } else {
             mover.vertical -= GRAVITY * dt;
             pos.y += mover.vertical * dt;
             mover.grounded = false;
-            if pos.y <= ground {
-                pos.y = ground;
+            // Bump heads on ceilings.
+            if mover.vertical > 0.0 && statics.blocked(pos.x, pos.z, pos.y + 0.5, height - 0.5, BODY_RADIUS * 0.7) {
+                mover.vertical = 0.0;
+            }
+            let landing = ground_under(&map, &statics, pos.x, pos.z, pos.y.max(before.y));
+            if pos.y <= landing {
+                pos.y = landing;
                 mover.vertical = 0.0;
                 mover.grounded = true;
             }
@@ -285,21 +380,53 @@ pub fn move_players(
     }
 }
 
-/// Authority: regeneration, death and respawn.
+/// Authority: what everyone else should see this player doing.
+pub fn presentation_flags(mut players: Query<(&mut Player, &PlayerInput, &Arsenal, &Mover)>) {
+    for (mut player, input, arsenal, mover) in &mut players {
+        let mut bits = input.stance.min(2);
+        if input.held(buttons::AIM) {
+            bits |= flags::AIMING;
+        }
+        if arsenal.reload > 0.0 {
+            bits |= flags::RELOADING;
+        }
+        if input.held(buttons::SPRINT) && mover.speed > 6.0 {
+            bits |= flags::SPRINTING;
+        }
+        if arsenal.loud > 0.0 {
+            bits |= flags::LOUD;
+        }
+        if player.flags != bits {
+            player.flags = bits;
+        }
+    }
+}
+
+/// Authority: regeneration, burning, death and respawn.
+#[allow(clippy::too_many_arguments)]
 pub fn vitals(
     time: Res<Time>,
     map: Res<Map>,
     rules: Res<Rules>,
     content: Res<Content>,
-    state: Res<MatchState>,
-    mut players: Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal)>,
+    mut state: ResMut<MatchState>,
+    mut players: Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let dt = sim_dt(&time);
-    for (mut player, mut health, mut transform, mut arsenal) in &mut players {
+    for (mut player, mut health, mut transform, mut arsenal, mut input) in &mut players {
         if health.alive() {
             player.calm += dt;
             player.life += dt;
+            arsenal.loud = (arsenal.loud - dt).max(0.0);
+            if player.burn_time > 0.0 {
+                player.burn_time -= dt;
+                let by = player.burn_by;
+                let attacker = by.and_then(|id| state.roster.iter().find(|r| r.id == id).map(|r| (r.name.clone(), r.team, id)));
+                let damage = player.burn * dt;
+                damage_player(&mut health, &mut player, damage, attacker.as_ref().map(|(n, t, i)| (n.as_str(), *t, *i)), &mut state, &mut fx);
+                continue;
+            }
             if player.calm > 5.0 && health.hp < health.max {
                 health.hp = (health.hp + 9.0 * dt).min(health.max);
             }
@@ -315,18 +442,26 @@ pub fn vitals(
         }
         player.respawn -= dt;
         if player.respawn <= 0.0 && !state.over() {
-            player.respawn = 0.0;
-            player.life = 0.0;
-            if let Some(loadout) = player.loadout.take() {
-                apply_loadout(&content, &mut player, &mut arsenal, loadout);
-            } else if rules.pvp {
-                refill(&content, &mut player, &mut arsenal);
-            }
-            health.max = max_health(&content, &state, &player);
-            health.hp = health.max;
-            transform.translation = spawn_point(&map, player.id, rules.pvp.then_some(player.team));
+            respawn(&content, &map, &rules, &state, &mut player, &mut health, &mut transform, &mut arsenal, &mut input);
         }
     }
+}
+
+/// Brings a player back at their spawn with a fresh life.
+#[allow(clippy::too_many_arguments)]
+pub fn respawn(content: &Catalog, map: &GameMap, rules: &Rules, state: &MatchState, player: &mut Player, health: &mut Health, transform: &mut Transform, arsenal: &mut Arsenal, input: &mut PlayerInput) {
+    player.respawn = 0.0;
+    player.life = 0.0;
+    player.burn_time = 0.0;
+    if let Some(loadout) = player.loadout.take() {
+        apply_loadout(content, player, arsenal, loadout);
+    } else if rules.pvp {
+        refill(content, player, arsenal);
+    }
+    health.max = max_health(content, state, player);
+    health.hp = health.max;
+    transform.translation = spawn_point(map, player.id, rules.pvp.then_some(player.team));
+    input.stance = stance::STAND;
 }
 
 pub fn max_health(catalog: &Catalog, state: &MatchState, player: &Player) -> f32 {

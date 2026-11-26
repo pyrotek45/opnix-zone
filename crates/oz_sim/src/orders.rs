@@ -28,6 +28,7 @@ pub fn process_commands(
     mut events: EventReader<CommandEvent>,
     content: Res<Content>,
     map: Res<Map>,
+    statics: Res<crate::session::Statics>,
     rules: Res<Rules>,
     mut state: ResMut<MatchState>,
     mut ids: ResMut<NetIds>,
@@ -78,14 +79,21 @@ pub fn process_commands(
             }
             PlayerCommand::EquipPart { weapon, slot, variant } => {
                 let (w, s, v) = (weapon as usize, slot as usize, variant as usize);
-                let Some(part) = content.attachments.get(s).and_then(|variants| variants.get(v)) else { continue };
+                let name = oz_core::arsenal::options(&content.weapons.get(w).cloned().unwrap_or_else(oz_core::kit::blank_weapon), &content.attachments, s)
+                    .into_iter()
+                    .find(|(i, ..)| *i == v)
+                    .map_or("PART", |(_, name, ..)| name);
                 // Versus loadouts customise any weapon for free; co-op players pay for parts on guns they own.
-                if w >= arsenal.weapons.len() || (!arsenal.owns(w) && !rules.pvp) || s >= 5 || v >= 8 {
+                if w >= arsenal.weapons.len() || (!arsenal.owns(w) && !rules.pvp) {
                     deny(&mut fx, "WEAPON NOT OWNED");
                     continue;
                 }
+                let Some(price) = oz_core::arsenal::part_cost(&content.weapons[w], &content.attachments, s, v) else {
+                    deny(&mut fx, "THAT PART DOES NOT FIT");
+                    continue;
+                };
                 if !arsenal.weapons[w].has_part(s, v) && !rules.pvp {
-                    if !pay(&mut state, &Cost::credits(part.cost)) {
+                    if !pay(&mut state, &Cost::credits(price)) {
                         deny(&mut fx, "NOT ENOUGH CREDITS");
                         continue;
                     }
@@ -99,7 +107,7 @@ pub fn process_commands(
                     state.reserve += state.ammo - mag;
                     state.ammo = mag;
                 }
-                Some(format!("{} EQUIPPED", part.name))
+                Some(format!("{name} EQUIPPED"))
             }
             PlayerCommand::BuyMod { weapon, kind } => {
                 let w = weapon as usize;
@@ -145,9 +153,10 @@ pub fn process_commands(
                     }
                 }
                 at.y = map.height(at.x, at.z);
-                let blocked = solids.iter().any(|(entity, t, solid)| {
-                    Some(entity) != node && (t.translation.x - at.x).abs() < solid.half.x + half.x + 0.15 && (t.translation.z - at.z).abs() < solid.half.z + half.z + 0.15
-                });
+                let footprint = half + Vec3::new(0.15, 0.0, 0.15);
+                let drill_site = node.map(|_| at);
+                let blocked = statics.overlaps(at + Vec3::Y * (half.y + 0.25), Vec3::new(footprint.x, half.y, footprint.z), drill_site)
+                    || solids.iter().any(|(_, t, solid)| (t.translation.x - at.x).abs() < solid.half.x + footprint.x && (t.translation.z - at.z).abs() < solid.half.z + footprint.z);
                 let near_core = at.xz().distance(map.core) < 3.2;
                 if transform.translation.distance(at) > BUILD_REACH || at.y < map.water + 0.15 || blocked || near_core {
                     deny(&mut fx, "CANNOT BUILD THERE");
@@ -217,6 +226,7 @@ pub fn process_commands(
                     Some("LOADOUT APPLIES ON YOUR NEXT SPAWN".to_string())
                 }
             }
+            PlayerCommand::Lobby(_) => continue,
             // Mode actions belong to the mode's director, which reads the same events.
             PlayerCommand::Mode(_) => continue,
         };

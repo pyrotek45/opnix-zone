@@ -66,7 +66,7 @@ pub enum C2S {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum S2C {
-    Welcome { player: u8, rules: Rules },
+    Welcome { player: u8, team: u8, rules: Rules },
     Refused(String),
     Snapshot(Snapshot),
     You(Private),
@@ -85,7 +85,7 @@ mod kind {
     }
 }
 
-/// 15 bytes on the wire.
+/// 17 bytes on the wire.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct EntState {
     pub id: u32,
@@ -94,10 +94,14 @@ pub struct EntState {
     pub sub: u8,
     pub pos: [i16; 3],
     pub yaw: u8,
+    /// Look pitch (players), quantised to i8.
+    pub pitch: i8,
     /// Health fraction, 0..=255.
     pub hp: u8,
     /// Kind-specific byte: attack / shot counters, current weapon.
     pub aux: u8,
+    /// Players: presentation flags (stance, aiming, reloading...).
+    pub flags: u8,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -151,6 +155,14 @@ fn unpack_yaw(yaw: u8) -> f32 {
     yaw as f32 / 256.0 * TAU
 }
 
+fn pack_pitch(pitch: f32) -> i8 {
+    (pitch / 1.5 * 127.0).clamp(-127.0, 127.0) as i8
+}
+
+fn unpack_pitch(pitch: i8) -> f32 {
+    pitch as f32 / 127.0 * 1.5
+}
+
 fn fraction(health: &Health) -> u8 {
     if health.alive() { ((health.fraction() * 255.0) as u8).max(1) } else { 0 }
 }
@@ -192,7 +204,7 @@ impl NetLink {
 pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedicated: bool) -> std::io::Result<MatchSetup> {
     let host = Host::bind(addr)?;
     let link = NetLink::Host(HostLink { host, peers: HashMap::default(), send_timer: 0.0, full_timer: 0.0 });
-    Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0) })
+    Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0 })
 }
 
 /// A connection that is waiting for the host's welcome.
@@ -231,7 +243,7 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
     let events = joining.client.as_mut().map(|client| client.poll()).unwrap_or_default();
     for event in events {
         match event {
-            ClientEvent::Message(S2C::Welcome { player, rules }) => outcome = Some(Ok((player, rules))),
+            ClientEvent::Message(S2C::Welcome { player, team, rules }) => outcome = Some(Ok((player, team, rules))),
             ClientEvent::Message(S2C::Refused(why)) => outcome = Some(Err(why)),
             ClientEvent::Disconnected => outcome = Some(Err("HOST CLOSED THE CONNECTION".into())),
             ClientEvent::Message(_) => {}
@@ -243,12 +255,12 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
     let Some(outcome) = outcome else { return };
     commands.remove_resource::<Joining>();
     match outcome {
-        Ok((player, rules)) => {
+        Ok((player, team, rules)) => {
             // Take the socket out of the resource we are about to drop.
             let name = joining.name.clone();
             let Some(client) = joining.client.take() else { return };
             let link = NetLink::Client(ClientLink { client, player, send_timer: 0.0, entities: HashMap::default() });
-            pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player) });
+            pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player), local_team: team });
             commands.insert_resource(JoinStatus::Idle);
         }
         Err(why) => commands.insert_resource(JoinStatus::Failed(why)),
@@ -265,6 +277,7 @@ pub fn host_receive(
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
     mut players: Query<(Entity, &Player, &mut PlayerInput, &mut Remote)>,
+    everyone: Query<(&Player, Has<crate::bots::Bot>)>,
     mut orders: EventWriter<CommandEvent>,
     mut fx: EventWriter<FxEvent>,
 ) {
@@ -282,12 +295,13 @@ pub fn host_receive(
                     continue;
                 };
                 let name: String = name.chars().filter(|c| !c.is_control()).take(16).collect();
-                let bundle = player_bundle(&content, &rules, &map, id, name.clone());
-                let spawn = crate::player::spawn_point(&map, id, rules.pvp.then_some(id % 2));
+                let team = crate::versus::team_for_newcomer(everyone.iter().map(|(p, bot)| (p.team, bot)));
+                let bundle = player_bundle(&content, &rules, &map, id, name.clone(), team);
+                let spawn = crate::player::spawn_point(&map, id, rules.pvp.then_some(team));
                 commands.spawn((bundle, ids.next(), Remote { pos: spawn, yaw: 0.0 }));
                 link.peers.insert(peer, id);
                 link.full_timer = 0.0;
-                link.host.send(peer, &S2C::Welcome { player: id, rules: rules.clone() });
+                link.host.send(peer, &S2C::Welcome { player: id, team, rules: rules.clone() });
                 fx.write(FxEvent::notice(format!("{name} JOINED")));
             }
             HostEvent::Message(peer, message) => {
@@ -326,7 +340,7 @@ pub fn host_send(
     mut link: ResMut<NetLink>,
     rules: Res<Rules>,
     state: Res<MatchState>,
-    players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, Has<Remote>)>,
+    players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput)>,
     enemies: Query<(&NetId, &Enemy, &Transform, &Health)>,
     shots: Query<(&NetId, &Projectile, &Transform)>,
     structures: Query<(&NetId, &Structure, &Transform, &Health)>,
@@ -367,22 +381,23 @@ pub fn host_send(
 
     let q = Quant::new(&rules);
     let mut entities = Vec::with_capacity(players.iter().len() + enemies.iter().len() + shots.iter().len());
-    for (id, player, transform, health, arsenal, _) in &players {
-        entities.push(EntState { id: id.0, kind: kind::PLAYER, sub: player.id, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), hp: fraction(health), aux: (arsenal.current & 0x3f) | (player.team << 6) });
+    for (id, player, transform, health, arsenal, input) in &players {
+        let pitch = pack_pitch(input.pitch);
+        entities.push(EntState { id: id.0, kind: kind::PLAYER, sub: player.id, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch, hp: fraction(health), aux: (arsenal.current & 0x3f) | (player.team << 6), flags: player.flags });
     }
     for (id, enemy, transform, health) in &enemies {
-        entities.push(EntState { id: id.0, kind: kind::ENEMY, sub: enemy.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), hp: fraction(health), aux: enemy.attacks });
+        entities.push(EntState { id: id.0, kind: kind::ENEMY, sub: enemy.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: enemy.attacks, flags: 0 });
     }
     for (id, shot, transform) in &shots {
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), hp: 255, aux: 0 });
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: 0, flags: 0 });
     }
     if full {
         for (id, structure, transform, health) in &structures {
-            entities.push(EntState { id: id.0, kind: kind::STRUCTURE, sub: structure.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), hp: fraction(health), aux: structure.shots });
+            entities.push(EntState { id: id.0, kind: kind::STRUCTURE, sub: structure.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: structure.shots, flags: 0 });
         }
         for (id, node, transform) in &ores {
             let left = ((node.amount / node.max.max(1.0)) * 255.0).ceil() as u8;
-            entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, hp: left, aux: 0 });
+            entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0 });
         }
     }
     link.host.broadcast(&S2C::Snapshot(Snapshot { full, state: state.clone(), entities }));
@@ -406,7 +421,7 @@ pub fn client_receive(
     mut state: ResMut<MatchState>,
     mut commands: Commands,
     mut local: Query<(&mut Health, &mut Arsenal, &mut Player, &mut Transform), With<LocalPlayer>>,
-    mut remotes: Query<(&mut Remote, Option<&mut Health>, Option<&mut Enemy>, Option<&mut Structure>, Option<&mut OreNode>, Option<&mut PlayerInput>), Without<LocalPlayer>>,
+    mut remotes: Query<(&mut Remote, Option<&mut Health>, Option<&mut Enemy>, Option<&mut Structure>, Option<&mut OreNode>, Option<&mut PlayerInput>, Option<&mut Player>), Without<LocalPlayer>>,
     mut fx: EventWriter<FxEvent>,
     mut next: ResMut<NextState<MatchPhase>>,
     mut was_dead: Local<bool>,
@@ -416,7 +431,7 @@ pub fn client_receive(
     for event in link.client.poll() {
         match event {
             ClientEvent::Message(S2C::Snapshot(snapshot)) => {
-                *state = snapshot.state;
+                *state = snapshot.state.clone();
                 let mut seen = bevy::platform::collections::HashSet::with_capacity(snapshot.entities.len());
                 for e in &snapshot.entities {
                     seen.insert(e.id);
@@ -425,7 +440,7 @@ pub fn client_receive(
                     }
                     let (pos, yaw) = (q.unpack(e.pos), unpack_yaw(e.yaw));
                     if let Some((entity, _)) = link.entities.get(&e.id) {
-                        let Ok((mut remote, health, enemy, structure, ore, input)) = remotes.get_mut(*entity) else { continue };
+                        let Ok((mut remote, health, enemy, structure, ore, input, player)) = remotes.get_mut(*entity) else { continue };
                         *remote = Remote { pos, yaw };
                         if let Some(mut health) = health {
                             health.hp = health.max * e.hp as f32 / 255.0;
@@ -441,6 +456,17 @@ pub fn client_receive(
                         }
                         if let Some(mut input) = input {
                             input.weapon = e.aux & 0x3f;
+                            input.pitch = unpack_pitch(e.pitch);
+                            input.stance = e.flags & crate::player::flags::STANCE;
+                        }
+                        if let Some(mut player) = player {
+                            player.flags = e.flags;
+                            player.team = e.aux >> 6;
+                            if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == player.id) {
+                                if player.name != entry.name {
+                                    player.name = entry.name.clone();
+                                }
+                            }
                         }
                         continue;
                     }
@@ -448,7 +474,12 @@ pub fn client_receive(
                     let hp = e.hp as f32 / 255.0;
                     let entity = match e.kind {
                         kind::PLAYER => commands
-                            .spawn((base, Player::new(e.sub, format!("PLAYER {}", e.sub + 1), e.aux >> 6), PlayerInput { weapon: e.aux & 0x3f, ..default() }, Health { hp: 100.0 * hp, max: 100.0 }))
+                            .spawn((
+                                base,
+                                Player { flags: e.flags, ..Player::new(e.sub, format!("PLAYER {}", e.sub + 1), e.aux >> 6) },
+                                PlayerInput { weapon: e.aux & 0x3f, pitch: unpack_pitch(e.pitch), stance: e.flags & crate::player::flags::STANCE, ..default() },
+                                Health { hp: 100.0 * hp, max: 100.0 },
+                            ))
                             .id(),
                         kind::ENEMY => {
                             let Some(def) = content.enemies.get(e.sub as usize) else { continue };
@@ -464,7 +495,7 @@ pub fn client_receive(
                             structure.shots = e.aux;
                             commands.spawn((base, structure, Health { hp: def.hp * hp, max: def.hp }, Solid { half: crate::structures::oriented_half(def.half, yaw) })).id()
                         }
-                        _ => commands.spawn((base, OreNode { ore: Ore::from_index(e.sub), amount: hp, max: 1.0 }, Solid { half: Vec3::new(0.8, 0.7, 0.8) })).id(),
+                        _ => commands.spawn((base, OreNode { ore: Ore::from_index(e.sub), amount: hp, max: 1.0 })).id(),
                     };
                     link.entities.insert(e.id, (entity, kind::is_static(e.kind)));
                 }
@@ -543,8 +574,8 @@ mod tests {
 
     #[test]
     fn entity_state_is_compact() {
-        let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, hp: 5, aux: 6 };
-        assert_eq!(bincode::serialize(&state).unwrap().len(), 15);
+        let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7 };
+        assert_eq!(bincode::serialize(&state).unwrap().len(), 17);
     }
 
     #[test]
@@ -552,6 +583,9 @@ mod tests {
         let q = Quant { xz: 160.0 / 32_000.0 };
         let p = Vec3::new(-151.37, 3.21, 88.04);
         assert!(q.unpack(q.pack(p)).distance(p) < 0.02);
+        for pitch in [-1.4, 0.0, 0.7] {
+            assert!((unpack_pitch(pack_pitch(pitch)) - pitch).abs() < 0.02);
+        }
         for yaw in [0.0, 1.0, 3.0, 6.0] {
             let back = unpack_yaw(pack_yaw(Quat::from_rotation_y(yaw)));
             assert!((back - yaw).abs() < TAU / 200.0, "{yaw} -> {back}");

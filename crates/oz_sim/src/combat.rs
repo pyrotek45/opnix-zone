@@ -208,6 +208,7 @@ pub fn splash(grid: &Grid, hits: &mut EventWriter<Hit>, at: Vec3, radius: f32, d
 pub fn fly_projectiles(
     time: Res<Time>,
     map: Res<Map>,
+    statics: Res<crate::session::Statics>,
     rules: Res<Rules>,
     grid: Res<Grid>,
     mut state: ResMut<MatchState>,
@@ -232,6 +233,10 @@ pub fn fly_projectiles(
         let mut impact = None;
         if to.y <= map.height(to.x, to.z) || shot.life <= 0.0 {
             impact = Some(to);
+        }
+        if let Some((d, _)) = statics.raycast(from, dir, length) {
+            // Grenades and rockets burst just in front of walls rather than inside them.
+            impact = Some(from + dir * (d - 0.05).max(0.0));
         }
         if shot.owner.is_some() {
             if let Some((d, item)) = grid.raycast(from, dir, length) {

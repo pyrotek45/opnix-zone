@@ -92,26 +92,6 @@ fn prop_model(prop: &Prop) -> BlockModel {
             .cube(Paint::Concrete, [0.0, 1.9 * s, 0.0], [1.4, 3.8 * s, 1.4])
             .cube(Paint::Teal, [0.0, 3.8 * s + 0.08, 0.0], [1.5, 0.16, 1.5])
             .cube(Paint::Glow, [0.0, 2.6 * s, -0.71], [0.5, 0.12, 0.03]),
-        PropKind::Building => {
-            // A solid block with a roof lip, a door and rows of lit windows on every face.
-            let h = prop.half;
-            let wall = [Paint::Concrete, Paint::Rust, Paint::Steel, Paint::Bone, Paint::Teal][((s * 5.0) as usize).min(4)];
-            let mut model = BlockModel::new()
-                .cube(wall, [0.0, h.y, 0.0], [h.x * 2.0, h.y * 2.0, h.z * 2.0])
-                .cube(Paint::Dark, [0.0, h.y * 2.0 + 0.1, 0.0], [h.x * 2.0 + 0.4, 0.2, h.z * 2.0 + 0.4])
-                .cube(Paint::Dark, [h.x * 0.4, 1.4, -h.z - 0.02], [1.1, 2.2, 0.06]);
-            let mut level = 2.3;
-            while level < h.y * 2.0 - 0.6 {
-                let lit = if ((level * 3.0 + s * 10.0) as i32) % 3 == 0 { Paint::Blue } else { Paint::Glow };
-                for side in [-1.0, 1.0] {
-                    model = model
-                        .cube(lit, [0.0, level, side * (h.z + 0.02)], [h.x * 1.4, 0.55, 0.05])
-                        .cube(lit, [side * (h.x + 0.02), level, 0.0], [0.05, 0.55, h.z * 1.4]);
-                }
-                level += 2.2;
-            }
-            model
-        }
         PropKind::Crate => BlockModel::new().cube(Paint::Teal, [0.0, 0.55, 0.0], [1.25, 1.1, 1.25]).cube(Paint::Gold, [0.0, 0.56, 0.636], [0.84, 0.16, 0.035]),
     }
 }
@@ -164,6 +144,14 @@ fn build_scene(
         // Boxy props stay axis-aligned so they match their collision boxes.
         let yaw = if matches!(prop.kind, PropKind::Palm | PropKind::Rock) { prop.yaw } else { 0.0 };
         art.add_model(lit, unlit, &prop_model(prop), Transform::from_translation(prop.pos).with_rotation(Quat::from_rotation_y(yaw)));
+    }
+    // Architecture: every wall, floor, stair and trim, merged with the props of its region.
+    for block in &map.blocks {
+        let at = block.aabb.center;
+        let key = ((at.x / PROP_REGION).floor() as i32, (at.z / PROP_REGION).floor() as i32);
+        let (lit, unlit) = regions.entry(key).or_default();
+        let part = Part { shape: Shape::Cube, paint: block.paint, pos: at, size: block.aabb.half * 2.0, rot: Quat::IDENTITY, anim: Anim::None };
+        art.add_part(if block.paint.unlit() { unlit } else { lit }, &part, Transform::IDENTITY);
     }
     // Foam streaks on the water give the sea some life for free.
     let mut rng = Rng::new(rules.recipe.seed ^ 0xf0a);

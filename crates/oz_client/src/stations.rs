@@ -13,7 +13,7 @@ use crate::{
     ui::{self, Act, ActEvent, Order, Screen, UiDirty},
 };
 use bevy::prelude::*;
-use oz_core::arsenal::{MOD_MAX_LEVEL, SLOTS};
+use oz_core::arsenal::MOD_MAX_LEVEL;
 use oz_sim::{orders::{BUILD_REACH, DRILL_SNAP}, prelude::*, structures::snap_yaw};
 
 const STATION_REACH: f32 = 3.4;
@@ -43,6 +43,10 @@ struct Ghost(u16);
 #[derive(Component)]
 struct GhostMarker;
 
+/// Label for station input; the gunsmith runs after it so one click is handled once.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StationInput;
+
 pub struct StationsPlugin;
 
 impl Plugin for StationsPlugin {
@@ -55,6 +59,7 @@ impl Plugin for StationsPlugin {
                 Update,
                 (find_station, place_structures, station_actions, refresh_when_stale)
                     .chain()
+                    .in_set(StationInput)
                     .in_set(ClientSet::Input)
                     .after(crate::input::ReadDevices)
                     .before(crate::menu::MenuActions)
@@ -297,22 +302,14 @@ pub fn build_station(
                 StationPage::Attachments => {
                     ui::stepper(panel, order, format!("WEAPON   <  {}  >", content.weapons[weapon].name), Act::Weapon(-1), Act::Weapon(1));
                     let owned = arsenal.weapons[weapon];
-                    for (slot, variants) in content.attachments.iter().enumerate().take(5) {
-                        ui::label(panel, SLOTS[slot], 14.0, ui::ACCENT);
-                        panel.spawn(ui::row(6.0)).with_children(|row| {
-                            for (variant, part) in variants.iter().enumerate() {
-                                let text = if owned.equipped[slot] as usize == variant {
-                                    format!("[{}]", part.name)
-                                } else if owned.has_part(slot, variant) {
-                                    part.name.to_string()
-                                } else {
-                                    format!("{} ${}", part.name, part.cost)
-                                };
-                                let command = PlayerCommand::EquipPart { weapon: weapon as u8, slot: slot as u8, variant: variant as u8 };
-                                ui::sized_button(row, order, text, Act::Order(command), None, Val::Auto);
-                            }
-                        });
+                    for (slot, name) in oz_core::arsenal::SLOTS.iter().enumerate() {
+                        let fitted = oz_core::arsenal::options(&content.weapons[weapon], &content.attachments, slot)
+                            .into_iter()
+                            .find(|(i, ..)| *i == owned.equipped[slot] as usize)
+                            .map_or("-", |(_, part, ..)| part);
+                        ui::label(panel, format!("{name:<12} {fitted}"), 14.0, ui::DIM);
                     }
+                    ui::button(panel, order, "OPEN GUNSMITH", Act::OpenGunsmith(weapon as u8, ui::Back::Station { kind, page }));
                 }
                 StationPage::Mods => {
                     ui::stepper(panel, order, format!("WEAPON   <  {}  >", content.weapons[weapon].name), Act::Weapon(-1), Act::Weapon(1));
@@ -356,6 +353,7 @@ pub fn build_station(
                         Phase::Night => format!("NIGHT {} - {} HOSTILES REMAIN", state.day, state.enemies_left),
                         Phase::Won => "VICTORY".into(),
                         Phase::Lost => "THE LINE HAS FALLEN".into(),
+                        Phase::Lobby | Phase::Live => String::new(),
                     };
                     ui::label(panel, phase, 18.0, ui::TEXT);
                     if state.objective_max > 0.0 {

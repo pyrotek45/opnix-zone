@@ -7,6 +7,7 @@
 //! [`ActEvent`] that the owning module handles.
 
 use crate::{ClientSet, fx::PlaySfx, input::Controls};
+use oz_sim::state::LobbyAction;
 use bevy::{ecs::hierarchy::ChildSpawnerCommands, prelude::*};
 use oz_sim::prelude::*;
 
@@ -33,7 +34,20 @@ pub enum Screen {
     Station { kind: u16, page: usize },
     /// Versus class editor.
     Loadout,
+    /// Versus pre-match lobby.
+    Lobby,
+    /// Weapon customisation with a 3D preview.
+    Gunsmith { weapon: u8, slot: u8, from: Back },
+    /// Every robot pose side by side.
+    Lineup,
     GameOver,
+}
+
+/// Where the gunsmith returns to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Back {
+    Loadout,
+    Station { kind: u16, page: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +95,17 @@ pub enum Act {
     // Loadout: which field (0 primary, 1 secondary, 2 perk, 3 gear) and the step.
     Class(u8, i32),
     Deploy,
+    // Gunsmith.
+    OpenGunsmith(u8, Back),
+    GunSlot(u8),
+    Part(u8, u8),
+    // Lobby.
+    Lobby(LobbyAction),
 }
+
+/// The action of the button that currently has focus (hover, keyboard or pad).
+#[derive(Resource, Default, Clone, Debug, PartialEq)]
+pub struct Focused(pub Option<Act>);
 
 #[derive(Event, Clone, Debug)]
 pub struct ActEvent(pub Act);
@@ -115,6 +139,7 @@ impl Plugin for UiKitPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Screen>()
             .init_resource::<Focus>()
+            .init_resource::<Focused>()
             .insert_resource(UiDirty(true))
             .add_event::<ActEvent>()
             .add_systems(Update, (mark_dirty, interact).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices));
@@ -157,6 +182,26 @@ pub fn root<'a>(commands: &'a mut Commands, dim: f32) -> EntityCommands<'a> {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
+            row_gap: Val::Px(8.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.01, 0.02, dim)),
+        GlobalZIndex(10),
+    ))
+}
+
+/// Full-screen container with its content on the left, leaving the right for the showroom.
+pub fn root_left<'a>(commands: &'a mut Commands, dim: f32) -> EntityCommands<'a> {
+    commands.spawn((
+        ScreenRoot,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::FlexStart,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::left(Val::Percent(5.0)),
             row_gap: Val::Px(8.0),
             ..default()
         },
@@ -213,6 +258,13 @@ pub fn sized_button(parent: &mut ChildSpawnerCommands, order: &mut Order, text: 
     parent.spawn((button_node(width), Clickable { act, left, order: order.0 })).with_children(|button| label(button, text, 17.0, TEXT));
 }
 
+/// A button that keeps its place in the focus order but paints itself as selected.
+pub fn chip(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, selected: bool, width: Val) {
+    order.0 += 1;
+    let color = if selected { GOOD } else { TEXT };
+    parent.spawn((button_node(width), Clickable { act, left: None, order: order.0 })).with_children(|button| label(button, text, 15.0, color));
+}
+
 /// A greyed-out row that cannot be focused.
 pub fn disabled(parent: &mut ChildSpawnerCommands, text: impl Into<String>, width: Val) {
     parent
@@ -228,9 +280,13 @@ fn interact(
     changed: Query<(&Interaction, &Clickable), Changed<Interaction>>,
     mut acts: EventWriter<ActEvent>,
     mut sounds: EventWriter<PlaySfx>,
+    mut focused: ResMut<Focused>,
 ) {
     let mut orders: Vec<u32> = buttons.iter().map(|(_, clickable, ..)| clickable.order).collect();
     if orders.is_empty() {
+        if focused.0.is_some() {
+            focused.0 = None;
+        }
         return;
     }
     orders.sort_unstable();
@@ -275,11 +331,15 @@ fn interact(
         acts.write(ActEvent(Act::Tab(nav.tab_next as i32 - nav.tab_prev as i32)));
     }
     if fired {
-        sounds.write(PlaySfx { sfx: Sfx::UiAccept, at: None });
+        sounds.write(PlaySfx::ui(Sfx::UiAccept));
     } else if now != before {
-        sounds.write(PlaySfx { sfx: Sfx::UiMove, at: None });
+        sounds.write(PlaySfx::ui(Sfx::UiMove));
     }
     focus.0 = now;
+    let current = buttons.iter().find(|(_, clickable, ..)| clickable.order == orders[now]).map(|(_, clickable, ..)| clickable.act.clone());
+    if focused.0 != current {
+        focused.0 = current;
+    }
 
     for (_, clickable, mut background, mut border) in &mut buttons {
         let focused = clickable.order == orders[now];

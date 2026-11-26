@@ -13,23 +13,29 @@
 //! * [`view`] - first-person camera, low-resolution render target, viewmodel.
 //! * [`fx`] - tracers, particles and explosions.
 //! * [`ui`] - a small widget kit with mouse, keyboard and gamepad focus.
-//! * [`menu`], [`stations`], [`hud`] - the screens built from that kit.
+//! * [`avatar`] - the TV-headed robot operators and their animation rig.
+//! * [`showroom`] - an off-screen stage behind menus, lobby and gunsmith.
+//! * [`menu`], [`lobby`], [`loadout`], [`gunsmith`], [`stations`], [`hud`] - the screens.
 //! * [`retro`] - the ordered-dither post-process.
 //! * [`audio`] - procedural sound playback.
 
 pub mod actors;
 pub mod art;
+pub mod avatar;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod fx;
+pub mod gunsmith;
 pub mod hud;
 pub mod input;
 pub mod launch;
 pub mod loadout;
+pub mod lobby;
 pub mod menu;
 pub mod retro;
 pub mod scene;
 pub mod settings;
+pub mod showroom;
 pub mod stations;
 pub mod ui;
 pub mod view;
@@ -82,6 +88,8 @@ impl Plugin for ClientPlugin {
             stations::StationsPlugin,
             hud::HudPlugin,
             loadout::LoadoutPlugin,
+        ))
+        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin,
         ));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);

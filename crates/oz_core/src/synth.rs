@@ -105,6 +105,11 @@ pub fn render(sfx: Sfx) -> Vec<f32> {
                 add(Voice { seconds: 0.30, freq: (90.0, 40.0), decay: 5.0, ..B }, 0.0);
             }
             5 => { add(Voice { seconds: 0.50, freq: (150.0, 50.0), noise: 0.9, bright: 0.2, decay: 4.0, attack: 0.02, ..B }, 0.0); }
+            8 => {
+                // Sniper: a hard supersonic crack with a long rolling tail.
+                add(Voice { seconds: 0.5, freq: (900.0, 60.0), tone: 0.5, noise: 1.3, bright: 0.7, decay: 9.0, gain: 1.0, ..B }, 0.0);
+                add(Voice { seconds: 0.9, freq: (70.0, 30.0), noise: 0.5, bright: 0.08, decay: 3.0, gain: 0.7, ..B }, 0.0);
+            }
             6 => { add(Voice { seconds: 0.09, freq: (1250.0, 1180.0), tone: 0.35, square: true, noise: 0.12, bright: 0.9, decay: 2.0, gain: 0.3, ..B }, 0.0); }
             _ => { add(Voice { seconds: 0.13, freq: (300.0, 90.0), tone: 0.8, square: true, noise: 0.5, decay: 8.0, gain: 0.5, ..B }, 0.0); }
         },
@@ -174,6 +179,7 @@ pub fn render(sfx: Sfx) -> Vec<f32> {
     // Gunshots get a chest thump and everything loud gets a slap-back echo, so
     // the island sounds like a place rather than a sample player.
     match sfx {
+        Sfx::Shot(8) => echo(&mut out, &[(0.16, 0.35), (0.38, 0.2), (0.7, 0.1)]),
         Sfx::Shot(kind) if kind != 6 => {
             Voice { seconds: 0.14, freq: (150.0, 48.0), decay: 6.0, gain: 0.5, ..B }.mix_into(&mut out, 0.0, 1);
             echo(&mut out, &[(0.085, 0.24), (0.19, 0.11)]);
@@ -270,7 +276,7 @@ mod tests {
 
     #[test]
     fn every_sound_renders_audibly() {
-        let mut all: Vec<Sfx> = (0..8).map(Sfx::Shot).collect();
+        let mut all: Vec<Sfx> = (0..9).map(Sfx::Shot).collect();
         all.extend([Sfx::Reload, Sfx::DryFire, Sfx::Hit, Sfx::Kill, Sfx::Explosion, Sfx::EnemyShot, Sfx::EnemyDeath, Sfx::Hurt, Sfx::UiMove,
             Sfx::UiAccept, Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Land, Sfx::Swap, Sfx::Growl, Sfx::Surf, Sfx::NightDrone]);
         for sfx in all {

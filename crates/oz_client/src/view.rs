@@ -24,8 +24,9 @@ use bevy::{
     },
     window::PrimaryWindow,
 };
-use oz_core::arsenal::{part_model, resolve};
+use oz_core::arsenal::{Action, GunClass, ReloadStyle, SLOT_COUNT, assemble, resolve};
 use oz_sim::prelude::*;
+use std::f32::consts::PI;
 
 pub const BASE_FOV: f32 = 70.0;
 const GUN_POS: Vec3 = Vec3::new(0.21, -0.19, -0.50);
@@ -82,7 +83,26 @@ pub struct ViewState {
     last_weapon: Option<u8>,
     last_shots: u32,
     /// (weapon, equipped parts) currently shown in the hands.
-    shown: Option<(u8, [u8; 5])>,
+    shown: Option<(u8, [u8; SLOT_COUNT])>,
+    /// Smoothed eye height (crouching and going prone glide).
+    eye: f32,
+    /// 1 right after a shot, decaying over the weapon's cycle time (bolt / pump / slide animation).
+    cycle: f32,
+    /// Seconds left of the weapon inspect animation.
+    pub inspect: f32,
+    /// Scope overlay strength, 0..1 (0 = none, the HUD draws it).
+    pub scoped: f32,
+    pub scope_kind: u8,
+}
+
+/// The separately animated pieces of the viewmodel.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum GunGroup {
+    Body,
+    Mag,
+    Slide,
+    /// A round held in the hand during shell-by-shell reloads.
+    Shell,
 }
 
 pub struct ViewPlugin;
@@ -205,19 +225,27 @@ fn follow_player(
             view.flash = 0.05;
             view.shake += def.recoil * 0.1;
             view.kick = (view.kick + def.recoil * 0.9).min(2.5);
+            view.cycle = 1.0;
         }
     }
+    if controls.inspect && arsenal.reload <= 0.0 && view.ads < 0.1 {
+        view.inspect = 2.2;
+    }
+    if input.held(buttons::FIRE) || input.held(buttons::AIM) || arsenal.reload > 0.0 {
+        view.inspect = 0.0;
+    }
+    view.inspect = (view.inspect - dt).max(0.0);
     if view.last_weapon != Some(arsenal.current) {
         if view.last_weapon.is_some() {
             view.swap = 1.0;
-            sounds.write(crate::fx::PlaySfx { sfx: Sfx::Swap, at: None });
+            sounds.write(crate::fx::PlaySfx::new(Sfx::Swap, None));
         }
         view.last_weapon = Some(arsenal.current);
     }
     // Landing: dip the camera and thump in proportion to the fall.
     if mover.grounded && !view.was_grounded && view.fall_speed < -4.5 {
         view.land = (-view.fall_speed / 9.0).min(1.3);
-        sounds.write(crate::fx::PlaySfx { sfx: Sfx::Land, at: None });
+        sounds.write(crate::fx::PlaySfx::new(Sfx::Land, None));
     }
     view.was_grounded = mover.grounded;
     view.fall_speed = mover.vertical;
@@ -242,24 +270,45 @@ fn follow_player(
     if step != view.step {
         view.step = step;
         if walking > 0.3 && health.alive() {
-            sounds.write(crate::fx::PlaySfx { sfx: Sfx::Step, at: None });
+            sounds.write(crate::fx::PlaySfx::new(Sfx::Step, None));
         }
     }
 
+    let stats = content.weapons.get(index).zip(arsenal.weapons.get(index)).map(|(def, state)| resolve(def, state, &content.attachments));
+    let interval = content.weapons.get(index).map_or(0.2, |def| def.interval.max(0.05));
+    view.cycle = (view.cycle - dt / interval).max(0.0);
     let aiming = input.held(buttons::AIM) && arsenal.reload <= 0.0 && health.alive();
-    view.ads += (aiming as u8 as f32 - view.ads) * (1.0 - (-dt * 16.0).exp());
+    let handling = stats.map_or(1.0, |s| s.handling);
+    view.ads += (aiming as u8 as f32 - view.ads) * (1.0 - (-dt * 15.0 * handling).exp());
+    view.scope_kind = stats.map_or(0, |s| s.scope);
+    view.scoped = if view.scope_kind > 0 { ((view.ads - 0.8) / 0.2).clamp(0.0, 1.0) } else { 0.0 };
 
-    let ads_fov = content.weapons.get(index).zip(arsenal.weapons.get(index)).map_or(BASE_FOV, |(def, state)| resolve(def, state, &content.attachments).ads_fov);
+    let ads_fov = stats.map_or(BASE_FOV, |s| s.ads_fov);
     if let Projection::Perspective(perspective) = &mut *projection {
         perspective.fov = (BASE_FOV + (ads_fov - BASE_FOV) * view.ads + 5.0 * view.sprint * (1.0 - view.ads) + view.kick * 0.9).to_radians();
     }
 
     let bob = Vec3::new(0.0, (view.bob * 2.0).sin() * 0.035 * walking * (1.0 - view.ads), 0.0);
-    let (eye, roll) = if health.alive() { (EYE, 0.0) } else { (0.45, 0.5) };
+    let wanted_eye = if health.alive() { input.eye() } else { 0.45 };
+    if view.eye == 0.0 {
+        view.eye = wanted_eye;
+    }
+    view.eye += (wanted_eye - view.eye) * (1.0 - (-dt * 10.0).exp());
+    let (eye, roll) = (view.eye, if health.alive() { 0.0 } else { 0.5 });
     let t = time.elapsed_secs();
     let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
     camera.translation = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob;
     camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x, input.pitch + view.recoil * 0.012 + shake.y, roll + shake.z);
+}
+
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 0 -> 1 -> 0 over `[a, b]`.
+fn bump(t: f32, a: f32, b: f32) -> f32 {
+    if t <= a || t >= b { 0.0 } else { ((t - a) / (b - a) * PI).sin() }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -271,8 +320,9 @@ fn viewmodel(
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
     players: Query<(&Arsenal, &Health, &Mover), With<LocalPlayer>>,
-    mut gun: Query<(Entity, &mut Transform, &mut Visibility), (With<GunRoot>, Without<MuzzleFlash>)>,
-    mut flash: Query<(&mut Transform, &mut Visibility), (With<MuzzleFlash>, Without<GunRoot>)>,
+    mut gun: Query<(Entity, &mut Transform, &mut Visibility), (With<GunRoot>, Without<MuzzleFlash>, Without<GunGroup>)>,
+    mut groups: Query<(&GunGroup, &mut Transform, &mut Visibility), (Without<GunRoot>, Without<MuzzleFlash>)>,
+    mut flash: Query<(&mut Transform, &mut Visibility), (With<MuzzleFlash>, Without<GunRoot>, Without<GunGroup>)>,
 ) {
     let (Ok((arsenal, health, mover)), Ok((root, mut transform, mut visibility))) = (players.single(), gun.single_mut()) else { return };
     let index = arsenal.current as usize;
@@ -283,38 +333,123 @@ fn viewmodel(
     let signature = (arsenal.current, state.equipped);
     if view.shown != Some(signature) {
         view.shown = Some(signature);
-        let mut model = def.model.clone();
-        for slot in 0..5 {
-            model = model.merged(&part_model(slot, state.equipped[slot] as usize, def.length), [0.0; 3]);
-        }
+        let mut model = assemble(def, &state.equipped);
         for (slot, installed) in state.mods.iter().enumerate() {
             if let Some((kind, _)) = installed {
-                model = model.cube(kind.paint(), [-0.11, 0.02 + 0.05 * slot as f32, -0.2], [0.03, 0.035, 0.12]);
+                model = model.cube(kind.paint(), [-0.07, 0.02 + 0.045 * slot as f32, -0.16], [0.025, 0.03, 0.1]);
             }
         }
-        let baked = art.bake(&model, &mut meshes);
+        let shell = BlockModel::new().cylinder(Paint::Red, [0.0, 0.0, 0.0], [0.035, 0.09, 0.035]).rotated([90.0, 0.0, 0.0]).cylinder(Paint::Gold, [0.0, 0.0, 0.05], [0.037, 0.02, 0.037]).rotated([90.0, 0.0, 0.0]);
+        let pieces = [
+            (GunGroup::Body, model.filtered(|a| !matches!(a, Anim::Mag | Anim::Slide))),
+            (GunGroup::Mag, model.filtered(|a| a == Anim::Mag)),
+            (GunGroup::Slide, model.filtered(|a| a == Anim::Slide)),
+            (GunGroup::Shell, shell),
+        ];
         commands.entity(root).despawn_related::<Children>();
-        commands.entity(root).with_children(|parent| {
+        for (group, piece) in pieces {
+            let baked = art.bake(&piece, &mut meshes);
+            let holder = commands.spawn((group, Transform::IDENTITY, Visibility::Inherited, ChildOf(root))).id();
             for (mesh, material) in [(&baked.lit, &art.lit), (&baked.unlit, &art.unlit)] {
                 if let Some(mesh) = mesh {
-                    parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), NotShadowCaster));
+                    commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), NotShadowCaster, ChildOf(holder)));
                 }
             }
-        });
+        }
     }
 
-    *visibility = if health.alive() { Visibility::Inherited } else { Visibility::Hidden };
+    // A magnified scope fills the view: hide the gun behind the overlay.
+    *visibility = if health.alive() && view.scoped < 0.5 { Visibility::Inherited } else { Visibility::Hidden };
     let t = time.elapsed_secs();
-    let reload = if arsenal.reload > 0.0 { (arsenal.reload / stats.reload * std::f32::consts::PI).sin() } else { 0.0 };
     let walking = (mover.speed / 5.4).min(1.6) * (1.0 - view.ads * 0.94);
-    // Line the sights (or the optic) up with the centre of the screen.
-    let ads_pos = Vec3::new(0.0, -0.19 * GUN_SCALE, -0.40);
+
+    // Reload choreography, chosen by the weapon's reload style.
+    let reloading = arsenal.reload > 0.0 && arsenal.reload_total > 0.0;
+    let p = if reloading { 1.0 - arsenal.reload / arsenal.reload_total } else { 0.0 };
+    let (mut tilt, mut dip, mut roll, mut mag, mut mag_hidden, mut slide, mut shell) = (0.0, 0.0, 0.0, Vec3::ZERO, false, Vec3::ZERO, None);
+    if reloading {
+        match def.reload_style {
+            ReloadStyle::Magazine | ReloadStyle::Belt => {
+                let belt = def.reload_style == ReloadStyle::Belt;
+                let hold = ease(p / 0.15) * (1.0 - ease((p - 0.85) / 0.15));
+                tilt = -0.45 * hold * if belt { -0.6 } else { 1.0 };
+                roll = 0.4 * hold;
+                dip = 0.08 * hold;
+                // Out with the old: drop and fall away; in with the new: rise into the well and slap home.
+                if p < 0.35 {
+                    mag = Vec3::new(0.0, -0.6 * (p / 0.35).powi(2), 0.05 * p);
+                } else if p < 0.45 {
+                    mag_hidden = true;
+                } else if p < 0.7 {
+                    let rise = ease((p - 0.45) / 0.25);
+                    mag = Vec3::new(0.08 * (1.0 - rise), -0.45 * (1.0 - rise), 0.0);
+                }
+                dip -= 0.03 * bump(p, 0.68, 0.76);
+                if arsenal.reload_empty {
+                    slide = Vec3::Z * 0.07 * bump(p, 0.8, 0.95);
+                }
+            }
+            ReloadStyle::Single => {
+                tilt = -0.2;
+                roll = 0.55;
+                dip = 0.05 + 0.04 * bump(p, 0.45, 0.85);
+                // A round travels from below into the loading port.
+                let k = ease((p - 0.1) / 0.6);
+                shell = Some(Vec3::new(0.06 * (1.0 - k), -0.22 + 0.17 * k, -0.18 + 0.05 * k));
+            }
+        }
+    }
+    // Working the action after a shot.
+    let c = 1.0 - view.cycle;
+    if view.cycle > 0.0 {
+        match def.action {
+            Action::Bolt => {
+                let lift = bump(c, 0.05, 0.9);
+                slide = Vec3::new(0.0, 0.03 * lift, 0.09 * bump(c, 0.2, 0.75));
+                roll += 0.18 * lift;
+                dip += 0.02 * lift;
+            }
+            Action::Pump => {
+                slide = Vec3::Z * 0.12 * bump(c, 0.15, 0.85);
+                tilt += 0.06 * bump(c, 0.15, 0.85);
+            }
+            _ if def.class == GunClass::Pistol => slide = Vec3::Z * 0.06 * bump(c, 0.0, 0.6),
+            _ => slide = Vec3::Z * 0.03 * bump(c, 0.0, 0.5),
+        }
+    }
+    // Inspect: turn the gun to show it off, then flip it back.
+    let inspect = if view.inspect > 0.0 { 1.0 - view.inspect / 2.2 } else { 0.0 };
+    let show = bump(inspect, 0.0, 1.0);
+    let flip = bump(inspect, 0.35, 0.75);
+
+    let ads_pos = Vec3::new(0.0, -stats.sight * GUN_SCALE, -0.40);
+    let sprint = view.sprint * (1.0 - view.ads);
     transform.translation = GUN_POS.lerp(ads_pos, view.ads)
-        + Vec3::new(view.bob.sin() * 0.018 * walking + view.sway.x * 0.5, (view.bob * 2.0).sin() * 0.016 * walking - reload * 0.2 - view.swap * 0.22 - view.land * 0.05 - view.sway.y * 0.5 + (t * 1.3).sin() * 0.003, view.recoil * 0.05);
-    transform.rotation = Quat::from_rotation_x(view.recoil * 0.07 - reload * 0.65 - view.swap * 0.5) * Quat::from_rotation_z(reload * 0.26 + view.sway.x * 1.6);
+        + Vec3::new(
+            view.bob.sin() * 0.018 * walking + view.sway.x * 0.5 - 0.06 * show + 0.04 * sprint,
+            (view.bob * 2.0).sin() * 0.016 * walking - dip - view.swap * 0.22 - view.land * 0.05 - view.sway.y * 0.5 + (t * 1.3).sin() * 0.003 + 0.05 * show - 0.06 * sprint,
+            view.recoil * 0.05 + 0.04 * sprint,
+        );
+    transform.rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint)
+        * Quat::from_rotation_x(view.recoil * 0.07 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip)
+        * Quat::from_rotation_z(roll + view.sway.x * 1.6 + 1.2 * flip + 0.25 * sprint);
+
+    for (group, mut piece, mut seen) in &mut groups {
+        let (offset, visible) = match group {
+            GunGroup::Body => (Vec3::ZERO, true),
+            GunGroup::Mag => (mag, !mag_hidden),
+            GunGroup::Slide => (slide, true),
+            GunGroup::Shell => (shell.unwrap_or(Vec3::ZERO), shell.is_some()),
+        };
+        piece.translation = offset;
+        let wanted = if visible { Visibility::Inherited } else { Visibility::Hidden };
+        if *seen != wanted {
+            *seen = wanted;
+        }
+    }
 
     if let Ok((mut flash_transform, mut flash_visibility)) = flash.single_mut() {
-        let lit = view.flash > 0.0 && health.alive() && def.mag > 0;
+        let lit = view.flash > 0.0 && health.alive() && def.mag > 0 && view.scoped < 0.5 && !stats.quiet;
         *flash_visibility = if lit { Visibility::Inherited } else { Visibility::Hidden };
         flash_transform.translation = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.08) * GUN_SCALE);
         flash_transform.scale = Vec3::new(0.06, 0.06, 0.15) * (0.7 + view.flash * 14.0);

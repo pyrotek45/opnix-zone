@@ -18,8 +18,6 @@ pub struct Models {
     pub(crate) structures: Vec<Baked>,
     stations: Vec<Baked>,
     ore: Vec<Baked>,
-    /// One operator model per team colour.
-    avatars: Vec<Baked>,
 }
 
 /// Animation state on a model root.
@@ -59,24 +57,12 @@ fn ore_model(ore: Ore) -> BlockModel {
         .shard(glow, [-0.36, 0.95, -0.2], [0.09, 0.15, 0.09])
 }
 
-fn avatar_model(team: Paint) -> BlockModel {
-    BlockModel::new()
-        .pair(Shape::Cube, Paint::Dark, [0.16, 0.42, 0.0], [0.2, 0.84, 0.24], Some(0.0))
-        .cube(team, [0.0, 1.15, 0.0], [0.56, 0.66, 0.32])
-        .cube(Paint::Gold, [0.0, 1.2, -0.17], [0.3, 0.16, 0.03])
-        .cube(Paint::Bone, [0.0, 1.66, 0.0], [0.3, 0.3, 0.3])
-        .cube(Paint::Blue, [0.0, 1.68, -0.155], [0.24, 0.1, 0.02])
-        .pair(Shape::Cube, Paint::Dark, [0.36, 1.2, -0.12], [0.14, 0.5, 0.4], None)
-        .cube(Paint::Metal, [0.2, 1.22, -0.5], [0.1, 0.12, 0.7])
-}
-
 fn bake_models(content: Res<Content>, art: Res<Art>, mut meshes: ResMut<Assets<Mesh>>, mut models: ResMut<Models>) {
     *models = Models {
         enemies: content.enemies.iter().map(|e| art.bake(&e.model, &mut meshes)).collect(),
         structures: content.structures.iter().map(|s| art.bake(&s.model, &mut meshes)).collect(),
         stations: content.stations.iter().map(|s| art.bake(&s.model, &mut meshes)).collect(),
         ore: Ore::ALL.into_iter().map(|ore| art.bake(&ore_model(ore), &mut meshes)).collect(),
-        avatars: [Paint::Teal, Paint::Coral].into_iter().map(|team| art.bake(&avatar_model(team), &mut meshes)).collect(),
     };
 }
 
@@ -91,7 +77,6 @@ fn attach(
     stations: Query<(Entity, &Station), Added<Station>>,
     ores: Query<(Entity, &OreNode), Added<OreNode>>,
     shots: Query<(Entity, &Projectile), Added<Projectile>>,
-    avatars: Query<(Entity, &Transform, &Player), (Added<Player>, Without<LocalPlayer>)>,
 ) {
     for (entity, enemy, transform) in &enemies {
         let Some(baked) = models.enemies.get(enemy.kind as usize) else { continue };
@@ -122,10 +107,6 @@ fn attach(
                 NotShadowCaster,
             ));
         });
-    }
-    for (entity, transform, player) in &avatars {
-        art.spawn(&mut commands, entity, &models.avatars[(player.team as usize).min(1)]);
-        commands.entity(entity).insert(Motion { last: transform.translation, stride: 0.22, ..default() });
     }
 }
 
@@ -167,7 +148,7 @@ fn animate_parts(time: Res<Time>, roots: Query<&Motion>, mut parts: Query<(&Chil
                 let kick = roots.get(child_of.parent()).map_or(0.0, |motion| motion.kick);
                 transform.translation = part.base.translation + Vec3::Z * 0.22 * kick;
             }
-            Anim::None | Anim::Leg { .. } => {}
+            Anim::None | Anim::Leg { .. } | Anim::Mag | Anim::Slide => {}
         }
     }
 }

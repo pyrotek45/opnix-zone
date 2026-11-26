@@ -26,6 +26,18 @@ pub struct Particle {
 pub struct PlaySfx {
     pub sfx: Sfx,
     pub at: Option<Vec3>,
+    pub volume: f32,
+}
+
+impl PlaySfx {
+    pub fn new(sfx: Sfx, at: Option<Vec3>) -> Self {
+        Self { sfx, at, volume: 1.0 }
+    }
+
+    /// A non-positional interface sound.
+    pub fn ui(sfx: Sfx) -> Self {
+        Self::new(sfx, None)
+    }
 }
 
 pub struct FxPlugin;
@@ -96,14 +108,16 @@ fn spawn_effects(
     let mut fx = Spawner { commands: &mut commands, art: &art, rng, budget: MAX_PARTICLES.saturating_sub(particles.iter().len()) };
     for event in events.read() {
         match event {
-            FxEvent::Shot { by, sound, from, to, beam } => {
+            FxEvent::Shot { by, sound, from, to, beam, tracer, quiet } => {
                 if *beam {
                     fx.streak(*from, *to, 0.035, Paint::Aether, 0.11);
                     fx.burst(*to, 1, &[Paint::Aether, Paint::Spark], 2.0, 0.06, 0.25);
                 } else {
                     // Our own tracers start a little ahead so they do not fill the screen.
                     let start = if *by == me { *from + (*to - *from).normalize_or_zero() * 0.6 } else { *from };
-                    fx.streak(start, *to, 0.022, if *by == 255 { Paint::Blue } else { Paint::Glow }, 0.055);
+                    // Suppressed shots leave faint tracers; special ammo shows its colour.
+                    let width = if *quiet { 0.012 } else { 0.022 };
+                    fx.streak(start, *to, width, if *by == 255 { Paint::Blue } else { *tracer }, 0.055);
                     fx.burst(*to, 3, &[Paint::Spark, Paint::Dark], 3.5, 0.07, 0.3);
                     // A hot flash where the round lands.
                     let size = Vec3::splat(0.07);
@@ -116,45 +130,45 @@ fn spawn_effects(
                         fx.particle(Shape::Cube, Paint::Gold, Transform::from_translation(port).with_scale(size), Particle { velocity, gravity: 9.8, life: 0.6, initial: 0.6, size, grow: 0.0 });
                     }
                 }
-                sounds.write(PlaySfx { sfx: Sfx::Shot(*sound), at: (*by != me).then_some(*from) });
+                sounds.write(PlaySfx { volume: if *quiet { 0.3 } else { 1.0 }, ..PlaySfx::new(Sfx::Shot(*sound), (*by != me).then_some(*from)) });
             }
             FxEvent::Explosion { at, radius } => {
                 let size = Vec3::splat(radius * 0.25);
                 fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(*at).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.22, initial: 0.22, size, grow: 3.2 });
                 fx.burst(*at, 22, &[Paint::Glow, Paint::Spark, Paint::Dark, Paint::Rust], 9.0, 0.22, 0.9);
                 view.shake += rumble(*at, radius * 0.45);
-                sounds.write(PlaySfx { sfx: Sfx::Explosion, at: Some(*at) });
+                sounds.write(PlaySfx::new(Sfx::Explosion, Some(*at)));
             }
             FxEvent::EnemyDied { at, kind } => {
                 let (gibs, big) = content.enemies.get(*kind as usize).map_or((Paint::Steel, 1.0), |def| (def.gibs, def.radius / 0.6));
                 fx.burst(*at, (8.0 * big) as usize, &[gibs, Paint::Dark, Paint::Glow], 4.0 + big, 0.14 * big, 0.7);
-                sounds.write(PlaySfx { sfx: Sfx::EnemyDeath, at: Some(*at) });
+                sounds.write(PlaySfx::new(Sfx::EnemyDeath, Some(*at)));
             }
             FxEvent::StructureLost { at } => {
                 fx.burst(*at, 18, &[Paint::Metal, Paint::Dark, Paint::Glow], 6.0, 0.2, 0.9);
-                sounds.write(PlaySfx { sfx: Sfx::Explosion, at: Some(*at) });
+                sounds.write(PlaySfx::new(Sfx::Explosion, Some(*at)));
             }
             FxEvent::Arc { from, to } => fx.streak(*from, *to, 0.05, Paint::Blue, 0.09),
             FxEvent::Mined { at, ore } => {
                 let paint = [Paint::Iron, Paint::Copper, Paint::Aether][(*ore as usize).min(2)];
                 fx.burst(*at, 3, &[paint, Paint::Spark], 2.5, 0.09, 0.5);
-                sounds.write(PlaySfx { sfx: Sfx::OreGet, at: Some(*at) });
+                sounds.write(PlaySfx::new(Sfx::OreGet, Some(*at)));
             }
             FxEvent::HitMarker { player, kill } if *player == me => {
                 view.hit = 0.14;
                 view.kill = *kill;
-                sounds.write(PlaySfx { sfx: if *kill { Sfx::Kill } else { Sfx::Hit }, at: None });
+                sounds.write(PlaySfx::new(if *kill { Sfx::Kill } else { Sfx::Hit }, None));
             }
             FxEvent::Hurt { player } if *player == me => {
                 view.hurt = 1.0;
                 view.shake += 0.7;
-                sounds.write(PlaySfx { sfx: Sfx::Hurt, at: None });
+                sounds.write(PlaySfx::new(Sfx::Hurt, None));
             }
             FxEvent::Sound { sfx, at } => {
-                sounds.write(PlaySfx { sfx: *sfx, at: *at });
+                sounds.write(PlaySfx::new(*sfx, *at));
             }
             FxEvent::Cue { to, sfx } if *to == me => {
-                sounds.write(PlaySfx { sfx: *sfx, at: None });
+                sounds.write(PlaySfx::new(*sfx, None));
             }
             FxEvent::Notice { to, text } if *to == 255 || *to == me => notices.push(text.clone()),
             _ => {}
@@ -172,7 +186,7 @@ fn night_calls(time: Res<Time>, state: Res<MatchState>, enemies: Query<&Transfor
     *wait = 1.8 + (*pick >> 24) as f32 / 255.0 * 3.5;
     let count = enemies.iter().len();
     if let Some(caller) = enemies.iter().nth(*pick as usize % count.max(1)) {
-        sounds.write(PlaySfx { sfx: Sfx::Growl, at: Some(caller.translation) });
+        sounds.write(PlaySfx::new(Sfx::Growl, Some(caller.translation)));
     }
 }
 

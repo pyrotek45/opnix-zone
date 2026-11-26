@@ -4,22 +4,27 @@
 use crate::{
     combat::{Grid, Hit, Projectile, Solid, ray_box, ray_sphere, spawn_projectile, splash},
     net::NetIds,
-    player::{Arsenal, EYE, Health, Player, PlayerInput, buttons, damage_player, perk},
-    session::{Content, Map},
+    player::{Arsenal, Health, Player, PlayerInput, buttons, damage_player, perk, stance},
+    session::{Content, Map, Statics},
     sim_dt,
-    state::{FxEvent, MatchState, Rules, SimRng},
-    structures::OreNode,
+    state::{FxEvent, MatchState, Phase, Rules, SimRng},
+    structures::{OreNode, Structure},
 };
 use bevy::prelude::*;
 use oz_core::{
-    arsenal::{FireMode, Resolved, WeaponDef, resolve},
+    arsenal::{Action, FireMode, ReloadStyle, Resolved, WeaponDef, WeaponState, resolve},
+    collide::StaticWorld,
     content::{GearKind, PerkEffect, ShotLook, UpgradeEffect},
     synth::Sfx,
 };
 
-const SWAP_TIME: f32 = 0.28;
+const SWAP_TIME: f32 = 0.3;
 const BEAM_RANGE: f32 = 7.5;
 const HEADSHOT: f32 = 1.6;
+/// Thickest wall a piercing round can punch through, and what it keeps.
+const PIERCE_DEPTH: f32 = 0.65;
+const PIERCE_KEEP: f32 = 0.6;
+const BURN_SECONDS: f32 = 3.0;
 
 /// Where shots leave the gun, relative to the eye, so tracers line up with the viewmodel.
 fn muzzle(eye: Vec3, look: Quat, length: f32) -> Vec3 {
@@ -32,23 +37,85 @@ struct Body {
     id: u8,
     team: u8,
     feet: Vec3,
+    stance: u8,
+    yaw: f32,
     name: String,
 }
 
 impl Body {
+    /// Hit spheres (centre, radius, is_head) for the current stance.
+    fn spheres(&self) -> [(Vec3, f32, bool); 3] {
+        let up = |y: f32| self.feet + Vec3::Y * y;
+        match self.stance {
+            stance::CROUCH => [(up(1.08), 0.24, true), (up(0.72), 0.42, false), (up(0.3), 0.36, false)],
+            stance::PRONE => {
+                let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
+                [(up(0.32) + forward * 0.62, 0.24, true), (up(0.26) + forward * 0.05, 0.36, false), (up(0.2) - forward * 0.6, 0.32, false)]
+            }
+            _ => [(up(1.62), 0.24, true), (up(1.05), 0.45, false), (up(0.45), 0.38, false)],
+        }
+    }
+
     /// Distance along the ray to this body, and whether it was a headshot.
     fn hit(&self, origin: Vec3, dir: Vec3) -> Option<(f32, bool)> {
-        let head = ray_sphere(origin, dir, self.feet + Vec3::Y * 1.62, 0.24).map(|d| (d, true));
-        let torso = ray_sphere(origin, dir, self.feet + Vec3::Y * 1.0, 0.5).map(|d| (d, false));
-        let legs = ray_sphere(origin, dir, self.feet + Vec3::Y * 0.4, 0.4).map(|d| (d, false));
-        [head, torso, legs].into_iter().flatten().min_by(|a, b| a.0.total_cmp(&b.0))
+        self.spheres().into_iter().filter_map(|(center, radius, head)| ray_sphere(origin, dir, center, radius).map(|d| (d, head))).min_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    fn chest(&self) -> Vec3 {
+        self.spheres()[1].0
     }
 }
+
+/// How far a ray gets before something solid stops it.
+pub fn obstruction<F: bevy::ecs::query::QueryFilter>(map: &Map, statics: &StaticWorld, solids: &Query<(&Transform, &Solid), F>, origin: Vec3, dir: Vec3, range: f32) -> f32 {
+    let mut best = map.raycast(origin, dir, range);
+    if let Some((d, _)) = statics.raycast(origin, dir, best) {
+        best = best.min(d);
+    }
+    for (transform, solid) in solids {
+        if let Some(d) = ray_box(origin, dir, solid.center(transform), solid.half, best) {
+            best = best.min(d);
+        }
+    }
+    best
+}
+
+/// Like [`obstruction`], but a piercing round may pass one thin wall.
+/// Returns (reach, damage multiplier at the target).
+fn reach_with_pierce<F: bevy::ecs::query::QueryFilter>(map: &Map, statics: &StaticWorld, solids: &Query<(&Transform, &Solid), F>, origin: Vec3, dir: Vec3, range: f32, pierce: bool) -> (f32, f32) {
+    let first = obstruction(map, statics, solids, origin, dir, range);
+    if !pierce || first >= range {
+        return (first, 1.0);
+    }
+    match statics.raycast(origin, dir, first + 0.01) {
+        Some((d, index)) if (d - first).abs() < 0.02 && statics.thickness(index, origin, dir) < PIERCE_DEPTH => {
+            let exit = d + statics.thickness(index, origin, dir) + 0.02;
+            let beyond = obstruction(map, statics, solids, origin + dir * exit, dir, range - exit);
+            (exit + beyond, PIERCE_KEEP)
+        }
+        _ => (first, 1.0),
+    }
+}
+
+fn spread_dir(look: Quat, spread: f32, rng: &mut SimRng) -> Vec3 {
+    let angle = rng.0.range(0.0, std::f32::consts::TAU);
+    let radius = spread * rng.0.unit().sqrt();
+    (look * Vec3::new(angle.cos() * radius, angle.sin() * radius, -1.0)).normalize()
+}
+
+fn hit_from(stats: &Resolved, target: Entity, amount: f32, player: u8) -> Hit {
+    let venom = stats.venom + stats.burn;
+    Hit { target, amount, by: Some(player), frost: stats.frost, venom, arc: stats.arc, scavenge: stats.scavenge, repair: stats.repair }
+}
+
+/// Damage dealt to a player this frame: (victim, amount, attacker index into bodies, burn).
+type Strike = (Entity, f32, usize, f32);
 
 #[allow(clippy::too_many_arguments)]
 pub fn fire_weapons(
     time: Res<Time>,
     map: Res<Map>,
+    statics: Res<Statics>,
     rules: Res<Rules>,
     content: Res<Content>,
     grid: Res<Grid>,
@@ -57,7 +124,7 @@ pub fn fire_weapons(
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
     mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health)>,
-    solids: Query<(&Transform, &Solid), Without<OreNode>>,
+    solids: Query<(&Transform, &Solid), (With<Structure>, Without<OreNode>)>,
     mut ores: Query<(&Transform, &mut OreNode)>,
     mut hits: EventWriter<Hit>,
     mut fx: EventWriter<FxEvent>,
@@ -65,22 +132,30 @@ pub fn fire_weapons(
 ) {
     let dt = sim_dt(&time);
     let bodies: Vec<Body> = if rules.pvp {
-        players.iter().filter(|(.., health)| health.alive()).map(|(entity, player, transform, ..)| Body { entity, id: player.id, team: player.team, feet: transform.translation, name: player.name.clone() }).collect()
+        players
+            .iter()
+            .filter(|(.., health)| health.alive())
+            .map(|(entity, player, transform, input, ..)| Body { entity, id: player.id, team: player.team, feet: transform.translation, stance: input.stance, yaw: input.yaw, name: player.name.clone() })
+            .collect()
     } else {
         Vec::new()
     };
-    // (victim, damage, attacker index into `bodies`)
-    let mut struck: Vec<(Entity, f32, usize)> = Vec::new();
+    let mut struck: Vec<Strike> = Vec::new();
+    let lobby = state.phase == Phase::Lobby;
 
     for (entity, mut player, transform, input, mut arsenal, mut health) in &mut players {
+        // Plain reborrow so separate fields can be borrowed at once.
+        let arsenal = &mut *arsenal;
         arsenal.cooldown = (arsenal.cooldown - dt).max(0.0);
-        if !health.alive() || state.over() {
+        if !health.alive() || state.over() || lobby {
             arsenal.reload = 0.0;
             arsenal.trigger = false;
+            arsenal.burst = 0;
             continue;
         }
-        let eye = transform.translation + Vec3::Y * EYE;
+        let eye = transform.translation + Vec3::Y * input.eye();
         let look = input.look();
+        let me = bodies.iter().position(|body| body.entity == entity);
 
         // Gear: one use per button press.
         let gear_pressed = input.held(buttons::GEAR) && !player.gear_latch;
@@ -93,21 +168,28 @@ pub fn fire_weapons(
                         let dir = look * Vec3::NEG_Z;
                         let shot = Projectile { velocity: dir * 19.0 + Vec3::Y * 4.5, gravity: 13.0, damage, splash: radius, look: ShotLook::Rocket, owner: Some(player.id), team: player.team, life: 1.8 };
                         spawn_projectile(&mut commands, &mut ids, eye + dir * 0.7, shot);
-                        fx.write(FxEvent::Sound { sfx: Sfx::Reload, at: Some(eye) });
+                        fx.write(FxEvent::Sound { sfx: Sfx::Swap, at: Some(eye) });
                     }
                     GearKind::Stim { heal } => {
                         health.hp = (health.hp + heal).min(health.max);
+                        player.burn_time = 0.0;
                         fx.write(FxEvent::Cue { to: player.id, sfx: Sfx::Buy });
                     }
                 }
             }
         }
 
-        // Weapon swap.
+        // Weapon swap (handling makes it quicker).
         if input.weapon != arsenal.current && arsenal.owns(input.weapon as usize) {
             arsenal.current = input.weapon;
             arsenal.reload = 0.0;
-            arsenal.cooldown = SWAP_TIME;
+            arsenal.burst = 0;
+            let handling = content
+                .weapons
+                .get(input.weapon as usize)
+                .zip(arsenal.weapons.get(input.weapon as usize))
+                .map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).handling);
+            arsenal.cooldown = SWAP_TIME / handling.max(0.3);
         }
         let index = arsenal.current as usize;
         let Some(def) = content.weapons.get(index) else { continue };
@@ -118,35 +200,43 @@ pub fn fire_weapons(
             _ => {}
         }
         let uses_ammo = def.mag > 0;
+        let fire_held = input.held(buttons::FIRE);
+        let pulled = fire_held && !arsenal.trigger;
+        arsenal.trigger = fire_held;
 
-        // Reload.
+        // Reloading.
         if arsenal.reload > 0.0 {
-            arsenal.reload -= dt;
-            if arsenal.reload <= 0.0 {
+            let weapon = &mut arsenal.weapons[index];
+            // Shell-by-shell reloads can be cut short to fire.
+            if def.reload_style == ReloadStyle::Single && pulled && weapon.ammo > 0 {
                 arsenal.reload = 0.0;
-                let weapon = &mut arsenal.weapons[index];
-                let wanted = stats.mag.saturating_sub(weapon.ammo);
-                let loaded = if def.infinite_reserve { wanted } else { wanted.min(weapon.reserve) };
-                weapon.ammo += loaded;
-                if !def.infinite_reserve {
-                    weapon.reserve -= loaded;
+            } else {
+                arsenal.reload -= dt;
+                if arsenal.reload <= 0.0 {
+                    arsenal.reload = 0.0;
+                    finish_reload(def, &stats, weapon, &mut arsenal.reload, &mut arsenal.reload_total);
+                    if arsenal.reload > 0.0 {
+                        fx.write(FxEvent::Sound { sfx: Sfx::Reload, at: Some(transform.translation) });
+                    }
                 }
+                continue;
             }
         }
         let weapon = arsenal.weapons[index];
         let can_reload = uses_ammo && weapon.ammo < stats.mag && (def.infinite_reserve || weapon.reserve > 0);
-        let fire_held = input.held(buttons::FIRE);
-        let wants_fire = fire_held && (def.auto || !arsenal.trigger);
-        arsenal.trigger = fire_held;
-        if arsenal.reload <= 0.0 && can_reload && (input.held(buttons::RELOAD) || (wants_fire && weapon.ammo == 0)) {
-            arsenal.reload = stats.reload;
+        let wants_fire = arsenal.burst > 0 || (fire_held && (def.auto() || pulled));
+        if arsenal.reload <= 0.0 && arsenal.burst == 0 && can_reload && (input.held(buttons::RELOAD) || (wants_fire && weapon.ammo == 0)) {
+            arsenal.reload_total = if def.reload_style == ReloadStyle::Single { stats.reload } else { stats.reload + if weapon.ammo == 0 { 0.25 } else { 0.0 } };
+            arsenal.reload = arsenal.reload_total;
+            arsenal.reload_empty = weapon.ammo == 0;
             fx.write(FxEvent::Sound { sfx: Sfx::Reload, at: Some(transform.translation) });
             continue;
         }
-        if !wants_fire || arsenal.cooldown > 0.0 || arsenal.reload > 0.0 {
+        if !wants_fire || arsenal.cooldown > 0.0 {
             continue;
         }
         if uses_ammo && weapon.ammo == 0 {
+            arsenal.burst = 0;
             arsenal.cooldown = 0.3;
             fx.write(FxEvent::Sound { sfx: Sfx::DryFire, at: Some(transform.translation) });
             continue;
@@ -154,13 +244,26 @@ pub fn fire_weapons(
 
         // Fire.
         arsenal.cooldown = stats.interval;
+        if let Action::Burst(rounds) = def.action {
+            if arsenal.burst == 0 {
+                arsenal.burst = rounds;
+            }
+            arsenal.burst -= 1;
+            if arsenal.burst == 0 {
+                arsenal.cooldown = stats.interval * 4.5;
+            }
+        }
         arsenal.shots = arsenal.shots.wrapping_add(1);
+        if !stats.quiet {
+            arsenal.loud = 1.5;
+        }
         if uses_ammo {
             arsenal.weapons[index].ammo -= 1;
         }
         let from = muzzle(eye, look, stats.length);
-        let aim_bonus = if input.held(buttons::AIM) { 0.35 } else { 1.0 };
-        let me = bodies.iter().position(|body| body.entity == entity);
+        let aiming = input.held(buttons::AIM);
+        let spread = stats.spread * if aiming { stats.ads_spread } else { 1.0 } * stance::steadiness(input.stance);
+        let shot = |to: Vec3, beam: bool| FxEvent::Shot { by: player.id, sound: def.sound, from, to, beam, tracer: stats.tracer, quiet: stats.quiet };
         // Nearest enemy-team player along a ray, within `reach`.
         let player_hit = |dir: Vec3, reach: f32| {
             bodies
@@ -172,14 +275,14 @@ pub fn fire_weapons(
 
         match def.mode {
             FireMode::Projectile { speed, gravity } => {
-                let dir = spread_dir(look, stats.spread * aim_bonus, &mut rng);
+                let dir = spread_dir(look, spread, &mut rng);
                 let projectile = Projectile { velocity: dir * speed, gravity, damage: stats.damage, splash: stats.splash, look: ShotLook::Rocket, owner: Some(player.id), team: player.team, life: 6.0 };
                 spawn_projectile(&mut commands, &mut ids, eye + dir * 0.8, projectile);
-                fx.write(FxEvent::Shot { by: player.id, sound: def.sound, from, to: from + dir * 1.5, beam: false });
+                fx.write(shot(from + dir * 1.5, false));
             }
             FireMode::Beam => {
                 let dir = look * Vec3::NEG_Z;
-                let reach = obstruction(&map, &solids, eye, dir, BEAM_RANGE);
+                let reach = obstruction(&map, &statics, &solids, eye, dir, BEAM_RANGE);
                 let enemy = grid.raycast(eye, dir, reach);
                 let ore = ores
                     .iter_mut()
@@ -208,70 +311,81 @@ pub fn fire_weapons(
                     _ => {
                         if let (Some((d, _, victim)), Some(me)) = (player_hit(dir, reach), me) {
                             end = eye + dir * d;
-                            struck.push((victim, stats.damage, me));
+                            struck.push((victim, stats.damage, me, 0.0));
                         }
                     }
                 }
-                fx.write(FxEvent::Shot { by: player.id, sound: def.sound, from, to: end, beam: true });
+                fx.write(shot(end, true));
             }
             FireMode::Hitscan => {
-                for _ in 0..def.pellets.max(1) {
-                    let dir = spread_dir(look, stats.spread * aim_bonus, &mut rng);
-                    let mut reach = obstruction(&map, &solids, eye, dir, stats.range);
+                for _ in 0..stats.pellets {
+                    let dir = spread_dir(look, spread, &mut rng);
+                    let (mut reach, kept) = reach_with_pierce(&map, &statics, &solids, eye, dir, stats.range, stats.pierce);
                     // Damage falls off over the last 40% of the range.
-                    let falloff = |d: f32| 1.0 - 0.5 * ((d / stats.range - 0.6) / 0.4).clamp(0.0, 1.0);
+                    let falloff = |d: f32| kept * (1.0 - 0.5 * ((d / stats.range - 0.6) / 0.4).clamp(0.0, 1.0));
                     let body = player_hit(dir, reach);
                     if let Some((d, ..)) = body {
                         reach = d;
                     }
-                    let mut end = eye + dir * reach;
+                    let end = eye + dir * reach;
+                    let mut end_at = end;
                     if let Some((d, item)) = grid.raycast(eye, dir, reach) {
-                        end = eye + dir * d;
+                        end_at = eye + dir * d;
                         hits.write(hit_from(&stats, item.entity, stats.damage * falloff(d), player.id));
                         if stats.splash > 0.0 {
-                            splash(&grid, &mut hits, end, stats.splash, stats.damage * 0.5, Some(player.id), Some(item.entity));
+                            splash(&grid, &mut hits, end_at, stats.splash, stats.damage * 0.5, Some(player.id), Some(item.entity));
                         }
                     } else if let (Some((d, head, victim)), Some(me)) = (body, me) {
-                        struck.push((victim, stats.damage * falloff(d) * if head { HEADSHOT } else { 1.0 }, me));
+                        struck.push((victim, stats.damage * falloff(d) * if head { HEADSHOT } else { 1.0 }, me, stats.burn));
                     } else if stats.splash > 0.0 && reach < stats.range {
                         splash(&grid, &mut hits, end, stats.splash, stats.damage * 0.5, Some(player.id), None);
                     }
-                    fx.write(FxEvent::Shot { by: player.id, sound: def.sound, from, to: end, beam: false });
+                    // Explosive rounds also catch nearby players.
+                    if stats.splash > 0.0 && rules.pvp {
+                        if let Some(me) = me {
+                            for body in bodies.iter().filter(|b| b.team != player.team && Some(b.entity) != body.map(|h| h.2)) {
+                                let distance = body.chest().distance(end_at);
+                                if distance < stats.splash {
+                                    struck.push((body.entity, stats.damage * 0.4 * (1.0 - distance / stats.splash), me, 0.0));
+                                }
+                            }
+                        }
+                    }
+                    fx.write(shot(end_at, false));
                 }
             }
         }
     }
 
-    for (victim, damage, attacker) in struck {
+    for (victim, damage, attacker, burn) in struck {
         let attacker = &bodies[attacker];
         if let Ok((_, mut player, _, _, _, mut health)) = players.get_mut(victim) {
+            if burn > 0.0 {
+                player.burn = burn;
+                player.burn_time = BURN_SECONDS;
+                player.burn_by = Some(attacker.id);
+            }
             damage_player(&mut health, &mut player, damage, Some((&attacker.name, attacker.team, attacker.id)), &mut state, &mut fx);
         }
     }
 }
 
-fn hit_from(stats: &Resolved, target: Entity, amount: f32, player: u8) -> Hit {
-    Hit { target, amount, by: Some(player), frost: stats.frost, venom: stats.venom, arc: stats.arc, scavenge: stats.scavenge, repair: stats.repair }
-}
-
-fn spread_dir(look: Quat, spread: f32, rng: &mut SimRng) -> Vec3 {
-    let angle = rng.0.range(0.0, std::f32::consts::TAU);
-    let radius = spread * rng.0.unit().sqrt();
-    (look * Vec3::new(angle.cos() * radius, angle.sin() * radius, -1.0)).normalize()
-}
-
-/// Distance until terrain or a solid blocks the ray.
-pub fn obstruction<F: bevy::ecs::query::QueryFilter>(map: &Map, solids: &Query<(&Transform, &Solid), F>, origin: Vec3, dir: Vec3, range: f32) -> f32 {
-    let mut best = map.raycast(origin, dir, range);
-    for (transform, solid) in solids {
-        if let Some(d) = ray_box(origin, dir, solid.center(transform), solid.half, best) {
-            best = best.min(d);
-        }
+/// End of one reload step. Shell-by-shell reloads queue the next round.
+fn finish_reload(def: &WeaponDef, stats: &Resolved, weapon: &mut WeaponState, reload: &mut f32, total: &mut f32) {
+    let wanted = stats.mag.saturating_sub(weapon.ammo);
+    let per_step = if def.reload_style == ReloadStyle::Single { wanted.min(1) } else { wanted };
+    let loaded = if def.infinite_reserve { per_step } else { per_step.min(weapon.reserve) };
+    weapon.ammo += loaded;
+    if !def.infinite_reserve {
+        weapon.reserve -= loaded;
     }
-    best
+    if def.reload_style == ReloadStyle::Single && weapon.ammo < stats.mag && (def.infinite_reserve || weapon.reserve > 0) {
+        *reload = stats.reload;
+        *total = stats.reload;
+    }
 }
 
-/// Gives a player a weapon with a full magazine and its starting reserve.
+/// Gives a player a weapon with its default parts, a full magazine and its starting reserve.
 pub fn grant_weapon(arsenal: &mut Arsenal, defs: &[WeaponDef], index: usize) {
     if let (Some(state), Some(def)) = (arsenal.weapons.get_mut(index), defs.get(index)) {
         state.owned = true;

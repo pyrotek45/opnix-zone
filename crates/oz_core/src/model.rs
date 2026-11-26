@@ -5,6 +5,7 @@
 //! animate them procedurally (walking legs, spinning rotors, recoiling barrels).
 
 use glam::{EulerRot, Quat, Vec3};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shape {
@@ -16,20 +17,23 @@ pub enum Shape {
 }
 
 /// Shared palette. Keeping colours here gives every game the same look by default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Paint {
     Dark, Metal, Gold, Wood, Teal, Coral, Purple, Shell, Bone, Steel, Rock, Leaf, LeafLight,
     Concrete, Rust, Sand, Iron, Copper,
     // Unlit / emissive paints.
     Glow, Spark, Red, Green, Blue, Violet, Aether, White,
+    /// A dark, faintly glowing display surface (robot faces, terminals).
+    Screen,
 }
 
 impl Paint {
-    pub const ALL: [Paint; 26] = [
+    pub const ALL: [Paint; 27] = [
         Paint::Dark, Paint::Metal, Paint::Gold, Paint::Wood, Paint::Teal, Paint::Coral, Paint::Purple,
         Paint::Shell, Paint::Bone, Paint::Steel, Paint::Rock, Paint::Leaf, Paint::LeafLight,
         Paint::Concrete, Paint::Rust, Paint::Sand, Paint::Iron, Paint::Copper,
         Paint::Glow, Paint::Spark, Paint::Red, Paint::Green, Paint::Blue, Paint::Violet, Paint::Aether, Paint::White,
+        Paint::Screen,
     ];
 
     /// sRGB colour as `0xRRGGBB`.
@@ -43,7 +47,7 @@ impl Paint {
             Paint::Sand => 0xe3b06e, Paint::Iron => 0x8a8f9c, Paint::Copper => 0xd9824a,
             Paint::Glow => 0xffcb65, Paint::Spark => 0xffedbb, Paint::Red => 0xff535e,
             Paint::Green => 0x7fffa0, Paint::Blue => 0x63ddff, Paint::Violet => 0xc58bff,
-            Paint::Aether => 0x9df7e4, Paint::White => 0xffffff,
+            Paint::Aether => 0x9df7e4, Paint::White => 0xffffff, Paint::Screen => 0x0c2430,
         }
     }
 
@@ -54,7 +58,7 @@ impl Paint {
 
     /// Unlit paints ignore lighting and read as glowing, even at night.
     pub fn unlit(self) -> bool {
-        matches!(self, Paint::Glow | Paint::Spark | Paint::Red | Paint::Green | Paint::Blue | Paint::Violet | Paint::Aether | Paint::White)
+        matches!(self, Paint::Glow | Paint::Spark | Paint::Red | Paint::Green | Paint::Blue | Paint::Violet | Paint::Aether | Paint::White | Paint::Screen)
     }
 }
 
@@ -72,6 +76,10 @@ pub enum Anim {
     Bob,
     /// Kicks back along +Z when the owner attacks.
     Recoil,
+    /// A weapon's magazine: removed and replaced during reloads.
+    Mag,
+    /// A weapon's moving action: slide, bolt, pump or charging handle.
+    Slide,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -114,6 +122,27 @@ impl BlockModel {
 
     pub fn cone(self, paint: Paint, pos: [f32; 3], size: [f32; 3]) -> Self {
         self.part(Shape::Cone, paint, pos, size)
+    }
+
+    /// A box stretched between two points, like a limb or a strut.
+    pub fn segment(mut self, paint: Paint, from: [f32; 3], to: [f32; 3], thickness: f32) -> Self {
+        let (from, to) = (Vec3::from(from), Vec3::from(to));
+        let span = to - from;
+        let length = span.length().max(1e-4);
+        self.parts.push(Part {
+            shape: Shape::Cube,
+            paint,
+            pos: from + span * 0.5,
+            size: Vec3::new(thickness, length, thickness),
+            rot: Quat::from_rotation_arc(Vec3::Y, span / length),
+            anim: Anim::None,
+        });
+        self
+    }
+
+    /// Keeps only the parts whose animation tag passes `keep`.
+    pub fn filtered(&self, keep: impl Fn(Anim) -> bool) -> BlockModel {
+        BlockModel { parts: self.parts.iter().copied().filter(|p| keep(p.anim)).collect() }
     }
 
     /// Rotates the most recently added part (XYZ Euler, degrees).

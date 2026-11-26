@@ -60,8 +60,9 @@ pub fn catalog(rules: &Rules) -> Catalog {
 fn weapons() -> Vec<WeaponDef> {
     let mut weapons = vec![WeaponDef {
         name: "MINING LASER", blurb: "Cuts ore from deposits. A poor weapon, but it never runs dry.",
-        mag: 0, infinite_reserve: true, damage: 5.0, interval: 0.1, spread: 0.0, range: 7.5, recoil: 0.05, auto: true, mode: FireMode::Beam,
-        ads_fov: 62.0, mining: 14.0, length: 0.52, sound: 6,
+        class: GunClass::Tool, caliber: Caliber::None, action: Action::Auto,
+        mag: 0, infinite_reserve: true, damage: 5.0, interval: 0.1, spread: 0.0, range: 7.5, recoil: 0.05, mode: FireMode::Beam,
+        ads_fov: 62.0, mining: 14.0, length: 0.62, sound: 6,
         model: BlockModel::new()
             .cube(Paint::Dark, [0.0, 0.0, -0.10], [0.20, 0.20, 0.40])
             .cube(Paint::Gold, [0.0, 0.06, -0.10], [0.225, 0.10, 0.30])

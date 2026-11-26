@@ -24,7 +24,7 @@ impl Plugin for AudioFxPlugin {
 }
 
 fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
-    let mut all: Vec<Sfx> = (0..8).map(Sfx::Shot).collect();
+    let mut all: Vec<Sfx> = (0..9).map(Sfx::Shot).collect();
     all.extend([
         Sfx::Reload, Sfx::DryFire, Sfx::Hit, Sfx::Kill, Sfx::Explosion, Sfx::EnemyShot, Sfx::EnemyDeath, Sfx::Hurt, Sfx::UiMove, Sfx::UiAccept,
         Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Land, Sfx::Swap, Sfx::Growl, Sfx::Surf, Sfx::NightDrone,
@@ -53,7 +53,7 @@ fn play(
         }
         // Cheap distance falloff instead of full spatial audio.
         let distance = event.at.zip(ears).map_or(0.0, |(at, ears)| at.distance(ears));
-        let gain = settings.volume * (1.0 / (1.0 + distance * 0.06)).powi(2);
+        let gain = event.volume * settings.volume * (1.0 / (1.0 + distance * 0.06)).powi(2);
         if gain < 0.02 {
             continue;
         }

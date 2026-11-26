@@ -1,7 +1,8 @@
 //! Starting and ending matches, and the registry of game modes.
 
 use crate::{
-    combat::{Grid, Solid},
+    combat::Grid,
+    nav::Nav,
     net::{NetIds, NetLink},
     player::{Arsenal, Health, LocalPlayer, Mover, Player, PlayerInput, spawn_point},
     state::{MatchPhase, MatchState, NetRole, Phase, Rules, SimRng},
@@ -9,7 +10,13 @@ use crate::{
     weapons::grant_weapon,
 };
 use bevy::prelude::*;
-use oz_core::{arsenal::WeaponState, content::Catalog, rng::Rng, worldgen::World as GameMap};
+use oz_core::{
+    arsenal::WeaponState,
+    collide::{Aabb, StaticWorld},
+    content::Catalog,
+    rng::Rng,
+    worldgen::World as GameMap,
+};
 use std::sync::Arc;
 
 /// The active game's content. Cheap to clone, shared with background tasks if needed.
@@ -19,6 +26,16 @@ pub struct Content(pub Arc<Catalog>);
 /// The generated map for the current match.
 #[derive(Resource, Clone, Deref)]
 pub struct Map(pub Arc<GameMap>);
+
+/// Every static collision box: architecture, props, stations, the objective
+/// and ore. Built identically on every machine from the map recipe.
+#[derive(Resource, Clone, Deref)]
+pub struct Statics(pub Arc<StaticWorld>);
+
+/// Station footprint, shared by collision and placement checks.
+pub const STATION_HALF: Vec3 = Vec3::new(0.75, 1.1, 0.75);
+const CORE_HALF: Vec3 = Vec3::new(1.5, 0.45, 1.5);
+const ORE_HALF: Vec3 = Vec3::new(0.8, 0.7, 0.8);
 
 /// Everything that belongs to one match; despawned when it ends.
 #[derive(Component)]
@@ -51,11 +68,12 @@ pub struct MatchSetup {
     pub player_name: String,
     /// Player id of this machine's player; `None` for a dedicated server.
     pub local_player: Option<u8>,
+    pub local_team: u8,
 }
 
 impl MatchSetup {
     pub fn offline(rules: Rules, player_name: impl Into<String>) -> Self {
-        Self { rules, role: NetRole::Offline, link: NetLink::None, player_name: player_name.into(), local_player: Some(0) }
+        Self { rules, role: NetRole::Offline, link: NetLink::None, player_name: player_name.into(), local_player: Some(0), local_team: 0 }
     }
 }
 
@@ -64,7 +82,7 @@ impl MatchSetup {
 pub struct PendingMatch(pub Option<MatchSetup>);
 
 pub fn new_arsenal(catalog: &Catalog, rules: &Rules) -> Arsenal {
-    let mut arsenal = Arsenal { weapons: vec![WeaponState::default(); catalog.weapons.len()], ..default() };
+    let mut arsenal = Arsenal { weapons: catalog.weapons.iter().map(WeaponState::fresh).collect(), ..default() };
     for index in 0..catalog.weapons.len() {
         if rules.starter_weapons & (1 << index) != 0 {
             grant_weapon(&mut arsenal, &catalog.weapons, index);
@@ -75,10 +93,9 @@ pub fn new_arsenal(catalog: &Catalog, rules: &Rules) -> Arsenal {
 }
 
 /// The components every player entity has, on every machine.
-pub fn player_bundle(catalog: &Catalog, rules: &Rules, map: &GameMap, id: u8, name: String) -> impl Bundle {
+pub fn player_bundle(catalog: &Catalog, rules: &Rules, map: &GameMap, id: u8, name: String, team: u8) -> impl Bundle {
     let arsenal = new_arsenal(catalog, rules);
-    // Versus teams alternate by id, which keeps humans balanced as they join.
-    let team = if rules.pvp { id % 2 } else { 0 };
+    let team = if rules.pvp { team.min(1) } else { 0 };
     let mut player = Player::new(id, name, team);
     player.gear_left = catalog.gear.first().map_or(0, |gear| gear.count);
     // Start out facing the middle of the map rather than the sea.
@@ -116,23 +133,29 @@ pub fn start_pending_match(
     let map = Arc::new(GameMap::generate(rules.recipe));
     let mut ids = NetIds::default();
 
-    // Static furniture is rebuilt from the recipe on every machine; it is never replicated.
-    for prop in &map.props {
-        if let Some(half) = prop.solid_half() {
-            commands.spawn((MatchEntity, Solid { half }, Transform::from_translation(prop.pos)));
-        }
+    // Static collision is rebuilt from the recipe on every machine; it is never replicated.
+    let mut statics = StaticWorld::new(rules.recipe.half_extent);
+    for aabb in map.solids() {
+        statics.add(aabb);
     }
+    let standing = |at: Vec3, half: Vec3| Aabb::new(at + Vec3::Y * half.y, half);
     for (index, pad) in map.pads.iter().enumerate().take(catalog.stations.len()) {
         let facing = Quat::from_rotation_y(f32::atan2(pad.x - map.core.x, pad.y - map.core.y));
-        commands.spawn((
-            MatchEntity,
-            Station { kind: index as u16 },
-            Solid { half: Vec3::new(0.75, 1.1, 0.75) },
-            Transform::from_translation(map.ground(pad.x, pad.y)).with_rotation(facing),
-        ));
+        let at = map.ground(pad.x, pad.y);
+        statics.add(standing(at, STATION_HALF));
+        commands.spawn((MatchEntity, Station { kind: index as u16 }, Transform::from_translation(at).with_rotation(facing)));
     }
     if rules.objective_hp > 0.0 {
-        commands.spawn((MatchEntity, Solid { half: Vec3::new(1.5, 0.45, 1.5) }, Transform::from_translation(map.ground(map.core.x, map.core.y))));
+        statics.add(standing(map.ground(map.core.x, map.core.y), CORE_HALF));
+    }
+    if rules.mining {
+        for deposit in &map.deposits {
+            statics.add(standing(deposit.pos, ORE_HALF));
+        }
+    }
+    // Bots need a navigation grid; only the authority runs them.
+    if setup.role != NetRole::Client {
+        commands.insert_resource(Nav::build(&map, &statics));
     }
 
     if setup.role != NetRole::Client && rules.mining {
@@ -141,20 +164,20 @@ pub fn start_pending_match(
                 MatchEntity,
                 ids.next(),
                 OreNode { ore: deposit.ore, amount: deposit.amount, max: deposit.amount },
-                Solid { half: Vec3::new(0.8, 0.7, 0.8) },
                 Transform::from_translation(deposit.pos),
             ));
         }
     }
     if let Some(id) = setup.local_player {
-        let mut player = commands.spawn((player_bundle(&catalog, &rules, &map, id, setup.player_name.clone()), LocalPlayer));
+        let mut player = commands.spawn((player_bundle(&catalog, &rules, &map, id, setup.player_name.clone(), setup.local_team), LocalPlayer));
         if setup.role != NetRole::Client {
             player.insert(ids.next());
         }
     }
 
     commands.insert_resource(MatchState {
-        phase: Phase::Day,
+        phase: if rules.pvp { Phase::Lobby } else { Phase::Day },
+        team_size: rules.team_size,
         day: 1,
         timer: rules.day_seconds,
         daylight: 1.0,
@@ -168,6 +191,7 @@ pub fn start_pending_match(
     commands.insert_resource(SimRng(Rng::new(rules.recipe.seed ^ 0xc0ffee)));
     commands.insert_resource(Content(catalog));
     commands.insert_resource(Map(map));
+    commands.insert_resource(Statics(Arc::new(statics)));
     commands.insert_resource(rules);
     commands.insert_resource(ids);
     commands.insert_resource(setup.role);
@@ -184,6 +208,7 @@ pub fn cleanup_match(mut commands: Commands, entities: Query<Entity, With<MatchE
     for entity in &entities {
         commands.entity(entity).despawn();
     }
+    commands.remove_resource::<Nav>();
     commands.insert_resource(NetLink::None);
     commands.insert_resource(NetRole::Offline);
 }

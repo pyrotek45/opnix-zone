@@ -144,6 +144,7 @@ fn run_director(
                 fx.write(FxEvent::Sound { sfx: Sfx::Dawn, at: None });
             }
         }
+        Phase::Lobby | Phase::Live => return,
         Phase::Won | Phase::Lost => {
             state.daylight = (state.daylight - dt * 0.2).max(0.15);
             return;

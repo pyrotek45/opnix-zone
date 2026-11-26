@@ -42,6 +42,10 @@ pub struct EnterMatch;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MenuActions;
 
+/// Label for the systems that rebuild screens.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BuildScreens;
+
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
@@ -53,7 +57,19 @@ impl Plugin for MenuPlugin {
             .add_systems(Update, (type_text, toggle_pause, menu_actions, watch_match, apply_settings).chain().in_set(MenuActions).in_set(ClientSet::Input).after(crate::input::ReadDevices))
             .add_systems(
                 Update,
-                (ui::clear_screen, build_menu, crate::stations::build_station, crate::loadout::build_loadout, ui::finish_rebuild).chain().in_set(ClientSet::Present),
+                (
+                    choose_stage,
+                    ui::clear_screen,
+                    build_menu,
+                    crate::stations::build_station,
+                    crate::loadout::build_loadout,
+                    crate::gunsmith::build_gunsmith,
+                    crate::lobby::build_lobby,
+                    ui::finish_rebuild,
+                )
+                    .chain()
+                    .in_set(BuildScreens)
+                    .in_set(ClientSet::Present),
             );
     }
 }
@@ -105,7 +121,8 @@ fn toggle_pause(controls: Res<Controls>, phase: Res<State<MatchPhase>>, placing:
     }
 }
 
-/// Shows the game-over screen, and pauses time for single-player menus.
+/// Moves between lobby, match and game-over screens, and pauses time for single-player menus.
+#[allow(clippy::too_many_arguments)]
 fn watch_match(
     state: Option<Res<MatchState>>,
     role: Res<NetRole>,
@@ -115,13 +132,23 @@ fn watch_match(
     join: Res<JoinStatus>,
     mut dirty: ResMut<UiDirty>,
     mut shown: Local<bool>,
+    mut last_phase: Local<Option<Phase>>,
 ) {
     let active = *phase.get() == MatchPhase::Active;
-    let lost = active && state.is_some_and(|state| state.over());
+    let lost = active && state.as_ref().is_some_and(|state| state.over());
     if lost && !*shown && *screen == Screen::None {
         *screen = Screen::GameOver;
     }
     *shown = lost;
+    let now = state.as_ref().filter(|_| active).map(|state| state.phase);
+    match now {
+        // Versus: the lobby is home between matches.
+        Some(Phase::Lobby) if matches!(*screen, Screen::None | Screen::GameOver) => *screen = Screen::Lobby,
+        // The match started: everyone drops in, wherever they were in the menus.
+        Some(Phase::Live) if *last_phase == Some(Phase::Lobby) && *screen != Screen::Pause => *screen = Screen::None,
+        _ => {}
+    }
+    *last_phase = now;
     let pause = active && *role == NetRole::Offline && matches!(*screen, Screen::Pause | Screen::Settings);
     if pause != time.is_paused() {
         if pause { time.pause() } else { time.unpause() }
@@ -154,7 +181,7 @@ fn menu_actions(
                 menu.status.clear();
             }
             Act::Back => match *screen {
-                Screen::Join => *screen = Screen::Main,
+                Screen::Join | Screen::Lineup => *screen = Screen::Main,
                 Screen::Settings => *screen = if in_match { Screen::Pause } else { Screen::Main },
                 Screen::Pause => *screen = Screen::None,
                 Screen::GameOver => *screen = Screen::None,
@@ -250,7 +277,7 @@ fn build_menu(
     match &*screen {
         Screen::Main => {
             let mode = &modes.0[menu.mode % modes.0.len().max(1)];
-            ui::root(&mut commands, 1.0).with_children(|root| {
+            ui::root_left(&mut commands, 0.0).with_children(|root| {
                 ui::label(root, title.0.clone(), 44.0, ui::TEXT);
                 ui::label(root, "A MODULAR, FULLY PROCEDURAL SHOOTER", 15.0, ui::ACCENT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
@@ -269,6 +296,7 @@ fn build_menu(
                     }
                     ui::stepper(panel, order, format!("{}   <  {}  >", if versus { "BOTS  " } else { "THREAT" }, THREATS[menu.threat].0), Act::Difficulty(-1), Act::Difficulty(1));
                     ui::button(panel, order, "SETTINGS", Act::Go(Screen::Settings));
+                    ui::button(panel, order, "MODEL VIEWER", Act::Go(Screen::Lineup));
                     ui::button(panel, order, "QUIT", Act::Quit);
                     if !menu.status.is_empty() {
                         ui::label(panel, menu.status.clone(), 14.0, ui::WARN);
@@ -284,7 +312,7 @@ fn build_menu(
                 JoinStatus::Connecting => ("CONNECTING...".to_string(), ui::ACCENT),
                 JoinStatus::Failed(why) => (why.clone(), ui::WARN),
             };
-            ui::root(&mut commands, 1.0).with_children(|root| {
+            ui::root_left(&mut commands, 0.0).with_children(|root| {
                 ui::label(root, "JOIN GAME", 34.0, ui::TEXT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
                     ui::button(panel, order, field("CALLSIGN", &settings.callsign, menu.editing == Some(Field::Callsign)), Act::Edit(Field::Callsign));
@@ -298,8 +326,9 @@ fn build_menu(
         }
         Screen::Settings => {
             let set = |setting| (Act::Set(setting, -1), Act::Set(setting, 1));
-            let dim = if *phase.get() == MatchPhase::Active { 0.75 } else { 1.0 };
-            ui::root(&mut commands, dim).with_children(|root| {
+            let in_match = *phase.get() == MatchPhase::Active;
+            let mut root = if in_match { ui::root(&mut commands, 0.75) } else { ui::root_left(&mut commands, 0.0) };
+            root.with_children(|root| {
                 ui::label(root, "SETTINGS", 34.0, ui::TEXT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
                     let mut value = |text: String, setting: Setting| {
@@ -337,7 +366,7 @@ fn build_menu(
         }
         Screen::GameOver => {
             let (headline, tint, summary) = match state.as_deref() {
-                Some(state) if state.phase == Phase::Won => (
+                Some(state) if state.phase == Phase::Won && state.winner < 2 && !state.roster.is_empty() => (
                     format!("TEAM {} WINS", if state.winner == 0 { "TEAL" } else { "CORAL" }),
                     ui::GOOD,
                     format!("TEAL {}   |   CORAL {}", state.scores[0], state.scores[1]),
@@ -348,12 +377,65 @@ fn build_menu(
             ui::root(&mut commands, 0.7).with_children(|root| {
                 ui::label(root, headline, 40.0, tint);
                 ui::label(root, summary, 18.0, ui::TEXT);
+                let versus = state.as_deref().is_some_and(|s| s.phase == Phase::Won);
+                if versus {
+                    let seconds = state.as_deref().map_or(0.0, |s| s.timer.max(0.0)).ceil();
+                    ui::label(root, format!("BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
+                }
                 root.spawn(ui::panel(420.0)).with_children(|panel| {
-                    ui::button(panel, order, "RETURN TO MENU", Act::Leave);
-                    ui::button(panel, order, "KEEP WATCHING", Act::Go(Screen::None));
+                    ui::button(panel, order, "LEAVE MATCH", Act::Leave);
+                    if !versus {
+                        ui::button(panel, order, "KEEP WATCHING", Act::Go(Screen::None));
+                    }
                 });
             });
         }
-        Screen::None | Screen::Station { .. } | Screen::Loadout => {}
+        Screen::Lineup => {
+            ui::root(&mut commands, 0.0).with_children(|root| {
+                root.spawn(Node { position_type: PositionType::Absolute, top: Val::Px(24.0), width: Val::Percent(100.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() })
+                    .with_children(|top| {
+                        ui::label(top, "OPERATOR MODELS", 30.0, ui::TEXT);
+                        ui::label(top, "IDLE  -  RUN  -  CROUCH  -  PRONE  -  AIM UP  -  RELOAD  -  DOWN", 14.0, ui::ACCENT);
+                    });
+                root.spawn(Node { position_type: PositionType::Absolute, bottom: Val::Px(24.0), ..default() }).with_children(|bottom| {
+                    ui::sized_button(bottom, order, "BACK", Act::Back, None, Val::Px(160.0));
+                });
+            });
+        }
+        Screen::None | Screen::Station { .. } | Screen::Loadout | Screen::Lobby | Screen::Gunsmith { .. } => {}
+    }
+}
+
+/// Picks what the showroom stage shows behind each screen.
+fn choose_stage(
+    screen: Res<Screen>,
+    phase: Res<State<MatchPhase>>,
+    state: Option<Res<MatchState>>,
+    class: Res<crate::loadout::Class>,
+    players: Query<(&Player, &Arsenal), With<LocalPlayer>>,
+    mut stage: ResMut<crate::showroom::Stage>,
+) {
+    use crate::showroom::Stage;
+    let in_match = *phase.get() == MatchPhase::Active;
+    let me = players.single().ok();
+    let team = me.map_or(0, |(p, _)| p.team);
+    let wanted = match &*screen {
+        // The gunsmith drives the stage itself (it previews parts).
+        Screen::Gunsmith { .. } => return,
+        Screen::Main | Screen::Join => Stage::Operator { team: 2, weapon: None },
+        Screen::Settings if !in_match => Stage::Operator { team: 2, weapon: None },
+        Screen::Lineup => Stage::Lineup,
+        Screen::Lobby => {
+            let count = state.as_ref().map_or(1, |s| s.roster.iter().filter(|r| r.team == team).count().max(1) as u8);
+            Stage::Squad { team, count }
+        }
+        Screen::Loadout => {
+            let weapon = me.and_then(|(_, arsenal)| arsenal.weapons.get(class.0.primary as usize)).map(|w| (class.0.primary, w.equipped));
+            Stage::Operator { team, weapon }
+        }
+        _ => Stage::Hidden,
+    };
+    if *stage != wanted {
+        *stage = wanted;
     }
 }

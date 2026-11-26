@@ -84,7 +84,7 @@ pub fn run_structures(
                         structure.cooldown = interval;
                         structure.shots = structure.shots.wrapping_add(1);
                         hits.write(Hit::plain(target.entity, damage * turret_bonus, None));
-                        fx.write(FxEvent::Shot { by: 255, sound: 7, from: muzzle + to.normalize_or_zero() * 0.9, to: target.pos, beam: false });
+                        fx.write(FxEvent::Shot { by: 255, sound: 7, from: muzzle + to.normalize_or_zero() * 0.9, to: target.pos, beam: false, tracer: oz_core::model::Paint::Blue, quiet: false });
                     }
                     // Nothing in range: check again shortly instead of every frame.
                     None => structure.cooldown = 0.25,

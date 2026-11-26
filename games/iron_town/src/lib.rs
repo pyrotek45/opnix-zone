@@ -4,12 +4,12 @@
 //! a class - two weapons with free attachments, a perk and a piece of gear -
 //! and fight to a score limit.
 //!
-//! The whole game is this one file: a catalog, rules, and a small director.
-//! Movement, weapons, bots, netcode, rendering and menus all come from the
-//! shared Opnix Zone crates.
+//! The whole game is this one file: a catalog and rules. The lobby, team
+//! balancing, bots, scoring, movement, weapons, netcode, rendering and menus
+//! all come from the shared Opnix Zone crates.
 
 use bevy::prelude::*;
-use oz_sim::{bots::{FIRST_BOT_ID, spawn_bot}, net::NetIds, prelude::*};
+use oz_sim::prelude::*;
 
 pub fn catalog(_: &Rules) -> Catalog {
     let mut weapons = oz_core::kit::standard_guns();
@@ -47,15 +47,13 @@ pub fn deathmatch_rules(seed: u64) -> Rules {
         difficulty: 1.0,
         start_stock: Stock::default(),
         // Pistol and carbine until the player picks a class.
-        starter_weapons: 0b1001,
+        starter_weapons: (1 << oz_core::kit::gun::PISTOL) | (1 << oz_core::kit::gun::CARBINE),
         respawn_seconds: 3.0,
         pvp: true,
         team_size: 2,
         score_limit: 25,
     }
 }
-
-pub const TEAM_NAMES: [&str; 2] = ["TEAL", "CORAL"];
 
 pub struct IronTownPlugin;
 
@@ -66,46 +64,6 @@ impl Plugin for IronTownPlugin {
             ModeDef { name: "TEAM DEATHMATCH", blurb: "Two squads, one town. Bots fill empty slots. First to the score limit wins.", playable: true, rules: deathmatch_rules, catalog },
             planned("DOMINATION", "PLANNED - hold three points around the town to score."),
             planned("SEARCH AND DESTROY", "PLANNED - one life per round, plant or defuse."),
-        ]))
-        .add_systems(Update, run_match.in_set(SimSet::Logic));
-    }
-}
-
-/// Keeps both teams full with bots and ends the match at the score limit.
-fn run_match(
-    rules: Res<Rules>,
-    content: Res<Content>,
-    map: Res<Map>,
-    mut state: ResMut<MatchState>,
-    mut rng: ResMut<SimRng>,
-    mut ids: ResMut<NetIds>,
-    mut commands: Commands,
-    players: Query<(Entity, &Player, Has<Bot>)>,
-    mut fx: EventWriter<FxEvent>,
-) {
-    if !rules.pvp || state.over() {
-        return;
-    }
-    state.daylight = 1.0;
-    for team in 0..2u8 {
-        let members: Vec<_> = players.iter().filter(|(_, player, _)| player.team == team).collect();
-        let wanted = rules.team_size.max(1) as usize;
-        if members.len() < wanted {
-            // Bot ids start high and keep the team's parity (teams alternate by id).
-            if let Some(id) = (FIRST_BOT_ID..=253).filter(|id| id % 2 == team).find(|id| !players.iter().any(|(_, player, _)| player.id == *id)) {
-                spawn_bot(&mut commands, &mut ids, &content, &rules, &map, &mut rng, id);
-            }
-        } else if members.len() > wanted {
-            // A human joined: release one bot from this team.
-            if let Some((bot, ..)) = members.iter().find(|(_, _, is_bot)| *is_bot) {
-                commands.entity(*bot).despawn();
-            }
-        }
-        if state.scores[team as usize] >= rules.score_limit && rules.score_limit > 0 {
-            state.phase = Phase::Won;
-            state.winner = team;
-            fx.write(FxEvent::notice(format!("TEAM {} WINS", TEAM_NAMES[team as usize])));
-            fx.write(FxEvent::Sound { sfx: Sfx::Dawn, at: None });
-        }
+        ]));
     }
 }

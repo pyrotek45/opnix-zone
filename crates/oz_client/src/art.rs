@@ -131,7 +131,7 @@ impl Art {
         let mut extras = Vec::new();
         for part in &model.parts {
             match part.anim {
-                Anim::None => self.add_part(if part.paint.unlit() { &mut unlit } else { &mut lit }, part, Transform::IDENTITY),
+                Anim::None | Anim::Mag | Anim::Slide => self.add_part(if part.paint.unlit() { &mut unlit } else { &mut lit }, part, Transform::IDENTITY),
                 Anim::Leg { phase } => self.add_part(&mut legs[(phase.fract() >= 0.5) as usize], part, Transform::IDENTITY),
                 _ => extras.push(*part),
             }

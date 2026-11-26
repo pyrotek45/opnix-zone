@@ -22,6 +22,15 @@ fn start(app: &mut App, setup: MatchSetup) {
     assert_eq!(*app.world().resource::<State<MatchPhase>>().get(), MatchPhase::Active);
 }
 
+fn lobby(app: &mut App, action: LobbyAction) {
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Lobby(action) });
+    app.update();
+}
+
+fn phase(app: &App) -> Phase {
+    app.world().resource::<MatchState>().phase
+}
+
 fn teams(app: &mut App) -> [(usize, usize); 2] {
     let mut out = [(0, 0); 2];
     for (player, bot) in app.world_mut().query::<(&Player, Has<Bot>)>().iter(app.world()) {
@@ -40,8 +49,21 @@ fn bots_fill_the_teams_and_fight_to_the_score_limit() {
     for _ in 0..20 {
         app.update();
     }
-    // One human on team 0, bots everywhere else.
+    // The match opens in the lobby: one human on team 0, bots everywhere else.
+    assert_eq!(phase(&app), Phase::Lobby);
     assert_eq!(teams(&mut app), [(1, 2), (0, 3)]);
+    assert_eq!(app.world().resource::<MatchState>().roster.len(), 6);
+    // The host can resize the teams from the lobby.
+    lobby(&mut app, LobbyAction::TeamSize(1));
+    for _ in 0..20 {
+        app.update();
+    }
+    assert_eq!(teams(&mut app), [(1, 3), (0, 4)]);
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(phase(&app), Phase::Live, "the countdown should have launched the match");
 
     let mut seconds = 0.0;
     while app.world().resource::<MatchState>().phase != Phase::Won {
@@ -51,7 +73,44 @@ fn bots_fill_the_teams_and_fight_to_the_score_limit() {
     }
     let state = app.world().resource::<MatchState>().clone();
     assert_eq!(state.scores[state.winner as usize], 6);
+    let kills: u32 = state.roster.iter().map(|r| r.kills as u32).sum();
+    assert_eq!(kills, state.scores[0] + state.scores[1], "every point is someone's kill");
     println!("match decided {:?} after {seconds:.0} simulated seconds", state.scores);
+    // After the post-match screen everyone is back in the lobby.
+    for _ in 0..(10.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(phase(&app), Phase::Lobby);
+}
+
+#[test]
+fn bots_navigate_the_town() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(21);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    // Park the human far away so the bot has to travel across the map.
+    let world = app.world_mut();
+    let human = world.query_filtered::<&mut Transform, With<LocalPlayer>>().single_mut(world).unwrap();
+    let start = human.translation;
+    let bot_start = world.query_filtered::<&Transform, With<Bot>>().single(world).unwrap().translation;
+    let mut travelled = 0.0;
+    let mut last = bot_start;
+    for _ in 0..(25.0 / FRAME) as usize {
+        app.update();
+        let world = app.world_mut();
+        world.query_filtered::<&mut Transform, With<LocalPlayer>>().single_mut(world).unwrap().translation = start;
+        let now = world.query_filtered::<&Transform, With<Bot>>().single(world).unwrap().translation;
+        travelled += now.xz().distance(last.xz());
+        last = now;
+    }
+    println!("bot covered {travelled:.0} m, ended {:.0} m from the human", last.xz().distance(start.xz()));
+    assert!(travelled > 40.0, "the bot barely moved ({travelled:.1} m)");
+    assert!(last.xz().distance(start.xz()) < bot_start.xz().distance(start.xz()), "the bot should close in");
 }
 
 #[test]
@@ -65,13 +124,16 @@ fn loadouts_apply_with_perks_and_free_attachments() {
     // The client switches to its new primary as it sends the class.
     app.world_mut().query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().weapon = 2;
     order(&mut app, PlayerCommand::Loadout(Loadout { primary: 2, secondary: 0, perk: 1, gear: 1 }));
+    // A suppressor on the shotgun, then a sniper scope it must refuse.
     order(&mut app, PlayerCommand::EquipPart { weapon: 2, slot: 1, variant: 2 });
+    order(&mut app, PlayerCommand::EquipPart { weapon: 2, slot: 0, variant: 4 });
     let world = app.world_mut();
     let (player, arsenal) = world.query_filtered::<(&Player, &Arsenal), With<LocalPlayer>>().single(world).unwrap();
     assert_eq!((arsenal.current, player.perk, player.gear, player.gear_left), (2, 1, 1, 2));
     let owned: Vec<usize> = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).collect();
     assert_eq!(owned, vec![0, 2], "a class is exactly two weapons");
     assert_eq!(arsenal.weapons[2].equipped[1], 2, "attachments are free in versus");
+    assert_eq!(arsenal.weapons[2].equipped[0], 0, "shotguns cannot take sniper scopes");
     // Same weapon twice is not a class.
     order(&mut app, PlayerCommand::Loadout(Loadout { primary: 3, secondary: 3, perk: 0, gear: 0 }));
     let world = app.world_mut();

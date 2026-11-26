@@ -15,6 +15,8 @@
 //! * [`enemy`] - catalog-driven AI (melee, ranged, flyers).
 //! * [`structures`] - turrets, walls, drills and ore deposits.
 //! * [`orders`] - every purchase / build / upgrade is a validated [`state::PlayerCommand`].
+//! * [`nav`] - walkability grid and A* pathfinding for AI.
+//! * [`versus`] - lobby, teams, bot backfill, scoring and rematches.
 //! * [`net`] - host/client replication on top of `oz_net`.
 //! * [`session`] - starting and tearing down a match.
 //!
@@ -23,12 +25,14 @@
 pub mod bots;
 pub mod combat;
 pub mod enemy;
+pub mod nav;
 pub mod net;
 pub mod orders;
 pub mod player;
 pub mod session;
 pub mod state;
 pub mod structures;
+pub mod versus;
 pub mod weapons;
 
 use bevy::prelude::*;
@@ -38,9 +42,9 @@ pub mod prelude {
     pub use crate::enemy::{Enemy, spawn_enemy};
     pub use crate::net::{NetId, NetLink};
     pub use crate::bots::Bot;
-    pub use crate::player::{Arsenal, EYE, Health, Loadout, LocalPlayer, Mover, Player, PlayerInput, buttons};
-    pub use crate::session::{Content, Map, MatchEntity, MatchSetup, ModeDef, Modes, PendingMatch, Station, end_match};
-    pub use crate::state::{CommandEvent, FxEvent, MatchPhase, MatchState, NetRole, Phase, PlayerCommand, Rules, SimRng};
+    pub use crate::player::{Arsenal, EYE, Health, Loadout, LocalPlayer, Mover, Player, PlayerInput, buttons, flags, stance};
+    pub use crate::session::{Content, Map, MatchEntity, MatchSetup, ModeDef, Modes, PendingMatch, Station, Statics, end_match};
+    pub use crate::state::{CommandEvent, FxEvent, LobbyAction, MatchPhase, MatchState, NetRole, Phase, PlayerCommand, RosterEntry, Rules, SimRng};
     pub use crate::structures::{OreNode, Structure};
     pub use crate::{SimPlugin, SimSet, authority, sim_dt};
     pub use oz_core::{
@@ -84,6 +88,8 @@ impl Plugin for SimPlugin {
             .init_resource::<session::Modes>()
             .init_resource::<session::PendingMatch>()
             .init_resource::<net::NetLink>()
+            .init_resource::<nav::NavScratch>()
+            .init_resource::<nav::NavBudget>()
             .add_event::<state::FxEvent>()
             .add_event::<state::CommandEvent>()
             .add_event::<combat::Hit>()
@@ -92,10 +98,12 @@ impl Plugin for SimPlugin {
             .add_systems(Update, (net::poll_joining, session::start_pending_match).chain().before(SimSet::Receive))
             .add_systems(Update, (net::host_receive, net::client_receive).in_set(SimSet::Receive).run_if(in_state(Active)))
             .add_systems(Update, orders::process_commands.in_set(SimSet::Orders))
+            .add_systems(Update, (versus::run_versus, versus::fill_teams).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
             .add_systems(
                 Update,
                 (
                     combat::rebuild_grid,
+                    nav::refill_budget,
                     player::vitals,
                     bots::drive_bots,
                     weapons::fire_weapons,
@@ -107,7 +115,7 @@ impl Plugin for SimPlugin {
                     .chain()
                     .in_set(SimSet::Logic),
             )
-            .add_systems(Update, combat::resolve_hits.in_set(SimSet::Resolve))
+            .add_systems(Update, (combat::resolve_hits, player::presentation_flags, versus::update_roster).chain().in_set(SimSet::Resolve))
             .add_systems(Update, (player::move_players, net::smooth_remote).after(SimSet::Receive).before(SimSet::Orders).run_if(in_state(Active)))
             .add_systems(Update, (net::host_send, net::client_send).in_set(SimSet::Send).run_if(in_state(Active)))
             .add_systems(OnExit(Active), session::cleanup_match);

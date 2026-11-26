@@ -1,7 +1,7 @@
 //! Shared match state, rules, commands and presentation events.
 
 use bevy::prelude::*;
-use oz_core::{arsenal::ModKind, economy::Stock, rng::Rng, synth::Sfx, worldgen::WorldRecipe};
+use oz_core::{arsenal::ModKind, economy::Stock, model::Paint, rng::Rng, synth::Sfx, worldgen::WorldRecipe};
 use serde::{Deserialize, Serialize};
 
 /// Who owns the simulation on this machine.
@@ -32,6 +32,10 @@ pub enum Phase {
     Night,
     Won,
     Lost,
+    /// Versus: gathering in the lobby before a match.
+    Lobby,
+    /// Versus: the match is being played.
+    Live,
 }
 
 /// Match configuration. Chosen in the menu, sent to joining clients verbatim.
@@ -81,6 +85,27 @@ pub struct MatchState {
     pub scores: [u32; 2],
     /// Winning team once `phase` is `Won`.
     pub winner: u8,
+    /// Everyone in the match, for lobbies, scoreboards and names.
+    pub roster: Vec<RosterEntry>,
+    /// Versus: players per team (humans first, bots fill the rest).
+    pub team_size: u8,
+    /// Seconds until the lobby launches the match; 0 = not counting down.
+    pub countdown: f32,
+    /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
+    #[serde(skip)]
+    pub credits: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RosterEntry {
+    pub id: u8,
+    pub name: String,
+    pub team: u8,
+    pub bot: bool,
+    pub ready: bool,
+    pub alive: bool,
+    pub kills: u16,
+    pub deaths: u16,
 }
 
 impl MatchState {
@@ -111,6 +136,18 @@ pub enum PlayerCommand {
     Loadout(crate::player::Loadout),
     /// Mode-specific action, interpreted by the mode's director (e.g. "call nightfall").
     Mode(u8),
+    /// Versus lobby controls.
+    Lobby(LobbyAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LobbyAction {
+    ToggleReady,
+    /// Host only: launch the match.
+    Start,
+    SwitchTeam,
+    /// Host only: change players per team.
+    TeamSize(i8),
 }
 
 #[derive(Event, Clone, Debug)]
@@ -123,7 +160,7 @@ pub struct CommandEvent {
 #[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FxEvent {
     /// A shot or beam. `by` is a player id, or 255 for turrets.
-    Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool },
+    Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool, tracer: Paint, quiet: bool },
     Explosion { at: Vec3, radius: f32 },
     EnemyDied { at: Vec3, kind: u16 },
     StructureLost { at: Vec3 },
