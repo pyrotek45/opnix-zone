@@ -103,8 +103,11 @@ Ready-to-run builds come from the **Release builds** workflow
 `v*` tag to publish a release. It produces:
 
 * `IronTown-x86_64.AppImage` / `EmberAtoll-x86_64.AppImage` - Linux: make it
-  executable and run it. `./IronTown-x86_64.AppImage server` starts the
-  dedicated server instead.
+  executable (`chmod +x`) and run it. `./IronTown-x86_64.AppImage server`
+  starts the dedicated server instead. Built against glibc 2.31, so they run
+  on any desktop distro from about 2020 on (Ubuntu 20.04+, Debian 11+,
+  Fedora 32+, SteamOS). If FUSE is missing, run with
+  `APPIMAGE_EXTRACT_AND_RUN=1`.
 * `IronTown.exe` / `EmberAtoll.exe` - Windows, a single file each, plus
   `*-windows.zip` with the game and its dedicated server.
 
