@@ -129,7 +129,7 @@ fn forward(port: u16) -> PortStatus {
     };
     let Some(IpAddr::V4(local)) = local_ip() else { return PortStatus::Unavailable("NO LOCAL ADDRESS".into()) };
     let local = SocketAddr::new(IpAddr::V4(local), port);
-    if gateway.add_port(PortMappingProtocol::TCP, port, local, 4 * 3600, "Opnix Zone").is_err() {
+    if gateway.add_port(PortMappingProtocol::UDP, port, local, 4 * 3600, "Opnix Zone").is_err() {
         return PortStatus::Unavailable("ROUTER REFUSED THE PORT".into());
     }
     match gateway.get_external_ip() {

@@ -18,13 +18,15 @@ use oz_sim::prelude::*;
 pub fn hosting_info(host: &oz_sim::net::HostLink) -> String {
     use oz_net::lan::{PortStatus, local_ip};
     let lan = local_ip().map_or("NO NETWORK".to_string(), |ip| format!("{ip}:{}", host.port));
-    let internet = match host.router_status() {
-        Some(PortStatus::Open(ip)) => format!("INTERNET  {ip}:{}  (PORT OPENED)", host.port),
-        Some(PortStatus::Trying) => "INTERNET  OPENING ROUTER PORT...".to_string(),
-        Some(PortStatus::Unavailable(_)) => format!("INTERNET  FORWARD TCP {} OR USE A VPN", host.port),
-        None => "LOCAL ONLY".to_string(),
+    let internet = match (host.router_status(), host.public_addr()) {
+        (Some(PortStatus::Open(ip)), _) => format!("DIRECT  {ip}:{}", host.port),
+        (_, Some(public)) => format!("DIRECT  {public}"),
+        (Some(PortStatus::Trying), None) => "FINDING INTERNET ADDRESS...".to_string(),
+        (Some(_), None) => "NO INTERNET ADDRESS YET".to_string(),
+        (None, None) => "LOCAL ONLY".to_string(),
     };
-    format!("LAN  {lan}      {internet}")
+    let code = host.join_code().map_or(String::new(), |code| format!("JOIN CODE  {}      ", oz_net::rendezvous::pretty_code(&code)));
+    format!("{code}LAN  {lan}      {internet}")
 }
 
 pub const TEAM_NAMES: [&str; 2] = ["TEAL", "CORAL"];

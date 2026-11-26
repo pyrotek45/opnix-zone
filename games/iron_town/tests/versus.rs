@@ -459,3 +459,32 @@ fn a_class_saved_in_the_lobby_is_used_at_kickoff() {
     assert_eq!((player.perk, player.gear), (1, gear));
     assert!(arsenal.owns(oz_core::kit::gun::SHOTGUN));
 }
+
+#[test]
+fn a_friend_joins_with_the_code_from_the_lobby() {
+    use oz_net::rendezvous::{Board, MemoryBoard};
+    use std::sync::Arc;
+    let board: Arc<dyn Board> = Arc::new(MemoryBoard::default());
+    let (mut host, mut client) = (app(), app());
+    let mut rules = deathmatch_rules(12);
+    rules.team_size = 2;
+    start(&mut host, net::host_setup_with(rules, "HOST", "127.0.0.1:0", false, Some(board.clone())).unwrap());
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let code = oz_net::rendezvous::pretty_code(&link.join_code().expect("a code"));
+
+    let world = client.world_mut();
+    net::join_code_with(&mut world.commands(), &code.to_lowercase(), "FRIEND", 5, board);
+    world.flush();
+    let started = Instant::now();
+    loop {
+        host.update();
+        client.update();
+        std::thread::sleep(Duration::from_millis(2));
+        let joined = *client.world().resource::<State<MatchPhase>>().get() == MatchPhase::Active;
+        let names: Vec<String> = host.world_mut().query::<&Player>().iter(host.world()).map(|p| p.name.clone()).collect();
+        if joined && names.iter().any(|n| n == "FRIEND") {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(20), "never joined by code: {:?}", client.world().resource::<net::JoinStatus>());
+    }
+}

@@ -13,6 +13,7 @@ upnp = ["dep:igd-next"]
 serde.workspace = true
 bincode.workspace = true
 igd-next = { version = "0.16", optional = true }
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [lints]
 workspace = true

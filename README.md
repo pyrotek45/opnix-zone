@@ -30,18 +30,28 @@ Shortcuts past the menu: `--solo`, `--host`, `--join ADDRESS`, `--mode N`,
 `--seed N`, `--teams N`. **MODEL VIEWER** in the main menu shows every
 operator pose side by side.
 
-## Playing online (no cloud server needed)
+## Playing online (no server, no VPN, no port forwarding)
 
-One player picks **HOST GAME** and plays too. Friends pick **JOIN GAME**.
+One player picks **HOST GAME** and plays too. The lobby shows a **join code**
+like `K7Q-4MZ`. Friends pick **JOIN GAME**, type the code, and connect.
 
+* **Over the internet:** the code is all anyone needs. Behind the scenes both
+  games ask a public STUN server what their internet address is, swap
+  addresses through a free public message board (ntfy.sh) under that code,
+  and then send packets straight at each other. That "hole punching" opens
+  both home routers, so no ports have to be forwarded and nobody needs
+  Hamachi or another VPN. Game traffic goes directly between players; the
+  board only ever sees addresses. The host also asks the router for a UPnP
+  port (UDP 27650) as a second way in.
 * **Same network (LAN):** the host shows up under *Games on your network* on
-  the Join screen - click it. Nothing to type.
-* **Over the internet:** the host's lobby and pause menu show the addresses
-  to share. When you host, the game asks your router to open TCP port
-  **27650** automatically (UPnP). If the router allows it, the lobby shows
-  your internet address to give friends. If not, forward that port by hand,
-  or put everyone on a free mesh VPN such as Tailscale or ZeroTier and use the
-  host's VPN address. There is no relay server.
+  the Join screen - click it.
+* **By address:** the Join field also takes an IP (or `ip:port`).
+
+Hole punching works with almost every home router. It cannot get through
+"symmetric" NATs (some mobile hotspots and office networks); if both players
+are on one of those, someone needs a forwarded UDP port or a VPN. To use your
+own ntfy-compatible board instead of ntfy.sh, set `OPNIX_BOARD` (for example
+`OPNIX_BOARD=https://ntfy.example.org`).
 
 What makes it play well online:
 
@@ -54,6 +64,10 @@ What makes it play well online:
   count happen immediately on your machine; the host confirms in the
   background. Rockets and thrown gear leave your hand at once too. Quick taps
   between network sends are never lost, and weapon swaps show at once.
+* **UDP with two lanes.** Commands and effects are reliable and ordered
+  (selective acks, round-trip-based resends); snapshots and pings are
+  latest-only, so a lost packet never holds up newer ones. Tested with 30%
+  packet loss.
 * **Clean failures.** Ping is on the scoreboard (and in the corner with
   *FPS / PING* on). Silent connections time out on both sides, and you are
   told why you were disconnected.
@@ -67,7 +81,7 @@ What makes it play well online:
   and everyone sees each other's real attachments.
 
 Headless dedicated servers are included too, for running a match on a spare
-machine. The Iron Town one starts each match on its own after a short lobby:
+machine. They print their join code on start. The Iron Town one starts each match on its own after a short lobby:
 
 ```bash
 cargo run --release -p iron_town --bin iron_server -- --teams 4 --score 30

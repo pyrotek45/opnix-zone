@@ -69,14 +69,21 @@ Listen-server model: the host owns the simulation and also plays.
   `oz_client::reconnect` retries it.
 * One-shot effects travel as `FxEvent` batches, so every machine replays the
   same tracers, explosions and sounds.
+* Snapshots, private state and pings use the latest-only lane; everything
+  else is reliable.
 * Pings run once a second; silent connections are dropped (6 s on a client,
   10 s on the host).
 * `oz_net::lan` adds LAN discovery (UDP broadcast on 27651) and UPnP port
   forwarding on a background thread.
 * The map is never sent: host and clients generate it from the same `WorldRecipe`.
 
-`oz_net` hides the wire. Swapping TCP for UDP, a relay, or a platform socket
-layer does not touch gameplay code.
+`oz_net` hides the wire: one UDP socket per side with a reliable ordered lane
+(segments, cumulative + selective acks, RTT-based resends) and a latest-only
+lane (fragmented, never resent, stale messages dropped). `oz_net::stun` asks
+public STUN servers for the socket's internet address and
+`oz_net::rendezvous` swaps addresses under a join code on a public ntfy
+board, after which `Host::punch` opens the host's router toward the joiner.
+Gameplay code never sees any of it.
 
 ## Collision and movement
 

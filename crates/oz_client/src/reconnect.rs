@@ -16,7 +16,7 @@ use oz_sim::{
     prelude::*,
 };
 
-const ATTEMPTS: u8 = 5;
+const ATTEMPTS: u8 = 4;
 const GAP: f32 = 2.5;
 
 #[derive(Resource, Default)]
@@ -61,7 +61,7 @@ fn retry(time: Res<Time<Real>>, lost: Option<Res<LostHost>>, joining: Option<Res
         *reconnect = Reconnect { lost: true, attempts: 0, wait: 1.0 };
     }
     // One attempt at a time; wait for the last to finish.
-    if joining.is_some() || *join == JoinStatus::Connecting {
+    if joining.is_some() || matches!(*join, JoinStatus::Connecting | JoinStatus::Finding(_)) {
         return;
     }
     let was_waiting = reconnect.wait > 0.0;
@@ -77,7 +77,11 @@ fn retry(time: Res<Time<Real>>, lost: Option<Res<LostHost>>, joining: Option<Res
     }
     reconnect.attempts += 1;
     reconnect.wait = GAP;
-    net::join_as(&mut commands, &lost.address, lost.name.clone(), lost.token);
+    // A code goes back through the board, so both routers are punched again.
+    match &lost.code {
+        Some(code) => net::join_code(&mut commands, code, lost.name.clone(), lost.token),
+        None => net::join_as(&mut commands, &lost.address, lost.name.clone(), lost.token),
+    }
     dirty.0 = true;
 }
 

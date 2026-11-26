@@ -233,7 +233,11 @@ fn menu_actions(
             }
             Act::Connect => {
                 settings.save();
-                net::join_as(&mut commands, &normalize_address(&settings.last_address), settings.callsign.clone(), settings.token);
+                if oz_net::rendezvous::normalize_code(&settings.last_address).is_some() {
+                    net::join_code(&mut commands, &settings.last_address, settings.callsign.clone(), settings.token);
+                } else {
+                    net::join_as(&mut commands, &normalize_address(&settings.last_address), settings.callsign.clone(), settings.token);
+                }
             }
             Act::Edit(field) => menu.editing = if menu.editing == Some(*field) { None } else { Some(*field) },
             Act::Set(setting, step) => {
@@ -347,19 +351,20 @@ fn build_menu(
             let status = match &*join {
                 JoinStatus::Idle => ("CLICK A FIELD TO EDIT IT, THEN CONNECT".to_string(), ui::DIM),
                 JoinStatus::Connecting => ("CONNECTING...".to_string(), ui::ACCENT),
+                JoinStatus::Finding(what) => (what.clone(), ui::ACCENT),
                 JoinStatus::Failed(why) => (why.clone(), ui::WARN),
             };
             ui::root_left(&mut commands, 0.0).with_children(|root| {
                 ui::label(root, "JOIN GAME", 34.0, ui::TEXT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
                     ui::button(panel, order, field("CALLSIGN", &settings.callsign, menu.editing == Some(Field::Callsign)), Act::Edit(Field::Callsign));
-                    ui::button(panel, order, field("ADDRESS", &settings.last_address, menu.editing == Some(Field::Address)), Act::Edit(Field::Address));
-                    ui::label(panel, format!("HOST IP OR NAME. PORT {DEFAULT_PORT} IS USED UNLESS YOU ADD :PORT"), 13.0, ui::DIM);
+                    ui::button(panel, order, field("CODE / IP", &settings.last_address, menu.editing == Some(Field::Address)), Act::Edit(Field::Address));
+                    ui::label(panel, "THE JOIN CODE FROM THE HOST'S LOBBY (LIKE K7Q-4MZ), OR AN IP ADDRESS", 13.0, ui::DIM);
                     ui::button(panel, order, "CONNECT", Act::Connect);
                     ui::label(panel, status.0, 14.0, status.1);
                     ui::label(panel, "GAMES ON YOUR NETWORK", 15.0, ui::ACCENT);
                     if menu.found.is_empty() {
-                        ui::label(panel, if menu.searching { "SEARCHING..." } else { "NONE FOUND. HOSTS ON OTHER NETWORKS: TYPE THEIR ADDRESS ABOVE." }, 13.0, ui::DIM);
+                        ui::label(panel, if menu.searching { "SEARCHING..." } else { "NONE FOUND. HOSTS ON OTHER NETWORKS: TYPE THEIR JOIN CODE ABOVE." }, 13.0, ui::DIM);
                     }
                     for (index, game) in menu.found.iter().enumerate() {
                         ui::button(panel, order, format!("{:<18} {:<16} {} PLAYER(S)", game.name, game.mode, game.players), Act::JoinFound(index));

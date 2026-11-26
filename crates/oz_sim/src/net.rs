@@ -34,7 +34,8 @@ use bevy::{platform::collections::HashMap, prelude::*};
 use oz_core::{content::ShotLook, economy::Ore};
 use oz_net::{
     Client, ClientEvent, Host, HostEvent, PeerId,
-    lan::{Beacon, PortStatus, open_port},
+    lan::{Beacon, PortStatus, local_ip, open_port},
+    rendezvous::{self, Board, Ntfy, Rendezvous},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -44,7 +45,7 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 /// How long the host remembers someone who dropped, so they can reconnect into the same seat.
 pub const REJOIN_WINDOW: f32 = 600.0;
 /// How far behind the host's clock clients play back remote entities.
@@ -288,6 +289,9 @@ pub struct HostLink {
     pub router: Option<Arc<Mutex<PortStatus>>>,
     /// Peer -> reconnect token.
     tokens: HashMap<PeerId, u64>,
+    /// Join-code matchmaking through a public board (internet hosts only).
+    pub rendezvous: Option<Rendezvous>,
+    rendezvous_timer: f32,
     /// Players who dropped recently, kept so they can take their seat back.
     departed: Vec<Departed>,
 }
@@ -311,6 +315,37 @@ impl HostLink {
     pub fn router_status(&self) -> Option<PortStatus> {
         self.router.as_ref().and_then(|status| status.lock().ok().map(|s| s.clone()))
     }
+
+    /// The code friends type to join, if this host is reachable that way.
+    pub fn join_code(&self) -> Option<String> {
+        self.rendezvous.as_ref().map(|r| r.code.clone())
+    }
+
+    /// Our address as the internet sees it (from STUN).
+    pub fn public_addr(&self) -> Option<std::net::SocketAddr> {
+        self.host.public_addr()
+    }
+
+    /// Every address a friend might reach us at.
+    fn candidates(&self) -> Vec<std::net::SocketAddr> {
+        let mut out = Vec::new();
+        // Bound to one specific address (tests, multi-homed machines): that one first.
+        if let Ok(bound) = self.host.local_addr()
+            && !bound.ip().is_unspecified() {
+                out.push(bound);
+            }
+        if let Some(ip) = local_ip() {
+            out.push(std::net::SocketAddr::new(ip, self.port));
+        }
+        if let Some(public) = self.host.public_addr() {
+            out.push(public);
+        }
+        if let Some(PortStatus::Open(ip)) = self.router_status() {
+            out.push(std::net::SocketAddr::new(ip, self.port));
+        }
+        out.dedup();
+        out
+    }
 }
 
 pub struct ClientLink {
@@ -318,6 +353,8 @@ pub struct ClientLink {
     pub player: u8,
     /// Where we connected and who we are, for reconnecting.
     pub address: String,
+    /// The join code used, if any (reconnects go through it again).
+    pub code: Option<String>,
     pub name: String,
     pub token: u64,
     send_timer: f32,
@@ -330,6 +367,7 @@ pub struct ClientLink {
 }
 
 #[derive(Resource, Default)]
+#[allow(clippy::large_enum_variant)]
 pub enum NetLink {
     #[default]
     None,
@@ -349,9 +387,25 @@ impl NetLink {
 /// Opens a listen server and returns a setup ready for [`PendingMatch`].
 /// Loopback-only hosts (tests, local experiments) skip LAN discovery and router setup.
 pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedicated: bool) -> std::io::Result<MatchSetup> {
-    let host = Host::bind(addr)?;
+    let bound_loopback = addr.starts_with("127.") || addr.starts_with("localhost");
+    let board = (!bound_loopback).then(default_board);
+    host_setup_with(rules, player_name, addr, dedicated, board)
+}
+
+/// The public board join codes go through: ntfy.sh, or `OPNIX_BOARD` if set.
+pub fn default_board() -> Arc<dyn Board> {
+    let base = std::env::var("OPNIX_BOARD").ok().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| rendezvous::DEFAULT_BOARD.to_string());
+    Arc::new(Ntfy { base })
+}
+
+/// Like [`host_setup`], with an explicit board for join codes (`None` = no code).
+pub fn host_setup_with(rules: Rules, player_name: impl Into<String>, addr: &str, dedicated: bool, board: Option<Arc<dyn Board>>) -> std::io::Result<MatchSetup> {
+    let mut host = Host::bind(addr)?;
     let bound = host.local_addr()?;
     let public = !bound.ip().is_loopback();
+    if public {
+        host.discover_public_address();
+    }
     let link = NetLink::Host(HostLink {
         host,
         peers: HashMap::default(),
@@ -361,6 +415,8 @@ pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedi
         beacon: if public { Beacon::bind() } else { None },
         router: public.then(|| open_port(bound.port())),
         tokens: HashMap::default(),
+        rendezvous: board.map(|board| Rendezvous::host(board, rendezvous::new_code())),
+        rendezvous_timer: 0.0,
         departed: Vec::new(),
     });
     Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0 })
@@ -374,12 +430,15 @@ pub struct Joining {
     address: String,
     token: u64,
     waited: f32,
+    /// Joining by code: the board conversation that finds the host.
+    rendezvous: Option<Rendezvous>,
 }
 
 /// Set when a client loses its host unexpectedly: where to reconnect.
 #[derive(Resource, Clone, Debug)]
 pub struct LostHost {
     pub address: String,
+    pub code: Option<String>,
     pub name: String,
     pub token: u64,
 }
@@ -390,6 +449,8 @@ pub enum JoinStatus {
     #[default]
     Idle,
     Connecting,
+    /// Joining by code; the text says how far it got.
+    Finding(String),
     Failed(String),
 }
 
@@ -403,10 +464,35 @@ pub fn join_as(commands: &mut Commands, addr: &str, name: impl Into<String>, tok
     match Client::connect(addr) {
         Ok(mut client) => {
             client.send(&C2S::Hello { protocol: PROTOCOL, name: name.clone(), token });
-            commands.insert_resource(Joining { client: Some(client), name, address: addr.to_string(), token, waited: 0.0 });
+            commands.insert_resource(Joining { client: Some(client), name, address: addr.to_string(), token, waited: 0.0, rendezvous: None });
             commands.insert_resource(JoinStatus::Connecting);
         }
         Err(error) => commands.insert_resource(JoinStatus::Failed(format!("COULD NOT CONNECT: {error}"))),
+    }
+}
+
+/// Joins with a code from the host's lobby: finds the host through the public
+/// board, then both sides punch through their routers.
+pub fn join_code(commands: &mut Commands, code: &str, name: impl Into<String>, token: u64) {
+    join_code_with(commands, code, name, token, default_board());
+}
+
+pub fn join_code_with(commands: &mut Commands, code: &str, name: impl Into<String>, token: u64, board: Arc<dyn Board>) {
+    let Some(code) = rendezvous::normalize_code(code) else {
+        commands.insert_resource(JoinStatus::Failed("THAT IS NOT A JOIN CODE".into()));
+        return;
+    };
+    match Client::open() {
+        Ok(mut client) => {
+            let name = name.into();
+            client.discover_public_address();
+            // Queued now, sent the moment the host answers.
+            client.send(&C2S::Hello { protocol: PROTOCOL, name: name.clone(), token });
+            let rendezvous = Rendezvous::join(board, code.clone());
+            commands.insert_resource(Joining { client: Some(client), name, address: code, token, waited: 0.0, rendezvous: Some(rendezvous) });
+            commands.insert_resource(JoinStatus::Finding("LOOKING UP THE CODE...".into()));
+        }
+        Err(error) => commands.insert_resource(JoinStatus::Failed(format!("COULD NOT OPEN A SOCKET: {error}"))),
     }
 }
 
@@ -414,6 +500,34 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
     let Some(mut joining) = joining else { return };
     joining.waited += time.delta_secs();
     let mut outcome = None;
+    // Joining by code: keep the board told where we are, and try wherever the host says it is.
+    let joining = &mut *joining;
+    if let (Some(rendezvous), Some(client)) = (&joining.rendezvous, &mut joining.client) {
+        let mut ours = Vec::new();
+        if let Some(ip) = local_ip() {
+            ours.push(std::net::SocketAddr::new(ip, client.local_port()));
+        }
+        // Give STUN a moment so the first post already carries the public address.
+        if let Some(public) = client.public_addr() {
+            ours.push(public);
+        }
+        if client.public_addr().is_some() || joining.waited > 2.0 {
+            rendezvous.set_ours(ours);
+        }
+        client.add_candidates(&rendezvous.host_addrs());
+        let status = if client.is_established() {
+            None
+        } else if rendezvous.found_host() {
+            Some("FOUND THE HOST - CONNECTING...".to_string())
+        } else if let Some(trouble) = rendezvous.trouble() {
+            Some(format!("CANNOT REACH THE CODE BOARD ({})", trouble.chars().take(40).collect::<String>().to_uppercase()))
+        } else {
+            Some("LOOKING UP THE CODE...".to_string())
+        };
+        if let Some(status) = status {
+            commands.insert_resource(JoinStatus::Finding(status));
+        }
+    }
     let events = joining.client.as_mut().map(|client| client.poll()).unwrap_or_default();
     for event in events {
         match event {
@@ -423,8 +537,13 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
             ClientEvent::Message(_) => {}
         }
     }
-    if joining.waited > 8.0 && outcome.is_none() {
-        outcome = Some(Err("HOST DID NOT ANSWER".into()));
+    let limit = if joining.rendezvous.is_some() { 30.0 } else { 8.0 };
+    if joining.waited > limit && outcome.is_none() {
+        outcome = Some(Err(match &joining.rendezvous {
+            Some(r) if !r.found_host() => "NO GAME WITH THAT CODE (OR THE CODE BOARD IS UNREACHABLE)".into(),
+            Some(_) => "FOUND THE HOST BUT COULD NOT GET THROUGH ITS ROUTER".into(),
+            None => "HOST DID NOT ANSWER".into(),
+        }));
     }
     let Some(outcome) = outcome else { return };
     commands.remove_resource::<Joining>();
@@ -433,10 +552,13 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
             // Take the socket out of the resource we are about to drop.
             let name = joining.name.clone();
             let Some(client) = joining.client.take() else { return };
+            let code = joining.rendezvous.as_ref().map(|r| r.code.clone());
+            let address = client.host_addr().map_or(joining.address.clone(), |a| a.to_string());
             let link = NetLink::Client(ClientLink {
                 client,
                 player,
-                address: joining.address.clone(),
+                address,
+                code,
                 name: name.clone(),
                 token: joining.token,
                 send_timer: 0.0,
@@ -477,6 +599,19 @@ pub fn host_receive(
         let host_name = state.roster.iter().find(|r| r.id == 0).map_or("DEDICATED SERVER", |r| r.name.as_str());
         let humans = state.roster.iter().filter(|r| !r.bot).count() as u8;
         beacon.poll(link.port, host_name, mode, humans);
+    }
+    // Join codes: keep our addresses posted, and punch toward everyone who wants in.
+    link.rendezvous_timer -= time.delta_secs();
+    if link.rendezvous_timer <= 0.0 {
+        link.rendezvous_timer = 1.0;
+        let candidates = link.candidates();
+        if let Some(rendezvous) = &link.rendezvous {
+            rendezvous.set_ours(candidates);
+        }
+    }
+    let joiners = link.rendezvous.as_ref().map(|r| r.take_joiners()).unwrap_or_default();
+    for addr in joiners.into_iter().flatten() {
+        link.host.punch(addr);
     }
     // Peers that went quiet are dropped as if they had disconnected.
     let stale: Vec<PeerId> = link.peers.keys().copied().filter(|peer| link.host.silent_for(*peer).is_some_and(|d| d > HOST_TIMEOUT)).collect();
@@ -561,7 +696,7 @@ pub fn host_receive(
                         }
                     }
                     C2S::Ping { sent, rtt } => {
-                        link.host.send(peer, &S2C::Pong { sent });
+                        link.host.send_latest(peer, &S2C::Pong { sent });
                         if let Some((_, mut player, ..)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
                             player.ping = rtt;
                         }
@@ -659,16 +794,17 @@ pub fn host_send(
             entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0 });
         }
     }
-    link.host.broadcast(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), full, state: state.clone(), entities }));
+    link.host.broadcast_latest(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), full, state: state.clone(), entities }));
 
     let peers: Vec<(PeerId, u8)> = link.peers.iter().map(|(peer, id)| (*peer, *id)).collect();
     for (peer, id) in peers {
         if let Some((_, player, transform, health, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == id) {
             // Just-spawned players are also pinned so they start at their base.
             let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4).then_some(transform.translation);
-            link.host.send(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, teleport }));
+            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, teleport }));
         }
-    }
+    }    // Out now rather than on next frame's poll.
+    link.host.flush();
 }
 
 /// Client: apply snapshots, private state and effects.
@@ -800,7 +936,7 @@ pub fn client_receive(
             }
             ClientEvent::Message(_) => {}
             ClientEvent::Disconnected => {
-                commands.insert_resource(LostHost { address: link.address.clone(), name: link.name.clone(), token: link.token });
+                commands.insert_resource(LostHost { address: link.address.clone(), code: link.code.clone(), name: link.name.clone(), token: link.token });
                 let why = if link.client.silent_for() > CLIENT_TIMEOUT { "THE HOST STOPPED RESPONDING" } else { "THE HOST CLOSED THE MATCH" };
                 commands.insert_resource(JoinStatus::Failed(why.into()));
                 crate::session::end_match(&mut next);
@@ -828,7 +964,7 @@ pub fn client_send(
     link.ping_timer -= time.delta_secs();
     if link.ping_timer <= 0.0 {
         link.ping_timer = PING_EVERY;
-        link.client.send(&C2S::Ping { sent: now, rtt: link.rtt });
+        link.client.send_latest(&C2S::Ping { sent: now, rtt: link.rtt });
     }
     link.send_timer -= time.delta_secs();
     if link.send_timer <= 0.0 {
@@ -838,6 +974,7 @@ pub fn client_send(
         link.latched = 0;
         link.client.send(&C2S::Input { input: sent, pos: transform.translation, view: clock.view(now) });
     }
+    link.client.flush();
 }
 
 /// Plays networked entities back from their sample buffers, a little in the past.
@@ -886,6 +1023,23 @@ impl Departed {
             input.weapon = current;
         }
     }
+}
+
+/// Dedicated servers: prints the join code, and the public address once STUN answers.
+pub fn print_join_code(link: Res<NetLink>, mut said: Local<(bool, bool)>) {
+    let NetLink::Host(host) = &*link else { return };
+    if !said.0 {
+        said.0 = true;
+        match host.join_code() {
+            Some(code) => println!("JOIN CODE: {}   (friends type this on the Join screen)", rendezvous::pretty_code(&code)),
+            None => println!("no join code (local only)"),
+        }
+    }
+    if !said.1
+        && let Some(public) = host.public_addr() {
+            said.1 = true;
+            println!("internet address: {public}");
+        }
 }
 
 #[cfg(test)]

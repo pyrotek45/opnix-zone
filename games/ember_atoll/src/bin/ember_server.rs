@@ -37,7 +37,7 @@ fn main() {
         }
     }
     println!("Ember Atoll dedicated server - mode {name}, port {port}. Ctrl+C to stop.");
-    app.add_systems(Update, restart_when_lost).run();
+    app.add_systems(Update, (restart_when_lost, net::print_join_code.run_if(in_state(MatchPhase::Active)))).run();
 }
 
 /// A lost match restarts after a short pause so the server never sits dead.

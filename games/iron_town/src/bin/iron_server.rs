@@ -36,7 +36,7 @@ fn main() {
         }
     }
     println!("Iron Town server - {n}v{n}, first to {}, port {port}. Ctrl+C to stop.", rules.score_limit, n = rules.team_size);
-    app.insert_resource(LobbyWait(wait)).add_systems(Update, (auto_start, report).run_if(in_state(MatchPhase::Active))).run();
+    app.insert_resource(LobbyWait(wait)).add_systems(Update, (auto_start, report, net::print_join_code).run_if(in_state(MatchPhase::Active))).run();
 }
 
 /// Stands in for the host: launches the match once the lobby has waited long enough.

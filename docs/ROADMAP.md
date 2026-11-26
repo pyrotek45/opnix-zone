@@ -18,9 +18,12 @@
   the two can differ slightly when spread or a moving target is involved.
 * **Movement is owner-authoritative.** It feels instant but trusts clients;
   there is no anti-cheat.
-* **TCP transport, direct connections.** The host tries UPnP; routers without
-  it need a forwarded port or a mesh VPN. There is no relay, internet server
-  browser or NAT punch-through.
+* **No relay.** Join codes punch through ordinary home routers, but two
+  players both behind symmetric NAT need a forwarded UDP port or a VPN. A
+  relay fallback would need a public server.
+* **Join codes depend on a public board** (ntfy.sh by default). If it is down,
+  LAN discovery and IP addresses still work, and `OPNIX_BOARD` can point at
+  any ntfy-compatible server.
 * **Gamepad buttons are fixed;** keyboard and mouse can be rebound.
 * **Snapshots are full-state.** They are compact, but very large matches will
   want delta compression and interest management.
