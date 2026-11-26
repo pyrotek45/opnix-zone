@@ -10,6 +10,7 @@ audio = ["bevy/bevy_audio", "bevy/wav"]
 
 [dependencies]
 oz_core.workspace = true
+oz_net.workspace = true
 oz_sim.workspace = true
 bevy = { workspace = true, features = [
   "bevy_asset", "bevy_color", "bevy_core_pipeline", "bevy_render", "bevy_pbr",

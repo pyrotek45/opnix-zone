@@ -1,4 +1,4 @@
-//! Small, fast, deterministic RNG (splitmix64). Same seed, same world — on every machine.
+//! Small, fast, deterministic RNG (splitmix64). Same seed, same world - on every machine.
 
 #[derive(Clone, Debug)]
 pub struct Rng(u64);

@@ -1,4 +1,4 @@
-//! `oz_net` — a small host/client message transport.
+//! `oz_net` - a small host/client message transport.
 //!
 //! The engine only needs "send typed messages to peers, receive typed messages
 //! back", so that is the whole API: [`Host`] accepts connections and

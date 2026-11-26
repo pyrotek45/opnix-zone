@@ -3158,6 +3158,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "oz_core",
+ "oz_net",
  "oz_sim",
 ]
 

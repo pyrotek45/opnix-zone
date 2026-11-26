@@ -3,7 +3,7 @@
 //! The model is deliberately simple and cheap:
 //!
 //! * The host owns the simulation. Clients send their input (and their own
-//!   position — movement is owner-authoritative so it feels instant) plus
+//!   position - movement is owner-authoritative so it feels instant) plus
 //!   [`PlayerCommand`]s for anything that changes shared state.
 //! * The host broadcasts quantised [`Snapshot`]s (15 bytes per entity) at
 //!   20 Hz, dropping to 10 Hz for very large battles. Slow-changing entities

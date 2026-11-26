@@ -1,4 +1,4 @@
-//! `oz_sim` — the authoritative, headless game simulation.
+//! `oz_sim` - the authoritative, headless game simulation.
 //!
 //! This crate knows nothing about rendering, windows or audio. It runs the
 //! same way inside a single-player game, a listen server ("host"), a
@@ -8,14 +8,14 @@
 //!
 //! Games compose a shooter out of these parts:
 //!
-//! * [`player`] — input, first-person movement, health and respawn.
-//! * [`weapons`] — data-driven firing: hitscan, projectiles, beams, mods.
-//! * [`combat`] — hits, splash, projectiles and the spatial grid.
-//! * [`enemy`] — catalog-driven AI (melee, ranged, flyers).
-//! * [`structures`] — turrets, walls, drills and ore deposits.
-//! * [`orders`] — every purchase / build / upgrade is a validated [`state::PlayerCommand`].
-//! * [`net`] — host/client replication on top of `oz_net`.
-//! * [`session`] — starting and tearing down a match.
+//! * [`player`] - input, first-person movement, health and respawn.
+//! * [`weapons`] - data-driven firing: hitscan, projectiles, beams, mods.
+//! * [`combat`] - hits, splash, projectiles and the spatial grid.
+//! * [`enemy`] - catalog-driven AI (melee, ranged, flyers).
+//! * [`structures`] - turrets, walls, drills and ore deposits.
+//! * [`orders`] - every purchase / build / upgrade is a validated [`state::PlayerCommand`].
+//! * [`net`] - host/client replication on top of `oz_net`.
+//! * [`session`] - starting and tearing down a match.
 //!
 //! A game mode is "a catalog + rules + a director plugin" (see `games/ember_atoll`).
 

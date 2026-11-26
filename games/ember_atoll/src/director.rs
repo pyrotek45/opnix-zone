@@ -113,7 +113,7 @@ fn run_director(
                 state.timer = 0.0;
                 state.enemies_left = siege.queue.len() as u32;
                 let boss = state.day % 5 == 0;
-                fx.write(FxEvent::notice(if boss { format!("NIGHT {} — SOMETHING HUGE IS COMING", state.day) } else { format!("NIGHT {} — THEY RISE FROM THE SEA", state.day) }));
+                fx.write(FxEvent::notice(if boss { format!("NIGHT {} - SOMETHING HUGE IS COMING", state.day) } else { format!("NIGHT {} - THEY RISE FROM THE SEA", state.day) }));
                 fx.write(FxEvent::Sound { sfx: Sfx::Horn, at: None });
             }
         }
@@ -140,7 +140,7 @@ fn run_director(
                 for mut node in &mut ores {
                     node.amount = (node.amount + node.max * 0.35).min(node.max);
                 }
-                fx.write(FxEvent::notice(format!("DAWN — NIGHT SURVIVED  +${bonus}")));
+                fx.write(FxEvent::notice(format!("DAWN - NIGHT SURVIVED  +${bonus}")));
                 fx.write(FxEvent::Sound { sfx: Sfx::Dawn, at: None });
             }
         }

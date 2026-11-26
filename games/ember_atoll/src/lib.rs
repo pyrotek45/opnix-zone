@@ -1,10 +1,10 @@
-//! Ember Atoll — defend the beacon from robotic sea creatures by night, mine
+//! Ember Atoll - defend the beacon from robotic sea creatures by night, mine
 //! and grow an automated mining empire across the islands by day.
 //!
 //! This crate is a thin game built from the Opnix Zone parts: it supplies
 //! content ([`content`]), a mode director ([`director`]) and the list of
-//! modes. Everything else — movement, weapons, AI, networking, rendering,
-//! menus — comes from `oz_sim` and `oz_client`.
+//! modes. Everything else - movement, weapons, AI, networking, rendering,
+//! menus - comes from `oz_sim` and `oz_client`.
 
 pub mod content;
 pub mod director;
@@ -41,7 +41,7 @@ pub fn horde_rules(seed: u64) -> Rules {
         day_seconds: 0.0,
         objective_hp: 0.0,
         mining: false,
-        difficulty: 1.25,
+        difficulty: 1.0,
         start_stock: Stock { credits: 400, ore: [0; 3] },
         starter_weapons: 0b110,
         respawn_seconds: 20.0,
@@ -58,10 +58,10 @@ impl Plugin for EmberAtollPlugin {
         app.insert_resource(Modes(vec![
             ModeDef { name: "FRONTIER", blurb: "Mine by day. Hold the beacon by night. Automate the islands.", playable: true, rules: frontier_rules, catalog: content::catalog },
             ModeDef { name: "HORDE", blurb: "Endless waves, no beacon, no mining. Last squad standing.", playable: true, rules: horde_rules, catalog: content::catalog },
-            planned("OUTBREAK", "PLANNED — round-based undead survival with wall buys and mystery crates."),
-            planned("DEATHMATCH", "PLANNED — fast team and free-for-all firefights with loadouts."),
-            planned("CONQUEST", "PLANNED — large maps, capture points, vehicles and squads."),
-            planned("BASTION", "PLANNED — tower-defense build-up along fixed attack lanes."),
+            planned("OUTBREAK", "PLANNED - round-based undead survival with wall buys and mystery crates."),
+            planned("DEATHMATCH", "PLANNED - fast team and free-for-all firefights with loadouts."),
+            planned("CONQUEST", "PLANNED - large maps, capture points, vehicles and squads."),
+            planned("BASTION", "PLANNED - tower-defense build-up along fixed attack lanes."),
         ]))
         .add_plugins(director::SiegePlugin);
     }

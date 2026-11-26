@@ -1,0 +1,167 @@
+//! One-shot effects: tracers, beams, sparks, gibs and explosions.
+//!
+//! All particles are unit primitives sharing the palette materials, so even a
+//! full burst batches into a few draw calls. A hard cap keeps worst-case
+//! fights cheap.
+
+use crate::{ClientSet, art::Art, hud::Notices, view::ViewState};
+use bevy::{pbr::NotShadowCaster, prelude::*};
+use oz_sim::prelude::*;
+
+const MAX_PARTICLES: usize = 500;
+
+#[derive(Component)]
+pub struct Particle {
+    velocity: Vec3,
+    gravity: f32,
+    life: f32,
+    initial: f32,
+    size: Vec3,
+    /// Grows instead of shrinking (explosion flashes).
+    grow: f32,
+}
+
+/// Request to play a sound. Consumed by the audio module when it is enabled.
+#[derive(Event, Clone, Copy)]
+pub struct PlaySfx {
+    pub sfx: Sfx,
+    pub at: Option<Vec3>,
+}
+
+pub struct FxPlugin;
+
+impl Plugin for FxPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_event::<PlaySfx>().add_systems(Update, (spawn_effects, tick_particles).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+    }
+}
+
+struct Spawner<'a, 'w, 's> {
+    commands: &'a mut Commands<'w, 's>,
+    art: &'a Art,
+    rng: &'a mut Rng,
+    budget: usize,
+}
+
+impl Spawner<'_, '_, '_> {
+    fn particle(&mut self, shape: Shape, paint: Paint, transform: Transform, particle: Particle) {
+        if self.budget == 0 {
+            return;
+        }
+        self.budget -= 1;
+        self.commands.spawn((MatchEntity, Mesh3d(self.art.primitive(shape)), MeshMaterial3d(self.art.paint(paint)), transform, particle, NotShadowCaster));
+    }
+
+    fn burst(&mut self, at: Vec3, count: usize, paints: &[Paint], speed: f32, size: f32, life: f32) {
+        for i in 0..count {
+            let dir = Vec3::new(self.rng.range(-1.0, 1.0), self.rng.range(-0.3, 1.0), self.rng.range(-1.0, 1.0)).normalize_or_zero();
+            let size = Vec3::splat(self.rng.range(0.4, 1.0) * size);
+            let life = self.rng.range(0.4, 1.0) * life;
+            let velocity = dir * self.rng.range(0.3, 1.0) * speed;
+            self.particle(Shape::Cube, paints[i % paints.len()], Transform::from_translation(at).with_scale(size), Particle { velocity, gravity: 9.0, life, initial: life, size, grow: 0.0 });
+        }
+    }
+
+    fn streak(&mut self, from: Vec3, to: Vec3, width: f32, paint: Paint, life: f32) {
+        let span = to - from;
+        let length = span.length();
+        if length < 0.01 {
+            return;
+        }
+        let size = Vec3::new(width, width, length);
+        let transform = Transform::from_translation(from + span * 0.5).with_rotation(Quat::from_rotation_arc(Vec3::Z, span / length)).with_scale(size);
+        self.particle(Shape::Cube, paint, transform, Particle { velocity: Vec3::ZERO, gravity: 0.0, life, initial: life, size, grow: 0.0 });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_effects(
+    mut events: EventReader<FxEvent>,
+    mut commands: Commands,
+    art: Res<Art>,
+    content: Res<Content>,
+    mut view: ResMut<ViewState>,
+    mut notices: ResMut<Notices>,
+    mut sounds: EventWriter<PlaySfx>,
+    local: Query<&Player, With<LocalPlayer>>,
+    particles: Query<(), With<Particle>>,
+    mut rng: Local<Option<Rng>>,
+) {
+    let me = local.single().map_or(255, |player| player.id);
+    let rng = rng.get_or_insert_with(|| Rng::new(0x5eed));
+    let mut fx = Spawner { commands: &mut commands, art: &art, rng, budget: MAX_PARTICLES.saturating_sub(particles.iter().len()) };
+    for event in events.read() {
+        match event {
+            FxEvent::Shot { by, sound, from, to, beam } => {
+                if *beam {
+                    fx.streak(*from, *to, 0.035, Paint::Aether, 0.11);
+                    fx.burst(*to, 1, &[Paint::Aether, Paint::Spark], 2.0, 0.06, 0.25);
+                } else {
+                    // Our own tracers start a little ahead so they do not fill the screen.
+                    let start = if *by == me { *from + (*to - *from).normalize_or_zero() * 0.6 } else { *from };
+                    fx.streak(start, *to, 0.022, if *by == 255 { Paint::Blue } else { Paint::Glow }, 0.055);
+                    fx.burst(*to, 2, &[Paint::Spark, Paint::Dark], 3.0, 0.07, 0.3);
+                }
+                sounds.write(PlaySfx { sfx: Sfx::Shot(*sound), at: (*by != me).then_some(*from) });
+            }
+            FxEvent::Explosion { at, radius } => {
+                let size = Vec3::splat(radius * 0.25);
+                fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(*at).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.22, initial: 0.22, size, grow: 3.2 });
+                fx.burst(*at, 22, &[Paint::Glow, Paint::Spark, Paint::Dark, Paint::Rust], 9.0, 0.22, 0.9);
+                sounds.write(PlaySfx { sfx: Sfx::Explosion, at: Some(*at) });
+            }
+            FxEvent::EnemyDied { at, kind } => {
+                let (gibs, big) = content.enemies.get(*kind as usize).map_or((Paint::Steel, 1.0), |def| (def.gibs, def.radius / 0.6));
+                fx.burst(*at, (8.0 * big) as usize, &[gibs, Paint::Dark, Paint::Glow], 4.0 + big, 0.14 * big, 0.7);
+                sounds.write(PlaySfx { sfx: Sfx::EnemyDeath, at: Some(*at) });
+            }
+            FxEvent::StructureLost { at } => {
+                fx.burst(*at, 18, &[Paint::Metal, Paint::Dark, Paint::Glow], 6.0, 0.2, 0.9);
+                sounds.write(PlaySfx { sfx: Sfx::Explosion, at: Some(*at) });
+            }
+            FxEvent::Arc { from, to } => fx.streak(*from, *to, 0.05, Paint::Blue, 0.09),
+            FxEvent::Mined { at, ore } => {
+                let paint = [Paint::Iron, Paint::Copper, Paint::Aether][(*ore as usize).min(2)];
+                fx.burst(*at, 3, &[paint, Paint::Spark], 2.5, 0.09, 0.5);
+                sounds.write(PlaySfx { sfx: Sfx::OreGet, at: Some(*at) });
+            }
+            FxEvent::HitMarker { player, kill } if *player == me => {
+                view.hit = 0.14;
+                view.kill = *kill;
+                sounds.write(PlaySfx { sfx: if *kill { Sfx::Kill } else { Sfx::Hit }, at: None });
+            }
+            FxEvent::Hurt { player } if *player == me => {
+                view.hurt = 1.0;
+                sounds.write(PlaySfx { sfx: Sfx::Hurt, at: None });
+            }
+            FxEvent::Sound { sfx, at } => {
+                sounds.write(PlaySfx { sfx: *sfx, at: *at });
+            }
+            FxEvent::Cue { to, sfx } if *to == me => {
+                sounds.write(PlaySfx { sfx: *sfx, at: None });
+            }
+            FxEvent::Notice { to, text } if *to == 255 || *to == me => notices.push(text.clone()),
+            _ => {}
+        }
+    }
+}
+
+fn tick_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<(Entity, &mut Transform, &mut Particle)>) {
+    let dt = time.delta_secs().min(0.05);
+    for (entity, mut transform, mut particle) in &mut particles {
+        particle.life -= dt;
+        if particle.life <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let age = 1.0 - particle.life / particle.initial;
+        if particle.grow > 0.0 {
+            transform.scale = particle.size * (1.0 + particle.grow * age);
+        } else if particle.gravity > 0.0 {
+            particle.velocity.y -= particle.gravity * dt;
+            transform.translation += particle.velocity * dt;
+            transform.rotate_local_x(dt * 7.0);
+            transform.scale = particle.size * (1.0 - age).sqrt();
+        }
+    }
+}
