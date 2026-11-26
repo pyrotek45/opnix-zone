@@ -554,7 +554,25 @@ fn update_shapes(
     let beacon_lit = (beacon_fraction * BEACON_SEGMENTS as f32).ceil() as u8;
     let owned: Vec<usize> = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).collect();
     let gap = 5.0 + (mover.speed * 1.1).min(9.0) + view.recoil * 9.0 + if view.hit > 0.0 { 3.0 } else { 0.0 };
-    let cross_color = if view.hit > 0.0 { if view.kill { RED } else { AMBER } } else { ui::TEXT };
+    // Over a player: the crosshair takes their team colour, so you never shoot a friend by mistake.
+    let eye = transform.translation + Vec3::Y * input.eye();
+    let aim = input.aim_dir();
+    let under = others
+        .iter()
+        .filter(|(_, _, h)| h.alive())
+        .filter_map(|(t, p, _)| oz_sim::combat::ray_sphere(eye, aim, t.translation + Vec3::Y * 1.0, 0.55).filter(|d| *d < 90.0).map(|d| (d, p.team)))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, team)| team);
+    let cross_color = if view.hit > 0.0 {
+        if view.kill { RED } else { AMBER }
+    } else {
+        match under {
+            // Green never means "shoot": friends are green whichever team you are on.
+            Some(team) if rules.pvp && team == me.team => ui::GOOD,
+            Some(_) if rules.pvp => RED,
+            _ => ui::TEXT,
+        }
+    };
     let show_cross = health.alive() && view.ads < 0.85 && !spectate.enabled;
 
     for (segment, mut color, mut node) in &mut segments {

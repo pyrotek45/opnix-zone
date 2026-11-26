@@ -234,10 +234,12 @@ fn follow_player(
     if shots != view.last_shots {
         view.last_shots = shots;
         if let Some(def) = content.weapons.get(index) {
-            view.recoil = (view.recoil + def.recoil).min(2.5);
+            // Crouched and prone shooters are braced: less kick.
+            let recoil = def.recoil * stance::recoil(input.stance);
+            view.recoil = (view.recoil + recoil).min(2.5);
             view.flash = 0.05;
-            view.shake += def.recoil * 0.1;
-            view.kick = (view.kick + def.recoil * 0.9).min(2.5);
+            view.shake += recoil * 0.1;
+            view.kick = (view.kick + recoil * 0.9).min(2.5);
             view.cycle = 1.0;
         }
     }

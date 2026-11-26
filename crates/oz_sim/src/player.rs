@@ -53,13 +53,19 @@ pub mod stance {
         [1.75, 1.25, 0.6][(stance as usize).min(2)]
     }
 
+    /// Movement speed multiplier: crouching is slow, crawling slower.
     pub fn speed(stance: u8) -> f32 {
-        [1.0, 0.55, 0.28][(stance as usize).min(2)]
+        [1.0, 0.5, 0.24][(stance as usize).min(2)]
     }
 
-    /// Spread multiplier: steadier when low.
+    /// Spread multiplier: steadier when low, steadiest prone.
     pub fn steadiness(stance: u8) -> f32 {
-        [1.0, 0.75, 0.55][(stance as usize).min(2)]
+        [1.0, 0.62, 0.38][(stance as usize).min(2)]
+    }
+
+    /// Recoil multiplier: braced positions kick less.
+    pub fn recoil(stance: u8) -> f32 {
+        [1.0, 0.72, 0.45][(stance as usize).min(2)]
     }
 }
 

@@ -94,6 +94,41 @@ pub struct Rig {
     last_pos: Vec3,
     /// The weapon (index, parts) currently in its hands.
     held: Option<(u8, [u8; SLOT_COUNT])>,
+    /// Smoothed stance weights (0..1) and how much it is moving: everything blends.
+    crouch: f32,
+    prone: f32,
+    moving: f32,
+    /// Hip height on a spring, so dropping and popping up have a little weight to them.
+    hip: Spring,
+    /// Gun recoil on a spring: each shot kicks it, it settles with a slight bounce.
+    kick: Spring,
+    /// Seconds into the current reload; the magazine slap kicks once.
+    reload_t: f32,
+    slapped: bool,
+    reload: f32,
+}
+
+/// A damped spring for procedural motion.
+#[derive(Clone, Copy, Default)]
+struct Spring {
+    value: f32,
+    velocity: f32,
+}
+
+impl Spring {
+    /// `stiffness` sets the speed, `damping` below 1 overshoots a little.
+    fn update(&mut self, target: f32, stiffness: f32, damping: f32, dt: f32) -> f32 {
+        let c = 2.0 * stiffness.sqrt() * damping;
+        // A few small steps keep stiff springs stable at low frame rates.
+        let steps = 4;
+        let h = dt / steps as f32;
+        for _ in 0..steps {
+            let accel = stiffness * (target - self.value) - c * self.velocity;
+            self.velocity += accel * h;
+            self.value += self.velocity * h;
+        }
+        self.value
+    }
 }
 
 /// Marks a robot that belongs to a player in the world.
@@ -185,7 +220,16 @@ fn face_model(expression: usize) -> BlockModel {
     }
 }
 
-fn head_model(team: Paint) -> BlockModel {
+/// The glowing team colour: unlit, so it reads in shade, at dusk and at range.
+pub fn team_light(team: u8) -> Paint {
+    match team {
+        0 => Paint::Aether,
+        1 => Paint::Red,
+        _ => Paint::Glow,
+    }
+}
+
+fn head_model(team: Paint, light: Paint) -> BlockModel {
     BlockModel::new()
         .cylinder(Paint::Steel, [0.0, 0.02, 0.0], [0.09, 0.06, 0.09])
         // The set: casing, bezel, screen, and a deeper back.
@@ -201,57 +245,71 @@ fn head_model(team: Paint) -> BlockModel {
         // Rabbit-ear antennae.
         .segment(Paint::Metal, [-0.05, 0.31, 0.0], [-0.16, 0.5, 0.02], 0.014)
         .segment(Paint::Metal, [0.05, 0.31, 0.0], [0.15, 0.53, 0.02], 0.014)
-        .shard(Paint::Red, [-0.16, 0.5, 0.02], [0.025, 0.025, 0.025])
-        .shard(Paint::Glow, [0.15, 0.53, 0.02], [0.025, 0.025, 0.025])
+        .shard(light, [-0.16, 0.5, 0.02], [0.035, 0.035, 0.035])
+        .shard(light, [0.15, 0.53, 0.02], [0.035, 0.035, 0.035])
         .cube(Paint::Dark, [0.0, 0.315, 0.0], [0.12, 0.02, 0.08])
+        // Team light bars down both sides of the set.
+        .cube(light, [0.193, 0.17, 0.0], [0.006, 0.2, 0.18])
+        .cube(light, [-0.193, 0.17, 0.0], [0.006, 0.2, 0.18])
+        // A team marker floating over the head, readable across the map.
+        .shard(light, [0.0, 0.66, 0.0], [0.035, 0.045, 0.035])
 }
 
-fn torso_model(team: Paint) -> BlockModel {
+fn torso_model(team: Paint, light: Paint) -> BlockModel {
     BlockModel::new()
         .cube(Paint::Dark, [0.0, 0.04, 0.0], [0.34, 0.14, 0.22])
-        .cube(Paint::Steel, [0.0, 0.3, 0.0], [0.46, 0.44, 0.28])
-        .cube(team, [0.0, 0.34, -0.145], [0.34, 0.22, 0.02])
-        .shard(Paint::Glow, [0.0, 0.34, -0.16], [0.045, 0.045, 0.02])
+        .cube(team, [0.0, 0.3, 0.0], [0.46, 0.44, 0.28])
+        .cube(Paint::Steel, [0.0, 0.34, -0.145], [0.34, 0.22, 0.02])
+        // Chest band and core in the team light.
+        .cube(light, [0.0, 0.2, -0.146], [0.44, 0.035, 0.02])
+        .shard(light, [0.0, 0.36, -0.16], [0.05, 0.05, 0.02])
         .cube(team, [0.29, 0.48, 0.0], [0.15, 0.12, 0.26])
         .cube(team, [-0.29, 0.48, 0.0], [0.15, 0.12, 0.26])
+        .cube(light, [0.37, 0.48, 0.0], [0.012, 0.06, 0.2])
+        .cube(light, [-0.37, 0.48, 0.0], [0.012, 0.06, 0.2])
         .cube(Paint::Dark, [0.0, 0.3, 0.19], [0.32, 0.36, 0.12])
-        .cube(Paint::Aether, [0.0, 0.36, 0.252], [0.18, 0.03, 0.006])
-        .cube(Paint::Aether, [0.0, 0.3, 0.252], [0.18, 0.03, 0.006])
+        .cube(light, [0.0, 0.36, 0.252], [0.2, 0.035, 0.006])
+        .cube(light, [0.0, 0.3, 0.252], [0.2, 0.035, 0.006])
+        .cube(light, [0.0, 0.24, 0.252], [0.2, 0.035, 0.006])
 }
 
-fn arms_model(team: Paint) -> BlockModel {
+fn arms_model(team: Paint, light: Paint) -> BlockModel {
     let (r_sh, r_el, r_hand) = ([0.27, 0.02, 0.0], [0.25, -0.2, -0.1], [GRIP.x, GRIP.y, GRIP.z + 0.03]);
     let (l_sh, l_el, l_hand) = ([-0.27, 0.02, 0.0], [-0.2, -0.17, -0.3], [0.06, -0.08, -0.66]);
     BlockModel::new()
-        .segment(Paint::Steel, r_sh, r_el, 0.1)
+        .segment(team, r_sh, r_el, 0.1)
         .segment(Paint::Dark, r_el, r_hand, 0.085)
-        .shard(team, r_el, [0.07, 0.07, 0.07])
+        .shard(light, r_el, [0.07, 0.07, 0.07])
         .cube(Paint::Dark, r_hand, [0.09, 0.09, 0.09])
-        .segment(Paint::Steel, l_sh, l_el, 0.1)
+        .segment(team, l_sh, l_el, 0.1)
         .segment(Paint::Dark, l_el, l_hand, 0.085)
-        .shard(team, l_el, [0.07, 0.07, 0.07])
+        .shard(light, l_el, [0.07, 0.07, 0.07])
         .cube(Paint::Dark, l_hand, [0.09, 0.09, 0.09])
 }
 
 fn thigh_model(team: Paint) -> BlockModel {
-    BlockModel::new().cube(Paint::Steel, [0.0, -THIGH * 0.5, 0.0], [0.16, THIGH, 0.18]).cube(team, [0.0, -THIGH + 0.02, -0.095], [0.13, 0.1, 0.03])
+    BlockModel::new().cube(team, [0.0, -THIGH * 0.5, 0.0], [0.16, THIGH, 0.18]).cube(Paint::Steel, [0.0, -THIGH + 0.02, -0.095], [0.13, 0.1, 0.03])
 }
 
-fn shin_model() -> BlockModel {
-    BlockModel::new().cube(Paint::Dark, [0.0, -0.2, 0.0], [0.14, 0.4, 0.16]).cube(Paint::Steel, [0.0, -0.44, -0.05], [0.17, 0.08, 0.29])
+fn shin_model(light: Paint) -> BlockModel {
+    BlockModel::new()
+        .cube(Paint::Dark, [0.0, -0.2, 0.0], [0.14, 0.4, 0.16])
+        .cube(light, [0.0, -0.2, -0.081], [0.05, 0.22, 0.006])
+        .cube(Paint::Steel, [0.0, -0.44, -0.05], [0.17, 0.08, 0.29])
 }
 
 fn bake_robots(mut commands: Commands, art: Res<Art>, mut meshes: ResMut<Assets<Mesh>>) {
     let teams = (0..3u8)
         .map(|team| {
             let paint = team_paint(team);
+            let light = team_light(team);
             RobotMeshes {
-                hips: art.bake(&BlockModel::new().cube(Paint::Dark, [0.0, 0.0, 0.0], [0.36, 0.16, 0.22]), &mut meshes),
+                hips: art.bake(&BlockModel::new().cube(Paint::Dark, [0.0, 0.0, 0.0], [0.36, 0.16, 0.22]).cube(light, [0.0, 0.0, -0.112], [0.3, 0.03, 0.006]), &mut meshes),
                 thigh: art.bake(&thigh_model(paint), &mut meshes),
-                shin: art.bake(&shin_model(), &mut meshes),
-                torso: art.bake(&torso_model(paint), &mut meshes),
-                head: art.bake(&head_model(paint), &mut meshes),
-                arms: art.bake(&arms_model(paint), &mut meshes),
+                shin: art.bake(&shin_model(light), &mut meshes),
+                torso: art.bake(&torso_model(paint, light), &mut meshes),
+                head: art.bake(&head_model(paint, light), &mut meshes),
+                arms: art.bake(&arms_model(paint, light), &mut meshes),
                 faces: (0..face::COUNT).map(|f| art.bake(&face_model(f), &mut meshes)).collect(),
             }
         })
@@ -306,7 +364,8 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
     let gun_root = joint(commands, art, aim, GRIP, gun);
     Rig {
         body, hips, thighs, shins, torso, head, aim, gun: gun_root, faces, phase: 0.0, dead_for: 0.0, blink: 2.0, angry: 0.0, hurt: 0.0,
-        last_hp: 0.0, last_pos: Vec3::NAN, held: None,
+        last_hp: 0.0, last_pos: Vec3::NAN, held: None, crouch: 0.0, prone: 0.0, moving: 0.0,
+        hip: Spring { value: HIP, velocity: 0.0 }, kick: Spring::default(), reload_t: 0.0, slapped: false, reload: 0.0,
     }
 }
 
@@ -412,6 +471,8 @@ fn react_to_shots(mut events: EventReader<FxEvent>, mut robots: Query<(&mut Rig,
         if let FxEvent::Shot { by, .. } = event
             && let Some((mut rig, _)) = robots.iter_mut().find(|(_, player)| player.id == *by) {
                 rig.angry = 1.2;
+                // Shove the gun back; the spring brings it home.
+                rig.kick.velocity += 7.0;
             }
     }
 }
@@ -424,14 +485,23 @@ fn set(transforms: &mut Query<&mut Transform, Without<Rig>>, entity: Entity, tra
 }
 
 /// Drives every joint from the pose.
+///
+/// Everything is procedural: stance changes blend through weights that ease
+/// in, the hips ride a spring so crouching and popping up have weight, gait
+/// cycles scale with speed, the reload is a sequence of offsets driven by a
+/// timer, and recoil is an impulse on a bouncy spring.
 pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut transforms: Query<&mut Transform, Without<Rig>>, mut visibility: Query<&mut Visibility, Without<Rig>>) {
     let dt = time.delta_secs().min(0.05);
-    let blend = 1.0 - (-dt * 16.0).exp();
+    let blend = 1.0 - (-dt * 22.0).exp();
     let rot = |x: f32| Quat::from_rotation_x(x);
+    let ease = |t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
     for (mut rig, pose) in &mut rigs {
         // Gait: one full stride per ~1.4 m, running backwards when retreating.
         let k = (pose.speed.abs() / WALK).min(1.6);
-        rig.phase += pose.speed * dt * 4.4;
+        rig.phase += pose.speed * dt * 4.4 * if pose.stance == stance::CROUCH { 1.25 } else { 1.0 };
         let p = rig.phase;
         rig.dead_for = if pose.dead { rig.dead_for + dt } else { 0.0 };
         rig.angry = (rig.angry - dt).max(0.0);
@@ -441,52 +511,82 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             rig.blink = 2.0 + (p * 7.3).sin().abs() * 2.5;
         }
 
-        // Whole-body placement: prone lies forward, dead falls backward.
+        // Stance weights ease toward the target over about a fifth of a second.
+        let towards = |current: f32, target: f32, rate: f32| current + (target - current) * (1.0 - (-dt * rate).exp());
+        rig.crouch = towards(rig.crouch, (pose.stance == stance::CROUCH) as u8 as f32, 11.0);
+        rig.prone = towards(rig.prone, (pose.stance == stance::PRONE) as u8 as f32, 7.0);
+        rig.moving = towards(rig.moving, (k * 3.0).min(1.0), 8.0);
+        let (c, pr) = (rig.crouch, rig.prone);
+        let st = (1.0 - c - pr).max(0.0);
+        let moving = rig.moving;
+
+        // Whole body: prone lies forward, dead falls backward.
         let (body_at, body_rot) = if pose.dead {
-            let fall = (rig.dead_for / 0.35).min(1.0);
+            let fall = ease(rig.dead_for / 0.45);
             (Vec3::new(0.0, 0.18 * fall, 0.25 * fall), rot(FRAC_PI_2 * fall))
-        } else if pose.stance == stance::PRONE {
-            (Vec3::new(0.0, 0.2, 1.08), rot(-FRAC_PI_2))
         } else {
-            (Vec3::ZERO, Quat::IDENTITY)
+            (Vec3::new(0.0, 0.2, 1.08) * pr, Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr))
         };
         set(&mut transforms, rig.body, body_at, body_rot, blend);
 
+        // Hips: standing bobs with the stride; crouch-walking stays low and level; kneeling is lowest.
         let swing = p.sin();
-        let (hip_y, thigh_base, shin_base, lean, cycle) = match pose.stance {
-            // Kneeling: legs are set per side below.
-            stance::CROUCH => (0.53, 0.0, 0.0, -0.12, 0.25),
-            stance::PRONE => (HIP, 0.0, 0.0, 0.0, 0.15),
-            _ => (HIP - (p.cos().abs() * 0.05 * k), 0.0, 0.0, -0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }, 0.6),
-        };
-        set(&mut transforms, rig.hips, Vec3::Y * hip_y, Quat::IDENTITY, blend);
+        let stand_hip = HIP - p.cos().abs() * 0.05 * k;
+        let crouch_hip = 0.53 + 0.12 * moving - p.cos().abs() * 0.02 * k;
+        let hip_target = st * stand_hip + c * crouch_hip + pr * HIP;
+        let hip_y = rig.hip.update(hip_target, 260.0, 0.62, dt);
+        set(&mut transforms, rig.hips, Vec3::Y * hip_y, Quat::IDENTITY, 1.0);
+
         for side in 0..2 {
-            let s = if side == 0 { swing } else { -swing };
-            let lift = if side == 0 { (p - 1.2).sin() } else { (p - 1.2 + PI).sin() };
-            let (thigh_base, shin_base) = if pose.stance == stance::CROUCH && !pose.dead {
-                // One knee up and forward, the other knee down with the shin flat behind.
-                if side == 0 { (1.45, -1.45) } else { (-0.05, -1.5) }
-            } else {
-                (thigh_base, shin_base)
-            };
-            let thigh = thigh_base + s * cycle * k.min(1.2);
-            let shin = shin_base - lift.max(0.0) * 0.85 * k.min(1.2) * if pose.stance == stance::STAND { 1.0 } else { 0.3 };
-            set(&mut transforms, rig.thighs[side], Vec3::new(if side == 0 { -0.12 } else { 0.12 }, -0.02, 0.0), rot(thigh), blend);
+            let sign = if side == 0 { 1.0 } else { -1.0 };
+            let s = swing * sign;
+            let lift = if side == 0 { (p - 1.2).sin() } else { (p - 1.2 + PI).sin() }.max(0.0);
+            // Standing walk / run.
+            let stand = (s * 0.6 * k.min(1.2), -lift * 0.85 * k.min(1.2));
+            // Crouch-walk: knees well bent, short quick steps; blends into a kneel when still.
+            let crouch_walk = (0.85 + s * 0.42, -1.35 - lift * 0.55);
+            let kneel = if side == 0 { (1.45, -1.45) } else { (-0.05, -1.5) };
+            let crouch = (kneel.0 + (crouch_walk.0 - kneel.0) * moving, kneel.1 + (crouch_walk.1 - kneel.1) * moving);
+            // Prone: legs out straight with a slow crawl.
+            let prone = (s * 0.15 * k.min(1.0), -lift * 0.3 * k.min(1.0));
+            let thigh = st * stand.0 + c * crouch.0 + pr * prone.0;
+            let shin = st * stand.1 + c * crouch.1 + pr * prone.1;
+            set(&mut transforms, rig.thighs[side], Vec3::new(-0.12 * sign, -0.02, 0.0), rot(thigh), blend);
             set(&mut transforms, rig.shins[side], Vec3::new(0.0, -THIGH, 0.0), rot(shin), blend);
         }
 
-        // Upper body: lean into the run, aim where the player looks.
-        let prone = pose.stance == stance::PRONE && !pose.dead;
-        // Peeking out of cover tips the upper body sideways from the hips.
+        // Reload: tip the gun in, drop the magazine, slap a fresh one home, bring it back up.
+        if pose.reloading {
+            rig.reload_t += dt;
+            if rig.reload_t > 0.75 && !rig.slapped {
+                rig.slapped = true;
+                rig.kick.velocity -= 5.0;
+            }
+        } else {
+            rig.reload_t = 0.0;
+            rig.slapped = false;
+        }
+        rig.reload = towards(rig.reload, pose.reloading as u8 as f32, 9.0);
+        let r = rig.reload;
+        let fumble = if pose.reloading { (rig.reload_t * 9.0).sin() * 0.04 * ease((rig.reload_t - 0.2) / 0.2) * (1.0 - ease((rig.reload_t - 0.7) / 0.1)) } else { 0.0 };
+        let kick = rig.kick.update(0.0, 420.0, 0.35, dt);
+
+        // Upper body: lean into the run, peek out of cover, aim where the player looks.
+        let prone = pr > 0.5 && !pose.dead;
+        let torso_lean = st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.12 - 0.12 * moving);
         let roll = Quat::from_rotation_z(-pose.lean * 0.3);
-        set(&mut transforms, rig.torso, Vec3::Y * 0.06, roll * rot(lean) * Quat::from_rotation_y(swing * 0.08 * k.min(1.0)), blend);
-        let carry = if pose.sprinting && !pose.aiming { -0.75 } else if pose.reloading { -0.45 } else { 0.0 };
-        let correction = if prone { FRAC_PI_2 } else { -lean };
-        let aim_pitch = if pose.dead { -0.9 } else { (pose.pitch + carry).clamp(-1.3, 1.3) + correction };
-        let tilt = if pose.reloading { Quat::from_rotation_z(0.35) } else { Quat::IDENTITY };
-        let aim_at = Vec3::Y * SHOULDER + if pose.aiming { Vec3::new(-0.04, 0.03, -0.04) } else { Vec3::ZERO };
-        set(&mut transforms, rig.aim, aim_at, rot(aim_pitch) * tilt, blend);
-        let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction };
+        let twist = Quat::from_rotation_y(swing * 0.08 * k.min(1.0) * st);
+        set(&mut transforms, rig.torso, Vec3::Y * 0.06, roll * rot(torso_lean) * twist, blend);
+        let carry = if pose.sprinting && !pose.aiming { -0.75 } else { 0.0 } - 0.5 * r;
+        let correction = pr * FRAC_PI_2 - (1.0 - pr) * torso_lean;
+        let aim_pitch = if pose.dead { -0.9 } else { (pose.pitch + carry).clamp(-1.3, 1.3) + correction + kick * 0.12 };
+        let tilt = Quat::from_rotation_z(0.45 * r + fumble * 2.0);
+        let aim_at = Vec3::Y * SHOULDER
+            + if pose.aiming { Vec3::new(-0.04, 0.03, -0.04) } else { Vec3::ZERO }
+            + Vec3::new(0.0, -0.05 * r + fumble, 0.07 * kick.max(0.0) - 0.03 * kick.min(0.0));
+        set(&mut transforms, rig.aim, aim_at, rot(aim_pitch) * tilt, if prone { blend } else { 1.0 - (-dt * 30.0).exp() });
+        // The head follows the aim, and glances down at the gun while reloading.
+        let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r };
         set(&mut transforms, rig.head, Vec3::Y * NECK, rot(head_pitch), blend);
 
         // Face: dead > hurt > angry > blink > smile.

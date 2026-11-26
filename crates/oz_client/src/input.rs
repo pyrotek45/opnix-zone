@@ -287,9 +287,8 @@ fn drive_player(
     if controls.prone {
         body.stance = if body.stance == stance::PRONE { stance::STAND } else { stance::PRONE };
     }
-    if controls.jump && body.stance != stance::STAND {
-        body.stance = if body.stance == stance::PRONE { stance::CROUCH } else { stance::STAND };
-    } else if controls.sprint && controls.movement.y > 0.3 && !controls.aim {
+    // No jumping from a crouch or prone; sprinting gets you up.
+    if controls.sprint && controls.movement.y > 0.3 && !controls.aim {
         body.stance = stance::STAND;
     }
     input.stance = body.stance;
@@ -327,7 +326,7 @@ fn drive_player(
         (controls.fire && !building && !body.hold_fire, buttons::FIRE),
         (controls.aim && !building, buttons::AIM),
         (controls.reload && !building, buttons::RELOAD),
-        (controls.jump, buttons::JUMP),
+        (controls.jump && body.stance == stance::STAND, buttons::JUMP),
         // Shift steadies the scope instead of sprinting while aiming.
         (controls.sprint && !holding, buttons::SPRINT),
         (controls.gear && !building, buttons::GEAR),
