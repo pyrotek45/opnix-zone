@@ -45,9 +45,13 @@ struct Sun;
 
 pub struct ScenePlugin;
 
+/// Label for building the static world at match start.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BuildScene;
+
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(MatchPhase::Active), (build_scene, spawn_camera).chain())
+        app.add_systems(OnEnter(MatchPhase::Active), (build_scene, spawn_camera).chain().in_set(BuildScene))
             .add_systems(Update, day_night.in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
@@ -223,6 +227,7 @@ fn build_scene(
 /// Blends lighting, fog, sky and sea between day and night from `MatchState::daylight`.
 fn day_night(
     state: Res<MatchState>,
+    rules: Res<Rules>,
     sky: Res<Sky>,
     settings: Res<Settings>,
     mut ambient: ResMut<AmbientLight>,
@@ -233,6 +238,14 @@ fn day_night(
     mut last: Local<f32>,
 ) {
     let day = state.daylight.clamp(0.0, 1.0);
+    // Weather: grey skies dim the sun and lift the ambient; fog closes in.
+    let weather = rules.recipe.weather;
+    let (sun_scale, fog_scale) = match weather {
+        oz_core::worldgen::Weather::Clear => (1.0, 1.0),
+        oz_core::worldgen::Weather::Overcast => (0.3, 0.75),
+        oz_core::worldgen::Weather::Rain => (0.12, 0.5),
+        oz_core::worldgen::Weather::Fog => (0.35, 0.28),
+    };
     if (day - *last).abs() < 0.002 && !settings.is_changed() && !sky.is_added() {
         return;
     }
@@ -242,12 +255,12 @@ fn day_night(
     if let Ok(mut sun) = suns.single_mut() {
         let color = mix(Vec3::new(0.45, 0.58, 1.0), Vec3::new(1.0, 0.76, 0.54));
         sun.color = Color::srgb(color.x, color.y, color.z);
-        sun.illuminance = 500.0 + 6000.0 * day;
+        sun.illuminance = (500.0 + 6000.0 * day) * sun_scale;
         sun.shadows_enabled = settings.shadows;
     }
-    let ambient_color = mix(Vec3::new(0.35, 0.45, 0.85), Vec3::new(0.71, 0.82, 1.0));
+    let ambient_color = mix(Vec3::new(0.35, 0.45, 0.85), if sun_scale < 1.0 { Vec3::new(0.72, 0.76, 0.82) } else { Vec3::new(0.71, 0.82, 1.0) });
     ambient.color = Color::srgb(ambient_color.x, ambient_color.y, ambient_color.z);
-    ambient.brightness = 110.0 + 310.0 * day;
+    ambient.brightness = (110.0 + 310.0 * day) * (0.75 + sun_scale * 0.25);
 
     if let Ok((mut skybox, mut fog)) = cameras.single_mut() {
         // Cross-fade through black: dim the day sky, swap, brighten the night sky.
@@ -255,10 +268,12 @@ fn day_night(
         if skybox.image != *image {
             skybox.image = image.clone();
         }
-        skybox.brightness = brightness.max(30.0);
-        let fog_color = mix(Vec3::new(0.02, 0.035, 0.07), sky.fog);
+        skybox.brightness = brightness.max(30.0) * (0.35 + 0.65 * sun_scale);
+        // Grey weather greys the haze.
+        let haze = if sun_scale < 1.0 { sky.fog.lerp(Vec3::new(0.52, 0.55, 0.58), 0.7) } else { sky.fog };
+        let fog_color = mix(Vec3::new(0.02, 0.035, 0.07), haze * (0.6 + 0.4 * sun_scale));
         fog.color = Color::srgb(fog_color.x, fog_color.y, fog_color.z);
-        fog.falloff = FogFalloff::Linear { start: 35.0 + 25.0 * day, end: 120.0 + 110.0 * day };
+        fog.falloff = FogFalloff::Linear { start: (35.0 + 25.0 * day) * fog_scale, end: (120.0 + 110.0 * day) * fog_scale.max(0.4) };
     }
     if let Some(material) = materials.get_mut(&sky.water_material) {
         let water = mix(Vec3::new(0.02, 0.06, 0.10), sky.water);

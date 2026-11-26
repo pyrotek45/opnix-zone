@@ -88,6 +88,8 @@ pub enum Act {
     Connect,
     Mode(i32),
     Biome(i32),
+    /// Weather choice (0 = the map's own).
+    Weather(i32),
     Difficulty(i32),
     TeamSize(i32),
     Set(Setting, i32),

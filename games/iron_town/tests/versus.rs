@@ -581,3 +581,31 @@ fn limbs_come_off_hurt_and_grow_back() {
     let player = app.world_mut().query_filtered::<&Player, With<LocalPlayer>>().single(app.world()).unwrap().clone();
     assert_eq!(player.lost, 0);
 }
+
+#[test]
+fn ladders_lead_onto_roofs() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(9);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    let ladder = *app.world().resource::<Map>().ladders.first().expect("the town has ladders");
+    {
+        let mut query = app.world_mut().query_filtered::<(&mut Transform, &mut PlayerInput), With<LocalPlayer>>();
+        let (mut transform, mut input) = query.single_mut(app.world_mut()).unwrap();
+        transform.translation = ladder.foot + Vec3::new(ladder.out.x, 0.0, ladder.out.y) * 0.4;
+        // Face the wall and push.
+        input.yaw = f32::atan2(ladder.out.x, ladder.out.y);
+        input.movement = Vec2::Y;
+    }
+    let mut highest = f32::MIN;
+    for _ in 0..(5.0 / FRAME) as usize {
+        app.update();
+        let y = app.world_mut().query_filtered::<&Transform, With<LocalPlayer>>().single(app.world()).unwrap().translation.y;
+        highest = highest.max(y);
+    }
+    assert!(highest > ladder.top - 0.1, "climbed to {highest}, roof at {}", ladder.top);
+}

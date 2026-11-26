@@ -463,7 +463,7 @@ impl World {
                     }
                 } else {
                     let half = Vec2::new(rng.range(4.4, 6.6), rng.range(4.2, 6.6));
-                    let floors = if rng.chance(0.55) { 2 } else { 1 };
+                    let floors = if half.x > 5.6 && half.y > 5.0 && rng.chance(0.4) { 3 } else if rng.chance(0.55) { 2 } else { 1 };
                     let at = center + Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
                     self.building(rng, at, half, floors);
                 }
@@ -492,6 +492,8 @@ impl World {
             let yaw = if matches!(kind, PropKind::Rock) { rng.range(0.0, TAU) } else { 0.0 };
             self.props.push(Prop { kind, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw, scale });
         }
+        self.plaza(rng);
+        self.greenery(rng);
         let look = self.recipe.biome.look();
         for _ in 0..look.palms / 3 {
             let p = Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(56.0, 64.0);
@@ -760,10 +762,11 @@ impl World {
         }
 
         // A ladder up a side wall without a door, onto the roof.
-        if rng.chance(0.55) {
+        if rng.chance(0.55) && !(doors[1] && doors[2]) {
             let east = !doors[2] && (doors[1] || rng.chance(0.5));
             let (x, out) = if east { (x1 + 0.22, 1.0) } else { (x0 - 0.22, -1.0) };
-            let z = c.y + rng.range(-hz * 0.4, hz * 0.4);
+            // Beside the south corner, where walls never have windows.
+            let z = z0 + 0.75;
             let foot = Vec3::new(x, self.height(x, z), z);
             for side in [-0.3, 0.3] {
                 self.decor(Aabb::span(Vec3::new(x - 0.04, foot.y, z + side - 0.04), Vec3::new(x + 0.04, roof_y + 1.0, z + side + 0.04)), Paint::Iron);
@@ -774,6 +777,66 @@ impl World {
                 y += 0.35;
             }
             self.ladders.push(Ladder { foot, top: roof_y + 0.3, out: Vec2::new(out, 0.0) });
+        }
+    }
+
+    /// The town square: a tiered fountain (good cover) ringed by benches' worth of lamps and trees.
+    fn plaza(&mut self, rng: &mut Rng) {
+        let g = self.height(0.0, 0.0);
+        // Basin: four low walls with water inside, a pillar and a raised bowl.
+        let (r, wall) = (3.2, 0.35);
+        for (cx, cz, hx, hz) in [(0.0, r, r, wall), (0.0, -r, r, wall), (r, 0.0, wall, r - wall), (-r, 0.0, wall, r - wall)] {
+            self.solid(Aabb::new(Vec3::new(cx, g + 0.35, cz), Vec3::new(hx, 0.45, hz)), Paint::Concrete);
+            self.decor(Aabb::new(Vec3::new(cx, g + 0.83, cz), Vec3::new(hx + 0.05, 0.04, hz + 0.05)), Paint::Bone);
+        }
+        self.decor(Aabb::new(Vec3::new(0.0, g + 0.45, 0.0), Vec3::new(r - wall, 0.05, r - wall)), Paint::Blue);
+        self.solid(Aabb::new(Vec3::new(0.0, g + 1.0, 0.0), Vec3::new(0.45, 1.0, 0.45)), Paint::Bone);
+        self.decor(Aabb::new(Vec3::new(0.0, g + 2.05, 0.0), Vec3::new(1.2, 0.08, 1.2)), Paint::Concrete);
+        self.decor(Aabb::new(Vec3::new(0.0, g + 2.12, 0.0), Vec3::new(1.0, 0.03, 1.0)), Paint::Blue);
+        self.decor(Aabb::new(Vec3::new(0.0, g + 2.5, 0.0), Vec3::new(0.12, 0.4, 0.12)), Paint::Bone);
+        self.fountain = Some(Vec3::new(0.0, g + 2.95, 0.0));
+        // Lamps around the square.
+        for i in 0..6 {
+            let a = i as f32 * TAU / 6.0 + 0.3;
+            let p = Vec2::from_angle(a) * 8.0;
+            self.props.push(Prop { kind: PropKind::Lamp, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: a, scale: 1.0 });
+        }
+        let _ = rng;
+    }
+
+    /// Trees along the streets, bushes by the walls, and grass wherever nothing is built.
+    fn greenery(&mut self, rng: &mut Rng) {
+        let look = self.recipe.biome.look();
+        let lush = look.grass[1] > look.grass[0] && look.grass[1] > look.grass[2] * 0.9;
+        // Street trees on the lot corners, where they never block a doorway.
+        for gx in -2i32..=2 {
+            for gz in -2i32..=2 {
+                if !rng.chance(0.45) {
+                    continue;
+                }
+                let p = Vec2::new(gx as f32 * 21.0 + 10.5, gz as f32 * 21.0 + 10.5) + Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
+                if p.length() < 7.0 || self.occupied(p, 1.2) || p.x.abs() > 52.0 {
+                    continue;
+                }
+                self.props.push(Prop { kind: PropKind::Tree, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: rng.range(0.0, TAU), scale: rng.range(3.6, 5.2) });
+            }
+        }
+        for _ in 0..40 {
+            let p = Vec2::new(rng.range(-60.0, 60.0), rng.range(-60.0, 60.0));
+            if self.occupied(p, 0.9) || p.length() < 5.0 {
+                continue;
+            }
+            self.props.push(Prop { kind: PropKind::Bush, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: rng.range(0.0, TAU), scale: rng.range(0.7, 1.2) });
+        }
+        // Grass tufts: dense where it is green, sparse elsewhere.
+        let tufts = if lush { 2600 } else { 900 };
+        for _ in 0..tufts {
+            let p = Vec2::new(rng.range(-70.0, 70.0), rng.range(-70.0, 70.0));
+            let h = self.height(p.x, p.y);
+            if h < self.water + 0.3 || self.occupied(p, 0.3) {
+                continue;
+            }
+            self.grass.push(Vec3::new(p.x, h, p.y));
         }
     }
 
@@ -964,7 +1027,10 @@ mod tests {
                 assert!(solids.iter().all(|b| !b.touches(spawn.x, spawn.y, 0.4)), "spawn {spawn:?} is inside something");
             }
         }
-        assert!(w.walkable(0.0, 0.0) && solids.iter().all(|b| !b.touches(0.0, 0.0, 1.0)), "the plaza must be open");
+        // The plaza is open around its fountain, which is cover.
+        assert!(w.fountain.is_some());
+        assert!(w.walkable(0.0, 6.0) && solids.iter().all(|b| !b.touches(0.0, 6.0, 1.0)), "the plaza must be open");
+        assert!(!w.doors.is_empty() && !w.windows.is_empty() && !w.grass.is_empty());
     }
 
     #[test]

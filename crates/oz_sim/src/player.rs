@@ -474,6 +474,23 @@ pub fn move_players(
             pos.z += step.z;
         }
 
+        // Ladders: push into one to climb it; at the top, walk off onto the roof.
+        let facing = Vec2::new(-input.yaw.sin(), -input.yaw.cos());
+        let ladder = map.ladders.iter().find(|l| {
+            let near = Vec2::new(before.x - l.foot.x, before.z - l.foot.z).length() < 0.8;
+            near && before.y < l.top - 0.01 && before.y > l.foot.y - 0.6 && facing.dot(-l.out) > 0.35 && wish.y > 0.3
+        });
+        if let Some(ladder) = ladder {
+            // On the rungs: straight up, no stepping sideways (or through the windows).
+            pos = before;
+            pos.y = (pos.y + 3.2 * dt).min(ladder.top + 0.02);
+            mover.vertical = 0.0;
+            mover.grounded = true;
+            mover.speed = (pos - before).xz().length() / dt.max(1e-4);
+            transform.translation = pos;
+            transform.rotation = Quat::from_rotation_y(input.yaw);
+            continue;
+        }
         let ground = ground_under(&map, &statics, pos.x, pos.z, pos.y);
         if mover.grounded && standing && input.held(buttons::JUMP) {
             mover.vertical = JUMP_SPEED;

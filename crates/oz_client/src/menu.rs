@@ -22,6 +22,8 @@ const THREATS: [(&str, f32); 4] = [("RECRUIT", 0.75), ("STANDARD", 1.0), ("VETER
 pub struct MenuState {
     pub mode: usize,
     pub biome: usize,
+    /// 0 = the map's own weather, then each `Weather` in turn.
+    pub weather: usize,
     pub threat: usize,
     pub team_size: u8,
     editing: Option<Field>,
@@ -37,7 +39,7 @@ struct Search(oz_net::lan::Finder);
 
 impl Default for MenuState {
     fn default() -> Self {
-        Self { mode: 0, biome: 0, threat: 1, team_size: 2, editing: None, status: String::new(), found: Vec::new(), searching: false }
+        Self { mode: 0, biome: 0, weather: 0, threat: 1, team_size: 2, editing: None, status: String::new(), found: Vec::new(), searching: false }
     }
 }
 
@@ -91,6 +93,9 @@ fn make_rules(modes: &Modes, menu: &MenuState) -> Option<Rules> {
     let mut rules = (mode.rules)(seed());
     rules.mode = menu.mode as u8;
     rules.recipe.biome = Biome::ALL[menu.biome % Biome::ALL.len()];
+    if menu.weather > 0 {
+        rules.recipe.weather = oz_core::worldgen::Weather::ALL[(menu.weather - 1) % oz_core::worldgen::Weather::ALL.len()];
+    }
     if rules.pvp {
         rules.team_size = menu.team_size;
     }
@@ -202,6 +207,7 @@ fn menu_actions(
             },
             Act::Mode(step) => menu.mode = cycle(menu.mode, *step, modes.0.len()),
             Act::Biome(step) => menu.biome = cycle(menu.biome, *step, Biome::ALL.len()),
+            Act::Weather(step) => menu.weather = cycle(menu.weather, *step, oz_core::worldgen::Weather::ALL.len() + 1),
             Act::Difficulty(step) => menu.threat = cycle(menu.threat, *step, THREATS.len()),
             Act::TeamSize(step) => menu.team_size = cycle(menu.team_size as usize - 1, *step, 4) as u8 + 1,
             Act::Solo | Act::Host => {
@@ -322,6 +328,8 @@ fn build_menu(
                     ui::label(panel, mode.blurb, 14.0, if mode.playable { ui::DIM } else { ui::WARN });
                     ui::stepper(panel, order, format!("MAP      <  {}  >", Biome::ALL[menu.biome].look().title), Act::Biome(-1), Act::Biome(1));
                     ui::label(panel, Biome::ALL[menu.biome].look().blurb, 14.0, ui::DIM);
+                    let weather = if menu.weather == 0 { "RANDOM".to_string() } else { oz_core::worldgen::Weather::ALL[(menu.weather - 1) % 4].name().to_string() };
+                    ui::stepper(panel, order, format!("WEATHER  <  {weather}  >"), Act::Weather(-1), Act::Weather(1));
                     let versus = mode.playable && (mode.rules)(0).pvp;
                     if versus {
                         let n = menu.team_size;

@@ -20,6 +20,7 @@
 //! * [`audio`] - procedural sound playback.
 
 pub mod actors;
+pub mod ambient;
 pub mod art;
 pub mod chat;
 pub mod cover;
@@ -101,7 +102,7 @@ impl Plugin for ClientPlugin {
             hud::HudPlugin,
             loadout::LoadoutPlugin,
         ))
-        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin, wreck::WreckPlugin,
+        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin, wreck::WreckPlugin, ambient::AmbientPlugin,
         ));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);
