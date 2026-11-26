@@ -361,7 +361,7 @@ fn update_text(
     mut notices: ResMut<Notices>,
     spectate: Res<crate::spectate::Spectate>,
     (death, prediction, role, settings, cover): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>, Res<crate::settings::Settings>, Res<crate::cover::Cover>),
-    players: Query<(&Health, &Arsenal, &Player), With<LocalPlayer>>,
+    (players, subject): (Query<(&Health, &Arsenal, &Player, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
     mut texts: Query<(&Num, &mut Text)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
     mut shown_for: Local<f32>,
@@ -374,7 +374,9 @@ fn update_text(
     if let Ok(mut visibility) = root.single_mut() {
         set(&mut *visibility, if matches!(*screen, Screen::None | Screen::Chat) { Visibility::Inherited } else { Visibility::Hidden });
     }
-    let Ok((health, arsenal, player)) = players.single() else { return };
+    // The HUD follows whoever the view does (a spectated player in first person).
+    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
+    let Some((health, arsenal, player, _)) = pick else { return };
     *shown_for = if state.is_added() { 0.0 } else { *shown_for + dt };
     let index = arsenal.current as usize;
     let weapon = content.weapons.get(index).zip(arsenal.weapons.get(index));
@@ -462,7 +464,7 @@ fn update_shapes(
     view: Res<ViewState>,
     spectate: Res<crate::spectate::Spectate>,
     (prediction, role): (Res<crate::predict::Prediction>, Res<NetRole>),
-    players: Query<(&Health, &Arsenal, &Player, &Transform, &PlayerInput, &Mover), With<LocalPlayer>>,
+    (players, subject): (Query<(&Health, &Arsenal, &Player, &Transform, &PlayerInput, &Mover, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
     enemies: Query<&Transform, With<Enemy>>,
     others: Query<(&Transform, &Player, &Health), Without<LocalPlayer>>,
     stations: Query<&Transform, With<Station>>,
@@ -472,7 +474,8 @@ fn update_shapes(
     mut hurt: Query<&mut BackgroundColor, (With<HurtOverlay>, Without<Seg>, Without<Fill>)>,
     mut wave_size: Local<u32>,
 ) {
-    let Ok((health, arsenal, me, transform, input, mover)) = players.single() else { return };
+    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
+    let Some((health, arsenal, me, transform, input, mover, _)) = pick else { return };
     if let Ok(mut overlay) = hurt.single_mut() {
         let low = if health.alive() { (0.35 - health.fraction()).max(0.0) * 0.6 } else { 0.45 };
         let color = if view.blind > 0.0 {
@@ -631,7 +634,7 @@ fn scope_and_stance(
     view: Res<ViewState>,
     screen: Res<Screen>,
     images: Option<Res<ScopeImages>>,
-    players: Query<&PlayerInput, With<LocalPlayer>>,
+    (players, subject): (Query<(&PlayerInput, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
     mut overlay: Query<&mut Visibility, With<ScopeOverlay>>,
     mut glass: Query<&mut ImageNode, With<ScopeGlass>>,
     mut limbs: Query<(&StanceLimb, &mut Node)>,
@@ -646,7 +649,8 @@ fn scope_and_stance(
             glass.image = handle.clone();
         }
     }
-    let Ok(input) = players.single() else { return };
+    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(_, local)| *local));
+    let Some((input, _)) = pick else { return };
     for (limb, mut node) in &mut limbs {
         // (left, top, width, height) for head, body, legs in each stance.
         let (x, y, w, h) = match (input.stance, limb.0) {

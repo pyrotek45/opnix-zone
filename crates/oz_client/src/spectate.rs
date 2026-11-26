@@ -1,6 +1,9 @@
 //! Spectator camera: watch other players over the shoulder.
 //!
 //! Toggle with V (Select on a pad is taken, so V or `--spectate` at launch).
+//! B switches between over the shoulder and through their own eyes
+//! (`--spectate-fp` starts in first person): their gun, recoil, aiming and
+//! reloads, exactly as they see it.
 //! The camera cuts to whoever is in a firefight, holds each shot for a few
 //! seconds, and never clips through walls. Useful for watching bots play,
 //! recording matches, and as the base for kill-cams later.
@@ -14,6 +17,10 @@ pub struct Spectate {
     pub enabled: bool,
     pub target: Option<Entity>,
     pub name: String,
+    /// Through the subject's eyes instead of over the shoulder.
+    pub first_person: bool,
+    /// The robot hidden because the camera is inside its head.
+    hidden: Option<Entity>,
     hold: f32,
     /// The spectator camera's own pose. The first-person camera rewrites the
     /// camera every frame, so smoothing must start from here, not from it.
@@ -29,8 +36,9 @@ pub struct SpectatePlugin;
 
 impl Plugin for SpectatePlugin {
     fn build(&self, app: &mut App) {
-        let enabled = std::env::args().any(|a| a == "--spectate");
-        app.insert_resource(Spectate { enabled, ..default() })
+        let first_person = std::env::args().any(|a| a == "--spectate-fp");
+        let enabled = first_person || std::env::args().any(|a| a == "--spectate");
+        app.insert_resource(Spectate { enabled, first_person, ..default() })
             .add_systems(Update, follow.in_set(Spectating).in_set(ClientSet::Present).after(crate::view::FollowPlayer).run_if(in_state(MatchPhase::Active)));
     }
 }
@@ -47,6 +55,7 @@ fn follow(
     mut last_shot: Local<HashMap<u8, f32>>,
     (local, mut death): (Query<&Health, With<LocalPlayer>>, ResMut<crate::fx::DeathInfo>),
     mut was_dead: Local<bool>,
+    (mut subject, mut robots): (ResMut<crate::view::ViewSubject>, Query<&mut Visibility, With<crate::avatar::PlayerRobot>>),
 ) {
     let now = time.elapsed_secs();
     for event in events.read() {
@@ -59,6 +68,20 @@ fn follow(
         spectate.position = None;
         spectate.rotation = None;
     }
+    if keys.just_pressed(KeyCode::KeyB) && spectate.enabled {
+        spectate.first_person = !spectate.first_person;
+        spectate.position = None;
+        spectate.rotation = None;
+    }
+    // Whoever the camera is inside of stays hidden; everyone else shows.
+    let mut show_robot = |entity: Option<Entity>, visible: bool| {
+        if let Some(mut v) = entity.and_then(|e| robots.get_mut(e).ok()) {
+            let wanted = if visible { Visibility::Inherited } else { Visibility::Hidden };
+            if *v != wanted {
+                *v = wanted;
+            }
+        }
+    };
     // While dead, watch whoever got you until you are back in.
     let dead = local.single().is_ok_and(|h| !h.alive());
     if !dead {
@@ -71,6 +94,8 @@ fn follow(
         spectate.rotation = None;
     }
     if !spectate.enabled && killer.is_none() {
+        show_robot(spectate.hidden.take(), true);
+        subject.0 = None;
         return;
     }
     let dt = time.delta_secs().min(0.05);
@@ -103,7 +128,20 @@ fn follow(
             spectate.hold = 7.0;
         }
     }
-    let Some((_, _, transform, input, _)) = spectate.target.and_then(|e| players.get(e).ok()) else { return };
+    let Some((target, _, transform, input, _)) = spectate.target.and_then(|e| players.get(e).ok()) else { return };
+
+    // Through their eyes: the first-person view takes them as its subject.
+    let first_person = spectate.first_person && spectate.enabled;
+    let wanted_hidden = first_person.then_some(target);
+    if spectate.hidden != wanted_hidden {
+        show_robot(spectate.hidden, true);
+        spectate.hidden = wanted_hidden;
+    }
+    show_robot(wanted_hidden, false);
+    subject.0 = wanted_hidden;
+    if first_person {
+        return;
+    }
     let Ok((mut camera, mut projection)) = cameras.single_mut() else { return };
 
     // Over the right shoulder; if a wall is in the way, rise up and look down instead.

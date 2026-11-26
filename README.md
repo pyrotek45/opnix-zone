@@ -92,7 +92,9 @@ cargo run --release -p ember_atoll --bin ember_server -- --mode 0 --port 27650
 ```
 
 Press **V** in a match (or launch with `--spectate`) to watch other players
-over the shoulder; the camera cuts to whoever is in a firefight.
+over the shoulder; the camera cuts to whoever is in a firefight. Press **B**
+while spectating (or launch with `--spectate-fp`) to watch through their own
+eyes instead: their gun, recoil, aiming, reloads and HUD.
 
 ## Controls
 

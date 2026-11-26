@@ -126,6 +126,7 @@ pub struct ViewPlugin;
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ViewState>()
+            .init_resource::<ViewSubject>()
             .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
             .add_systems(Startup, setup_presentation)
             .add_systems(Update, resize_target)
@@ -218,6 +219,10 @@ pub fn spawn_camera(mut commands: Commands, target: Res<WorldTarget>, sky: Res<S
         });
 }
 
+/// Whose eyes the first-person view uses: a spectated player, or (None) the local one.
+#[derive(Resource, Default)]
+pub struct ViewSubject(pub Option<Entity>);
+
 fn follow_player(
     time: Res<Time>,
     content: Res<Content>,
@@ -225,16 +230,17 @@ fn follow_player(
     mut sounds: EventWriter<crate::fx::PlaySfx>,
     mut lights: Query<&mut PointLight, With<MuzzleLight>>,
     mut view: ResMut<ViewState>,
-    players: Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health, &Player), With<LocalPlayer>>,
-    mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<LocalPlayer>)>,
+    (players, subject): (Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health, &Player, Has<LocalPlayer>)>, Res<ViewSubject>),
+    mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Player>)>,
     (role, prediction, settings, statics, cover): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>, Res<Statics>, Res<crate::cover::Cover>),
 ) {
     let dt = time.delta_secs().min(0.05);
-    let (Ok((player, input, arsenal, mover, health, me)), Ok((mut camera, mut projection))) = (players.single(), cameras.single_mut()) else { return };
+    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
+    let (Some((player, input, arsenal, mover, health, me, local)), Ok((mut camera, mut projection))) = (pick, cameras.single_mut()) else { return };
 
     // Recoil kicks whenever the shot counter advances: predicted locally when online.
     let index = held_weapon(input, arsenal) as usize;
-    let shots = if *role == NetRole::Client { prediction.total } else { arsenal.shots };
+    let shots = if *role == NetRole::Client && local { prediction.total } else { arsenal.shots };
     if shots != view.last_shots {
         view.last_shots = shots;
         if let Some(def) = content.weapons.get(index) {
@@ -327,7 +333,7 @@ fn follow_player(
     let wanted_lean = if health.alive() { oz_sim::player::lean_offset(&statics, player.translation, input) } else { Vec3::ZERO };
     let lean = view.lean;
     view.lean = lean + (wanted_lean - lean) * lean_k;
-    let wanted_third = if cover.third_person() && health.alive() { 1.0 } else { 0.0 };
+    let wanted_third = if cover.third_person() && health.alive() && local { 1.0 } else { 0.0 };
     view.third += (wanted_third - view.third) * (1.0 - (-dt * 9.0).exp());
     let (eye, roll) = (view.eye, if health.alive() { 0.0 } else { 0.5 });
     let t = time.elapsed_secs();
@@ -371,13 +377,14 @@ fn viewmodel(
     mut view: ResMut<ViewState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
-    players: Query<(&Arsenal, &Health, &Mover, &PlayerInput), With<LocalPlayer>>,
+    (players, subject): (Query<(&Arsenal, &Health, &Mover, &PlayerInput, Has<LocalPlayer>)>, Res<ViewSubject>),
     mut gun: Query<(Entity, &mut Transform, &mut Visibility), (With<GunRoot>, Without<MuzzleFlash>, Without<GunGroup>)>,
     mut groups: Query<(&GunGroup, &mut Transform, &mut Visibility), (Without<GunRoot>, Without<MuzzleFlash>)>,
     mut flash: Query<(&mut Transform, &mut Visibility), (With<MuzzleFlash>, Without<GunRoot>, Without<GunGroup>)>,
     spectate: Res<crate::spectate::Spectate>,
 ) {
-    let (Ok((arsenal, health, mover, input)), Ok((root, mut transform, mut visibility))) = (players.single(), gun.single_mut()) else { return };
+    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
+    let (Some((arsenal, health, mover, input, _)), Ok((root, mut transform, mut visibility))) = (pick, gun.single_mut()) else { return };
     let held = held_weapon(input, arsenal);
     let index = held as usize;
     let (Some(def), Some(state)) = (content.weapons.get(index), arsenal.weapons.get(index)) else { return };
@@ -413,7 +420,7 @@ fn viewmodel(
     }
 
     // A magnified scope fills the view: hide the gun behind the overlay.
-    *visibility = if health.alive() && view.scoped < 0.5 && !spectate.enabled && view.third < 0.4 { Visibility::Inherited } else { Visibility::Hidden };
+    *visibility = if health.alive() && view.scoped < 0.5 && (!spectate.enabled || subject.0.is_some()) && view.third < 0.4 { Visibility::Inherited } else { Visibility::Hidden };
     let t = time.elapsed_secs();
     let walking = (mover.speed / 5.4).min(1.6) * (1.0 - view.ads * 0.94);
 
