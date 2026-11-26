@@ -134,15 +134,33 @@ pub enum ShotLook {
     Rocket = 0,
     Acid = 1,
     Bolt = 2,
+    /// Thrown frag or mine.
+    Grenade = 3,
+    Knife = 4,
+    /// Smoke and flash canisters.
+    Canister = 5,
+    /// A placed proximity mine.
+    Mine = 6,
 }
 
 impl ShotLook {
     pub fn from_index(i: u8) -> Self {
-        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt][(i as usize).min(2)]
+        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine][(i as usize).min(6)]
     }
 
     pub fn paint(self) -> Paint {
-        [Paint::Glow, Paint::Green, Paint::Red][self as usize]
+        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red][self as usize]
+    }
+
+    /// Size of the projectile's mesh.
+    pub fn scale(self) -> [f32; 3] {
+        match self {
+            ShotLook::Grenade => [0.13, 0.13, 0.15],
+            ShotLook::Knife => [0.04, 0.05, 0.32],
+            ShotLook::Canister => [0.1, 0.1, 0.2],
+            ShotLook::Mine => [0.22, 0.06, 0.22],
+            _ => [0.16, 0.16, 0.34],
+        }
     }
 }
 
@@ -157,6 +175,16 @@ pub enum PerkEffect {
     Reload(f32),
     /// Spread multiplier.
     Spread(f32),
+    /// Kills refill a magazine's worth of reserve ammo.
+    Scavenger,
+    /// Never shows on enemy radar, even when firing loud.
+    Ghost,
+    /// Explosive damage multiplier.
+    FlakJacket(f32),
+    /// Aim-down-sights and swap speed multiplier.
+    Handling(f32),
+    /// Hip-fire spread multiplier.
+    Hipfire(f32),
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +201,23 @@ pub enum GearKind {
     Frag { damage: f32, radius: f32 },
     /// Instant self-heal.
     Stim { heal: f32 },
+    /// Thrown canister: a cloud that blocks sight for a while.
+    Smoke { radius: f32, seconds: f32 },
+    /// Thrown stun: blinds and deafens anyone facing it.
+    Flash { radius: f32, seconds: f32 },
+    /// Thrown proximity mine: arms, then blows when an enemy comes close.
+    Mine { damage: f32, radius: f32 },
+    /// Thrown blade: fast, silent, lethal on a direct hit.
+    Knife { damage: f32 },
+    /// Refills reserves for you and teammates close by.
+    Ammo { radius: f32 },
+}
+
+impl GearKind {
+    /// Thrown gear flies as a projectile; the rest takes effect at once.
+    pub fn thrown(&self) -> bool {
+        !matches!(self, GearKind::Stim { .. } | GearKind::Ammo { .. })
+    }
 }
 
 #[derive(Clone, Debug)]

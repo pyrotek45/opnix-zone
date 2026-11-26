@@ -40,6 +40,7 @@ fn place_tags(
     others: Query<(&Player, &Transform, &PlayerInput, &Health), Without<LocalPlayer>>,
     mut tags: Query<(&Tag, &mut Node, &mut Visibility, &Children)>,
     mut texts: Query<(&mut Text, &mut TextColor)>,
+    smokes: Query<(&Transform, &SmokeCloud)>,
 ) {
     let (Ok((camera, view)), Ok(me)) = (camera.single(), local.single()) else { return };
     let eye = view.translation();
@@ -55,7 +56,7 @@ fn place_tags(
             let distance = to.length();
             let friend = !rules.pvp || player.team == me.team;
             let aimed = to.normalize_or_zero().dot(forward) > 0.9985;
-            let visible = || statics.raycast(eye, to / distance.max(1e-3), distance).is_none();
+            let visible = || statics.raycast(eye, to / distance.max(1e-3), distance).is_none() && !smoke_between(&smokes, eye, head);
             if friend && distance < TEAM_RANGE || !friend && aimed && distance < ENEMY_RANGE && visible() {
                 let color = if friend { TEAM_COLORS[(player.team as usize).min(1)] } else { Color::srgb(1.0, 0.35, 0.3) };
                 shown.push((head, player.name.clone(), color));

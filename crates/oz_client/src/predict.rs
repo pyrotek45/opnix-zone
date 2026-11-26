@@ -24,6 +24,7 @@ pub struct Prediction {
     pub pending: u16,
     cooldown: f32,
     trigger: bool,
+    gear_latch: bool,
     burst: u8,
     synced: bool,
 }
@@ -34,7 +35,8 @@ impl Plugin for PredictPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Prediction>()
             .add_systems(OnEnter(MatchPhase::Active), |mut prediction: ResMut<Prediction>| *prediction = Prediction::default())
-            .add_systems(Update, predict.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, predict.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
+            .add_systems(Update, (fly_ghosts, hide_echoes).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -50,12 +52,26 @@ fn predict(
     mut prediction: ResMut<Prediction>,
     players: Query<(&Player, &Transform, &PlayerInput, &Arsenal, &Health), With<LocalPlayer>>,
     mut fx: EventWriter<FxEvent>,
+    mut commands: Commands,
 ) {
     if *role != NetRole::Client {
         return;
     }
     let Ok((player, transform, input, arsenal, health)) = players.single() else { return };
     let p = &mut *prediction;
+    let eye = oz_sim::player::eye_point(&statics, transform.translation, input);
+    let look = input.look();
+    let dir = look * Vec3::NEG_Z;
+
+    // Thrown gear leaves the hand at once; the host's copy stays hidden for us.
+    let gear_held = input.held(buttons::GEAR) && *screen == Screen::None;
+    if gear_held && !p.gear_latch && player.gear_left > 0 && health.alive() && state.phase != Phase::Lobby && !state.over() {
+        if let Some((_, shot)) = content.gear.get(player.gear as usize).and_then(|gear| oz_sim::combat::throw(&gear.kind, dir)) {
+            commands.spawn((MatchEntity, Ghost, Projectile { owner: Some(player.id), ..shot }, Transform::from_translation(eye + dir * 0.7)));
+        }
+    }
+    p.gear_latch = gear_held;
+
     // The host's counter is the truth; catch up if it ever runs ahead of us.
     if !p.synced || arsenal.shots > p.total {
         p.total = arsenal.shots;
@@ -95,9 +111,20 @@ fn predict(
     }
 
     // Draw the shot where it would go; the host decides what it actually hits.
-    let eye = transform.translation + Vec3::Y * input.eye();
-    let look = input.look();
-    let dir = look * Vec3::NEG_Z;
+    if let FireMode::Projectile { speed, gravity } = def.mode {
+        let shot = Projectile {
+            velocity: dir * speed,
+            gravity,
+            damage: 0.0,
+            splash: stats.splash,
+            look: oz_core::content::ShotLook::Rocket,
+            owner: Some(player.id),
+            team: player.team,
+            life: 6.0,
+            effect: oz_sim::combat::Impact::Blast,
+        };
+        commands.spawn((MatchEntity, Ghost, shot, Transform::from_translation(eye + dir * 0.8)));
+    }
     let reach = match def.mode {
         FireMode::Projectile { .. } => 1.5,
         FireMode::Beam => 7.5,
@@ -118,4 +145,49 @@ fn predict(
         quiet: stats.quiet,
         local: true,
     });
+}
+
+/// A locally predicted projectile: pure visuals, flown until it would land.
+#[derive(Component)]
+pub struct Ghost;
+
+fn fly_ghosts(
+    time: Res<Time>,
+    map: Res<Map>,
+    statics: Res<Statics>,
+    mut commands: Commands,
+    mut ghosts: Query<(Entity, &mut Transform, &mut Projectile), With<Ghost>>,
+    players: Query<(&Transform, &Player, &Health), Without<Ghost>>,
+) {
+    let dt = time.delta_secs().min(0.05);
+    for (entity, mut transform, mut shot) in &mut ghosts {
+        shot.velocity.y -= shot.gravity * dt;
+        shot.life -= dt;
+        let from = transform.translation;
+        let step = shot.velocity * dt;
+        let length = step.length().max(1e-4);
+        let dir = step / length;
+        let to = from + step;
+        let hit_player = players.iter().any(|(t, p, h)| Some(p.id) != shot.owner && h.alive() && oz_sim::combat::ray_sphere(from, dir, t.translation + Vec3::Y, 0.6).is_some_and(|d| d <= length));
+        if shot.life <= 0.0 || to.y <= map.height(to.x, to.z) || statics.raycast(from, dir, length).is_some() || hit_player {
+            // The host's impact effect arrives on its own; just vanish.
+            commands.entity(entity).despawn();
+            continue;
+        }
+        transform.translation = to;
+        transform.look_to(dir, Vec3::Y);
+    }
+}
+
+/// Hides the host's copies of projectiles this machine already predicted.
+fn hide_echoes(role: Res<NetRole>, local: Query<&Player, With<LocalPlayer>>, mut shots: Query<(&Projectile, &mut Visibility), Without<Ghost>>) {
+    if *role != NetRole::Client {
+        return;
+    }
+    let Ok(me) = local.single() else { return };
+    for (shot, mut visibility) in &mut shots {
+        if shot.owner == Some(me.id) && *visibility != Visibility::Hidden {
+            *visibility = Visibility::Hidden;
+        }
+    }
 }

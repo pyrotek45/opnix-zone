@@ -2,7 +2,7 @@
 //! humans, remote clients and bots alike.
 
 use crate::{
-    combat::{Grid, Hit, Projectile, Solid, ray_box, ray_sphere, spawn_projectile, splash},
+    combat::{Grid, Hit, Impact, Projectile, throw, Solid, ray_box, ray_sphere, spawn_projectile, splash},
     net::NetIds,
     player::{Arsenal, Health, Player, PlayerInput, buttons, damage_player, perk, stance},
     session::{Content, Map, Statics},
@@ -41,6 +41,8 @@ struct Body {
     feet: Vec3,
     stance: u8,
     yaw: f32,
+    /// Head offset from leaning.
+    lean: Vec3,
     name: String,
 }
 
@@ -49,12 +51,12 @@ impl Body {
     fn spheres(&self) -> [(Vec3, f32, bool); 3] {
         let up = |y: f32| self.feet + Vec3::Y * y;
         match self.stance {
-            stance::CROUCH => [(up(1.08), 0.24, true), (up(0.72), 0.42, false), (up(0.3), 0.36, false)],
             stance::PRONE => {
                 let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
                 [(up(0.32) + forward * 0.62, 0.24, true), (up(0.26) + forward * 0.05, 0.36, false), (up(0.2) - forward * 0.6, 0.32, false)]
             }
-            _ => [(up(1.62), 0.24, true), (up(1.05), 0.45, false), (up(0.45), 0.38, false)],
+            stance::CROUCH => [(up(1.08) + self.lean, 0.24, true), (up(0.72) + self.lean * 0.5, 0.42, false), (up(0.3), 0.36, false)],
+            _ => [(up(1.62) + self.lean, 0.24, true), (up(1.05) + self.lean * 0.55, 0.45, false), (up(0.45), 0.38, false)],
         }
     }
 
@@ -137,12 +139,23 @@ pub fn fire_weapons(
         players
             .iter()
             .filter(|(.., health, _)| health.alive())
-            .map(|(entity, player, transform, input, ..)| Body { entity, id: player.id, team: player.team, feet: transform.translation, stance: input.stance, yaw: input.yaw, name: player.name.clone() })
+            .map(|(entity, player, transform, input, ..)| Body {
+                entity,
+                id: player.id,
+                team: player.team,
+                feet: transform.translation,
+                stance: input.stance,
+                yaw: input.yaw,
+                lean: crate::player::lean_offset(&statics, transform.translation, input),
+                name: player.name.clone(),
+            })
             .collect()
     } else {
         Vec::new()
     };
     let mut struck: Vec<Strike> = Vec::new();
+    // Ammo packs dropped this frame: (where, reach, team).
+    let mut resupply: Vec<(Vec3, f32, u8)> = Vec::new();
     let lobby = state.phase == Phase::Lobby;
 
     let now = time.elapsed_secs();
@@ -156,7 +169,7 @@ pub fn fire_weapons(
             arsenal.burst = 0;
             continue;
         }
-        let eye = transform.translation + Vec3::Y * input.eye();
+        let eye = crate::player::eye_point(&statics, transform.translation, input);
         let look = input.look();
         let me = bodies.iter().position(|body| body.entity == entity);
         // Lag compensation: remote shooters hit the world as they saw it.
@@ -165,7 +178,7 @@ pub fn fire_weapons(
             bodies
                 .iter()
                 .filter_map(|b| match history.pose_at(at, b.entity) {
-                    Some(pose) if pose.alive => Some(Body { feet: pose.feet, stance: pose.stance, yaw: pose.yaw, name: b.name.clone(), ..*b }),
+                    Some(pose) if pose.alive => Some(Body { feet: pose.feet, stance: pose.stance, yaw: pose.yaw, lean: pose.lean, name: b.name.clone(), ..*b }),
                     Some(_) => None,
                     None => Some(Body { name: b.name.clone(), ..*b }),
                 })
@@ -179,18 +192,24 @@ pub fn fire_weapons(
         if gear_pressed && player.gear_left > 0 {
             if let Some(gear) = content.gear.get(player.gear as usize) {
                 player.gear_left -= 1;
-                match gear.kind {
-                    GearKind::Frag { damage, radius } => {
-                        let dir = look * Vec3::NEG_Z;
-                        let shot = Projectile { velocity: dir * 19.0 + Vec3::Y * 4.5, gravity: 13.0, damage, splash: radius, look: ShotLook::Rocket, owner: Some(player.id), team: player.team, life: 1.8 };
-                        spawn_projectile(&mut commands, &mut ids, eye + dir * 0.7, shot);
-                        fx.write(FxEvent::Sound { sfx: Sfx::Swap, at: Some(eye) });
-                    }
+                let dir = look * Vec3::NEG_Z;
+                let shot = match gear.kind {
                     GearKind::Stim { heal } => {
                         health.hp = (health.hp + heal).min(health.max);
                         player.burn_time = 0.0;
                         fx.write(FxEvent::Cue { to: player.id, sfx: Sfx::Buy });
+                        None
                     }
+                    GearKind::Ammo { radius } => {
+                        resupply.push((transform.translation, radius, player.team));
+                        fx.write(FxEvent::Sound { sfx: Sfx::Buy, at: Some(transform.translation) });
+                        None
+                    }
+                    ref kind => throw(kind, dir).map(|(velocity, shot)| Projectile { velocity, owner: Some(player.id), team: player.team, ..shot }),
+                };
+                if let Some(shot) = shot {
+                    spawn_projectile(&mut commands, &mut ids, eye + dir * 0.7, shot);
+                    fx.write(FxEvent::Sound { sfx: Sfx::Swap, at: Some(eye) });
                 }
             }
         }
@@ -205,7 +224,11 @@ pub fn fire_weapons(
                 .get(input.weapon as usize)
                 .zip(arsenal.weapons.get(input.weapon as usize))
                 .map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).handling);
-            arsenal.cooldown = SWAP_TIME / handling.max(0.3);
+            let quick = match perk(&content, &player) {
+                Some(PerkEffect::Handling(scale)) => scale,
+                _ => 1.0,
+            };
+            arsenal.cooldown = SWAP_TIME / (handling * quick).max(0.3);
         }
         let index = arsenal.current as usize;
         let Some(def) = content.weapons.get(index) else { continue };
@@ -271,7 +294,7 @@ pub fn fire_weapons(
         }
         arsenal.shots = arsenal.shots.wrapping_add(1);
         player.protect = 0.0;
-        if !stats.quiet {
+        if !stats.quiet && !matches!(perk(&content, &player), Some(PerkEffect::Ghost)) {
             arsenal.loud = 1.5;
         }
         if uses_ammo {
@@ -279,7 +302,11 @@ pub fn fire_weapons(
         }
         let from = muzzle(eye, look, stats.length);
         let aiming = input.held(buttons::AIM);
-        let spread = stats.spread * if aiming { stats.ads_spread } else { 1.0 } * stance::steadiness(input.stance);
+        let hipfire = match perk(&content, &player) {
+            Some(PerkEffect::Hipfire(scale)) if !aiming => scale,
+            _ => 1.0,
+        };
+        let spread = stats.spread * if aiming { stats.ads_spread } else { hipfire } * stance::steadiness(input.stance);
         let shot = |to: Vec3, beam: bool| FxEvent::Shot { by: player.id, sound: def.sound, from, to, beam, tracer: stats.tracer, quiet: stats.quiet, local: false };
         // Nearest enemy-team player along a ray, within `reach`.
         let player_hit = |dir: Vec3, reach: f32| {
@@ -293,7 +320,7 @@ pub fn fire_weapons(
         match def.mode {
             FireMode::Projectile { speed, gravity } => {
                 let dir = spread_dir(look, spread, &mut rng);
-                let projectile = Projectile { velocity: dir * speed, gravity, damage: stats.damage, splash: stats.splash, look: ShotLook::Rocket, owner: Some(player.id), team: player.team, life: 6.0 };
+                let projectile = Projectile { velocity: dir * speed, gravity, damage: stats.damage, splash: stats.splash, look: ShotLook::Rocket, owner: Some(player.id), team: player.team, life: 6.0, effect: Impact::Blast };
                 spawn_projectile(&mut commands, &mut ids, eye + dir * 0.8, projectile);
                 fx.write(shot(from + dir * 1.5, false));
             }
@@ -374,6 +401,14 @@ pub fn fire_weapons(
         }
     }
 
+    for (at, radius, team) in resupply {
+        for (_, player, transform, _, mut arsenal, health, _) in &mut players {
+            if player.team == team && health.alive() && transform.translation.distance(at) <= radius {
+                top_up(&mut arsenal, &content.weapons);
+            }
+        }
+    }
+
     for (victim, damage, attacker, burn) in struck {
         let attacker = &bodies[attacker];
         if let Ok((_, mut player, _, _, _, mut health, _)) = players.get_mut(victim) {
@@ -399,6 +434,15 @@ fn finish_reload(def: &WeaponDef, stats: &Resolved, weapon: &mut WeaponState, re
     if def.reload_style == ReloadStyle::Single && weapon.ammo < stats.mag && (def.infinite_reserve || weapon.reserve > 0) {
         *reload = stats.reload;
         *total = stats.reload;
+    }
+}
+
+/// Fills every owned weapon's reserve back to at least its starting amount.
+pub fn top_up(arsenal: &mut Arsenal, defs: &[WeaponDef]) {
+    for (state, def) in arsenal.weapons.iter_mut().zip(defs) {
+        if state.owned && !def.infinite_reserve {
+            state.reserve = state.reserve.max(def.reserve);
+        }
     }
 }
 

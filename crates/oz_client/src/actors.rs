@@ -77,7 +77,14 @@ fn attach(
     stations: Query<(Entity, &Station), Added<Station>>,
     ores: Query<(Entity, &OreNode), Added<OreNode>>,
     shots: Query<(Entity, &Projectile), Added<Projectile>>,
+    mines: Query<Entity, Added<oz_sim::combat::Mine>>,
 ) {
+    for entity in &mines {
+        let look = oz_core::content::ShotLook::Mine;
+        commands.entity(entity).insert(Visibility::Inherited).with_children(|parent| {
+            parent.spawn((Mesh3d(art.primitive(Shape::Shard)), MeshMaterial3d(art.paint(look.paint())), Transform::from_scale(Vec3::from_array(look.scale())), NotShadowCaster));
+        });
+    }
     for (entity, enemy, transform) in &enemies {
         let Some(baked) = models.enemies.get(enemy.kind as usize) else { continue };
         art.spawn(&mut commands, entity, baked);
@@ -103,7 +110,7 @@ fn attach(
             parent.spawn((
                 Mesh3d(art.primitive(Shape::Shard)),
                 MeshMaterial3d(art.paint(shot.look.paint())),
-                Transform::from_scale(Vec3::new(0.16, 0.16, 0.34)),
+                Transform::from_scale(Vec3::from_array(shot.look.scale())),
                 NotShadowCaster,
             ));
         });

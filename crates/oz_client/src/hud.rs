@@ -225,7 +225,7 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
         GlobalZIndex(-30),
     ));
     let full = || at(Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() });
-    commands.spawn((MatchEntity, HurtOverlay, full(), BackgroundColor(Color::NONE), GlobalZIndex(-50)));
+    commands.spawn((MatchEntity, HurtOverlay, full(), BackgroundColor(Color::NONE), GlobalZIndex(40)));
     commands.spawn((MatchEntity, HudRoot, full(), GlobalZIndex(-40))).with_children(|hud| {
         // Bottom left: health as a segmented bar behind a medical cross, plus gear pips.
         hud.spawn(framed(at(Node { left: Val::Px(20.0), bottom: Val::Px(20.0), ..column(6.0, AlignItems::Start) }))).with_children(|panel| {
@@ -360,7 +360,7 @@ fn update_text(
     screen: Res<Screen>,
     mut notices: ResMut<Notices>,
     spectate: Res<crate::spectate::Spectate>,
-    (death, prediction, role): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>),
+    (death, prediction, role, settings): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>, Res<crate::settings::Settings>),
     players: Query<(&Health, &Arsenal, &Player), With<LocalPlayer>>,
     mut texts: Query<(&Num, &mut Text)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
@@ -380,7 +380,9 @@ fn update_text(
     let weapon = content.weapons.get(index).zip(arsenal.weapons.get(index));
     let pending = if *role == NetRole::Client { prediction.pending } else { 0 };
 
-    let (use_key, fire_key, cancel_key, rotate_key) = if controls.gamepad { ("X", "RT", "B", "X") } else { ("E", "LMB", "ESC", "R") };
+    use crate::bindings::Action;
+    let key = |action| settings.bindings.label(action);
+    let (use_key, fire_key, cancel_key, rotate_key): (String, String, String, String) = if controls.gamepad { ("X".into(), "RT".into(), "B".into(), "X".into()) } else { (key(Action::Interact), key(Action::Fire), "ESC".into(), key(Action::Reload)) };
     let killer = death.killer.and_then(|id| state.roster.iter().find(|r| r.id == id)).map(|r| r.name.clone());
     let prompt = if !health.alive() {
         match killer {
@@ -397,22 +399,28 @@ fn update_text(
     } else if let Some((_, kind)) = nearby.0 {
         format!("[{use_key}]  {}", content.stations.get(kind as usize).map_or("STATION", |s| s.name))
     } else if weapon.is_some_and(|(def, owned)| def.mag > 0 && owned.ammo == 0 && arsenal.reload <= 0.0) {
-        format!("[{}]  RELOAD", if controls.gamepad { "X" } else { "R" })
+        format!("[{}]  RELOAD", if controls.gamepad { "X".into() } else { key(Action::Reload) })
     } else {
         String::new()
     };
     // Controls are shown while a match is young, then get out of the way.
+    let help = if rules.pvp {
+        format!(
+            "{} FIRE   {} AIM   {} RELOAD   {}/{} LEAN   {} GEAR   {} CLASS   {} SPRINT   ESC PAUSE",
+            key(Action::Fire), key(Action::Aim), key(Action::Reload), key(Action::LeanLeft), key(Action::LeanRight), key(Action::Gear), key(Action::Loadout), key(Action::Sprint)
+        )
+    } else {
+        format!("{} FIRE   {} AIM   {} RELOAD   {} USE   {}/{} LEAN   1-8 WEAPON   {} SPRINT   ESC PAUSE", key(Action::Fire), key(Action::Aim), key(Action::Reload), key(Action::Interact), key(Action::LeanLeft), key(Action::LeanRight), key(Action::Sprint))
+    };
     let watching = format!("SPECTATING  {}      [V] BACK TO YOUR PLAYER", spectate.name);
     let hint = if spectate.enabled {
         watching.as_str()
     } else if *shown_for > 30.0 {
         ""
     } else if controls.gamepad {
-        "STICKS MOVE / LOOK    RT FIRE    LT AIM    X RELOAD / USE    A JUMP    B GEAR    LB RB WEAPON    START PAUSE"
-    } else if rules.pvp {
-        "WASD MOVE    LMB FIRE    RMB AIM    R RELOAD    G GEAR    L CLASS    1-8 WEAPON    SHIFT SPRINT    ESC PAUSE"
+        "STICKS MOVE / LOOK    RT FIRE    LT AIM    X RELOAD / USE    A JUMP    RB GEAR    D-PAD LEAN    Y / LB WEAPON    START PAUSE"
     } else {
-        "WASD MOVE    LMB FIRE    RMB AIM    R RELOAD    E USE    1-8 WEAPON    SHIFT SPRINT    ESC PAUSE"
+        help.as_str()
     };
 
     for (kind, mut text) in &mut texts {
@@ -455,7 +463,13 @@ fn update_shapes(
     let Ok((health, arsenal, me, transform, input, mover)) = players.single() else { return };
     if let Ok(mut overlay) = hurt.single_mut() {
         let low = if health.alive() { (0.35 - health.fraction()).max(0.0) * 0.6 } else { 0.45 };
-        set(&mut overlay.0, Color::srgba(0.8, 0.05, 0.05, (view.hurt * 0.16 + low * 0.6).min(0.32)));
+        let color = if view.blind > 0.0 {
+            // A flashbang whites the screen out, then fades.
+            Color::srgba(1.0, 1.0, 0.96, view.blind.min(1.0).powf(0.7))
+        } else {
+            Color::srgba(0.8, 0.05, 0.05, (view.hurt * 0.16 + low * 0.6).min(0.32))
+        };
+        set(&mut overlay.0, color);
     }
     for (zone, mut node) in &mut zones {
         let on = match zone {

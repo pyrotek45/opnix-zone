@@ -30,7 +30,7 @@ pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res
         Some(rules)
     };
     if let Some(address) = value("--join") {
-        net::join(&mut commands, &normalize_address(&address), settings.callsign.clone());
+        net::join_as(&mut commands, &normalize_address(&address), settings.callsign.clone(), settings.token);
     } else if has("--host") {
         match rules().map(|rules| net::host_setup(rules, settings.callsign.clone(), &format!("0.0.0.0:{DEFAULT_PORT}"), false)) {
             Some(Ok(setup)) => pending.0 = Some(setup),

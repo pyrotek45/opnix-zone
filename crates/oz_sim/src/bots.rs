@@ -37,6 +37,8 @@ pub struct Bot {
     /// Seconds the current target has been in sight (reaction time).
     seen: f32,
     crouch_at_range: bool,
+    /// Which way to lean to see the current target around cover.
+    lean: i8,
 }
 
 /// First player id used by bots; humans stay below it.
@@ -112,19 +114,32 @@ pub fn drive_bots(
     mut scratch: ResMut<NavScratch>,
     mut budget: ResMut<NavBudget>,
     mut rng: ResMut<SimRng>,
-    mut players: Query<(Entity, Option<&mut Bot>, &Player, &Transform, &mut PlayerInput, &Health, &Arsenal)>,
+    mut players: Query<(Entity, Option<&mut Bot>, &Player, &Transform, &mut PlayerInput, &Health, &Arsenal, Option<&mut crate::combat::Stunned>)>,
     solids: Query<(&Transform, &Solid), (With<Structure>, Without<Player>)>,
+    smokes: Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>,
 ) {
     let dt = sim_dt(&time);
     // Everyone a bot might fight, humans and bots alike.
     let fighters: Vec<(Entity, u8, Vec3, u8)> = players
         .iter()
-        .filter(|(.., health, _)| health.alive())
+        .filter(|(.., health, _, _)| health.alive())
         .map(|(entity, _, player, transform, input, ..)| (entity, player.team, transform.translation, input.stance))
         .collect();
 
-    for (_, bot, me, transform, mut input, health, arsenal) in &mut players {
+    for (_, bot, me, transform, mut input, health, arsenal, stunned) in &mut players {
         let Some(mut bot) = bot else { continue };
+        // Flashed: stumble about blind until it wears off.
+        if let Some(mut stunned) = stunned {
+            if stunned.0 > 0.0 {
+                stunned.0 -= dt;
+                input.buttons = 0;
+                input.movement = Vec2::new(bot.strafe * 0.4, -0.3);
+                input.yaw += bot.strafe * dt * 1.5;
+                bot.target = None;
+                bot.seen = 0.0;
+                continue;
+            }
+        }
         if !health.alive() || state.phase == Phase::Lobby || state.over() {
             input.buttons = 0;
             input.movement = Vec2::ZERO;
@@ -142,17 +157,29 @@ pub fn drive_bots(
         bot.think -= dt;
         if bot.think <= 0.0 {
             bot.think = rng.0.range(0.2, 0.35);
-            // The nearest enemy we can actually see.
-            let target = fighters
+            // The nearest enemy we can actually see, upright or leaning out of cover.
+            let upright = PlayerInput { lean: 0, ..*input };
+            let sees = |from: Vec3, chest: Vec3| {
+                let distance = chest.distance(from);
+                distance < 85.0
+                    && obstruction(&map, &statics, &solids, from, (chest - from) / distance.max(1e-3), distance) >= distance - 0.6
+                    && !crate::combat::smoke_between(&smokes, from, chest)
+            };
+            let found = fighters
                 .iter()
                 .filter(|(_, team, ..)| *team != me.team)
-                .map(|(entity, _, at, enemy_stance)| (*entity, *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4)))
-                .filter(|(_, chest)| {
-                    let distance = chest.distance(eye);
-                    distance < 85.0 && obstruction(&map, &statics, &solids, eye, (*chest - eye) / distance.max(1e-3), distance) >= distance - 0.6
+                .filter_map(|(entity, _, at, enemy_stance)| {
+                    let chest = *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4);
+                    // Face the target before testing a lean, so the lean goes the right way.
+                    let facing = PlayerInput { yaw: yaw_to((chest - eye).xz()), ..upright };
+                    [0i8, -1, 1]
+                        .into_iter()
+                        .find(|lean| sees(crate::player::eye_point(&statics, feet, &PlayerInput { lean: *lean, ..facing }), chest))
+                        .map(|lean| (*entity, chest, lean))
                 })
-                .min_by(|a, b| a.1.distance_squared(eye).total_cmp(&b.1.distance_squared(eye)))
-                .map(|(entity, _)| entity);
+                .min_by(|a, b| a.1.distance_squared(eye).total_cmp(&b.1.distance_squared(eye)));
+            let target = found.map(|(entity, ..)| entity);
+            bot.lean = found.map_or(0, |(.., lean)| lean);
             if target != bot.target {
                 bot.seen = 0.0;
             }
@@ -177,13 +204,14 @@ pub fn drive_bots(
         }
 
         let target = bot.target.and_then(|entity| fighters.iter().find(|(e, ..)| *e == entity).copied());
+        input.lean = if target.is_some() { bot.lean } else { 0 };
         let mut held = 0;
         let mut wanted_stance = stance::STAND;
         let mut wish = Vec2::ZERO;
         if let Some((_, _, enemy, enemy_stance)) = target {
             // Fight: track the target, strafe, hold a comfortable range.
             bot.seen += dt;
-            let to = enemy + Vec3::Y * (stance::eye(enemy_stance) - 0.45) - eye;
+            let to = enemy + Vec3::Y * (stance::eye(enemy_stance) - 0.45) - crate::player::eye_point(&statics, feet, &input);
             let distance = to.length().max(1e-3);
             let wanted_yaw = yaw_to(to.xz()) + bot.aim_error.x;
             let wanted_pitch = (to.y / distance).asin() + bot.aim_error.y;
@@ -201,6 +229,10 @@ pub fn drive_bots(
             let facing = to.xz() / to.xz().length().max(1e-3);
             let forward = if distance > far { 1.0 } else if distance < near { -1.0 } else { 0.0 };
             wish = facing * forward + facing.perp() * bot.strafe * if class == GunClass::Sniper { 0.3 } else { 1.0 };
+            if bot.lean != 0 {
+                // Peeking: hold the corner instead of strafing out of it.
+                wish *= 0.15;
+            }
             // Hunker down for long shots.
             if bot.crouch_at_range && distance > 18.0 {
                 wanted_stance = if class == GunClass::Sniper && distance > 35.0 { stance::PRONE } else { stance::CROUCH };

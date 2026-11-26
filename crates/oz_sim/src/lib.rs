@@ -40,7 +40,7 @@ pub mod weapons;
 use bevy::prelude::*;
 
 pub mod prelude {
-    pub use crate::combat::{Grid, Hit, Projectile, Solid};
+    pub use crate::combat::{Grid, Hit, Mine, Projectile, SmokeCloud, Solid, smoke_between, smoke_scale};
     pub use crate::enemy::{Enemy, spawn_enemy};
     pub use crate::net::{NetId, NetLink};
     pub use crate::bots::Bot;
@@ -117,6 +117,7 @@ impl Plugin for SimPlugin {
                     enemy::act,
                     structures::run_structures,
                     combat::fly_projectiles,
+                    combat::run_mines,
                 )
                     .chain()
                     .in_set(SimSet::Logic),
@@ -124,6 +125,7 @@ impl Plugin for SimPlugin {
             .add_systems(Update, (combat::resolve_hits, player::presentation_flags, versus::update_roster).chain().in_set(SimSet::Resolve))
             .add_systems(Update, (player::move_players, net::smooth_remote).after(SimSet::Receive).before(SimSet::Orders).run_if(in_state(Active)))
             .add_systems(Update, (net::host_send, net::client_send).in_set(SimSet::Send).run_if(in_state(Active)))
+            .add_systems(Update, combat::tick_smoke.run_if(in_state(Active)))
             .add_systems(OnExit(Active), session::cleanup_match);
     }
 }

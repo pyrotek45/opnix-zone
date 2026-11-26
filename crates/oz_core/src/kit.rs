@@ -36,9 +36,14 @@ pub mod gun {
     pub const MINIGUN: usize = 6;
     pub const SNIPER: usize = 7;
     pub const BURST: usize = 8;
+    pub const REVOLVER: usize = 9;
+    pub const DMR: usize = 10;
+    pub const BREACHER: usize = 11;
+    pub const PDW: usize = 12;
+    pub const BATTLE_RIFLE: usize = 13;
 }
 
-/// Pistol, SMG, shotgun, carbine, lance, launcher, minigun, sniper and burst rifle, in that order.
+/// Every kit gun, in [`gun`] index order.
 pub fn standard_guns() -> Vec<WeaponDef> {
     let base = blank_weapon();
     let mut sniper_defaults = [0; SLOT_COUNT];
@@ -112,6 +117,46 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 30, reserve: 90, ammo_price: 45, damage: 34.0, interval: 0.06, reload: 1.4, spread: 0.014, ads_spread: 0.3, range: 90.0,
             recoil: 0.5, ads_fov: 50.0, sound: 3,
             frame: Some(GunFrame { body: Paint::Concrete, accent: Paint::Red, height: 0.13, receiver: 0.32, barrel: 0.28, stock: StockShape::Skeleton, ..FRAME }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "HARBOR REVOLVER", blurb: "Six heavy rounds. Slow, loud and decisive.",
+            price: Cost::credits(240), class: GunClass::Pistol, caliber: Caliber::Magnum, action: Action::Semi,
+            mag: 6, reserve: 24, ammo_price: 30, damage: 62.0, interval: 0.42, reload: 1.9, spread: 0.014, ads_spread: 0.3, range: 70.0,
+            recoil: 1.3, ads_fov: 56.0, sound: 8,
+            frame: Some(GunFrame { body: Paint::Metal, accent: Paint::Wood, furniture: Paint::Wood, width: 0.07, height: 0.12, receiver: 0.2, barrel: 0.12, bore: 0.035, mag: MagShape::Drum, stock: StockShape::None, handguard: false }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "SENTRY DMR", blurb: "Semi-automatic marksman rifle. Two to the chest.",
+            price: Cost::new(480, 25, 0, 0), class: GunClass::Rifle, caliber: Caliber::Rifle, action: Action::Semi,
+            mag: 15, reserve: 45, ammo_price: 45, damage: 58.0, interval: 0.24, reload: 1.6, spread: 0.02, ads_spread: 0.12, range: 130.0,
+            recoil: 0.95, ads_fov: 42.0, sound: 3,
+            frame: Some(GunFrame { body: Paint::Dark, accent: Paint::Teal, furniture: Paint::Wood, receiver: 0.36, barrel: 0.42, bore: 0.038, ..FRAME }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "BREACHER", blurb: "Magazine-fed automatic shotgun for clearing rooms.",
+            price: Cost::new(520, 20, 10, 0), class: GunClass::Shotgun, caliber: Caliber::Shell, action: Action::Auto,
+            mag: 10, reserve: 30, ammo_price: 45, damage: 15.0, interval: 0.24, reload: 2.0, pellets: 8, spread: 0.12, ads_spread: 0.75, range: 28.0,
+            recoil: 1.1, ads_fov: 62.0, sound: 2,
+            frame: Some(GunFrame { body: Paint::Steel, accent: Paint::Red, width: 0.09, height: 0.14, receiver: 0.34, barrel: 0.3, bore: 0.05, ..FRAME }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "WASP PDW", blurb: "Tiny, light, absurd fire rate. Melts at close range.",
+            price: Cost::credits(260), class: GunClass::Smg, caliber: Caliber::Pistol, action: Action::Auto,
+            mag: 40, reserve: 120, ammo_price: 35, damage: 13.0, interval: 0.052, reload: 1.5, spread: 0.035, ads_spread: 0.4, range: 42.0,
+            recoil: 0.26, ads_fov: 60.0, sound: 1,
+            frame: Some(GunFrame { body: Paint::Gold, accent: Paint::Dark, width: 0.07, height: 0.11, receiver: 0.26, barrel: 0.08, bore: 0.03, stock: StockShape::Skeleton, ..FRAME }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "BULWARK RIFLE", blurb: "Full-power battle rifle. Hits hard, kicks harder.",
+            price: Cost::new(560, 35, 10, 0), class: GunClass::Rifle, caliber: Caliber::Rifle, action: Action::Auto,
+            mag: 20, reserve: 60, ammo_price: 50, damage: 48.0, interval: 0.11, reload: 1.7, spread: 0.016, range: 110.0,
+            recoil: 0.9, ads_fov: 48.0, sound: 3,
+            frame: Some(GunFrame { body: Paint::Wood, accent: Paint::Steel, furniture: Paint::Wood, width: 0.085, height: 0.14, receiver: 0.38, barrel: 0.36, bore: 0.042, stock: StockShape::Heavy, ..FRAME }),
             ..base
         },
     ]
@@ -126,7 +171,7 @@ mod tests {
     fn guns_are_sane_and_buildable() {
         let guns = standard_guns();
         let table = standard_attachments();
-        assert_eq!(guns.len(), 9);
+        assert_eq!(guns.len(), 14);
         for gun in &guns {
             let state = WeaponState::fresh(gun);
             let stats = resolve(gun, &state, &table);

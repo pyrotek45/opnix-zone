@@ -23,10 +23,19 @@ pub fn versus(rules: Option<Res<Rules>>) -> bool {
 }
 
 /// Authority: rebuilds the roster and hands out kill credits. Runs in every mode.
-pub fn update_roster(mut state: ResMut<MatchState>, mut players: Query<(&mut Player, &Health, &PlayerInput, &Arsenal, Has<Bot>)>) {
+pub fn update_roster(content: Res<Content>, mut state: ResMut<MatchState>, mut players: Query<(&mut Player, &Health, &PlayerInput, &mut Arsenal, Has<Bot>)>) {
     for id in std::mem::take(&mut state.credits) {
-        if let Some((mut player, ..)) = players.iter_mut().find(|(p, ..)| p.id == id) {
+        if let Some((mut player, _, _, mut arsenal, _)) = players.iter_mut().find(|(p, ..)| p.id == id) {
             player.kills += 1;
+            // Scavengers pull spare rounds off whoever they drop.
+            if matches!(crate::player::perk(&content, &player), Some(oz_core::content::PerkEffect::Scavenger)) {
+                let index = arsenal.current as usize;
+                if let (Some(state), Some(def)) = (arsenal.weapons.get_mut(index), content.weapons.get(index)) {
+                    if !def.infinite_reserve {
+                        state.reserve = state.reserve.saturating_add(def.mag.max(1));
+                    }
+                }
+            }
         }
     }
     let mut roster: Vec<RosterEntry> = players

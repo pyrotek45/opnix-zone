@@ -109,6 +109,7 @@ pub fn build_loadout(
     controls: Res<Controls>,
     content: Option<Res<Content>>,
     state: Option<Res<MatchState>>,
+    players: Query<&Arsenal, With<LocalPlayer>>,
 ) {
     let (Screen::Loadout, true, Some(content), Some(state)) = (&*screen, dirty.0, content, state) else { return };
     let c = class.0;
@@ -116,9 +117,11 @@ pub fn build_loadout(
     let order = &mut order;
     let weapon = |index: u8| content.weapons.get(index as usize);
 
+    let arsenal = players.single().ok();
     ui::root_left(&mut commands, 0.0).with_children(|root| {
         ui::label(root, "CREATE A CLASS", 34.0, ui::TEXT);
-        root.spawn(ui::panel(560.0)).with_children(|panel| {
+        root.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(10.0), align_items: AlignItems::FlexStart, ..default() }).with_children(|columns| {
+        columns.spawn(ui::panel(520.0)).with_children(|panel| {
             let mut pick = |panel: &mut bevy::ecs::hierarchy::ChildSpawnerCommands, field: u8, title: &str, value: &str, blurb: &str| {
                 ui::stepper(panel, order, format!("{title:<11}<  {value}  >"), Act::Class(field, -1), Act::Class(field, 1));
                 ui::label(panel, format!("    {blurb}"), 13.0, ui::DIM);
@@ -140,5 +143,57 @@ pub fn build_loadout(
             let key = if controls.gamepad { "D-PAD DOWN" } else { "L" };
             ui::label(panel, format!("PRESS {key} IN A MATCH TO CHANGE CLASS. IT APPLIES ON YOUR NEXT SPAWN."), 13.0, ui::DIM);
         });
+        // What the two guns actually do, with their fitted parts.
+        columns.spawn(ui::panel(330.0)).with_children(|panel| {
+            for index in [c.primary, c.secondary] {
+                let Some(def) = weapon(index) else { continue };
+                let fitted = arsenal.and_then(|a| a.weapons.get(index as usize)).copied().unwrap_or_default();
+                let stats = oz_core::arsenal::resolve(def, &fitted, &content.attachments);
+                stat_block(panel, def, &stats);
+            }
+        });
+        });
     });
+}
+
+fn caliber_name(caliber: oz_core::arsenal::Caliber) -> &'static str {
+    use oz_core::arsenal::Caliber;
+    match caliber {
+        Caliber::Pistol => "PISTOL RDS",
+        Caliber::Rifle => "RIFLE RDS",
+        Caliber::Shell => "SHELLS",
+        Caliber::Magnum => "MAGNUM RDS",
+        Caliber::Rocket => "ROCKETS",
+        Caliber::Energy => "CELLS",
+        Caliber::None => "-",
+    }
+}
+
+fn action_name(action: oz_core::arsenal::Action) -> String {
+    use oz_core::arsenal::Action;
+    match action {
+        Action::Auto => "FULL AUTO".into(),
+        Action::Semi => "SEMI".into(),
+        Action::Burst(n) => format!("{n}-RD BURST"),
+        Action::Bolt => "BOLT".into(),
+        Action::Pump => "PUMP".into(),
+    }
+}
+
+/// Name, the key numbers, and the same bars the gunsmith uses.
+fn stat_block(panel: &mut bevy::ecs::hierarchy::ChildSpawnerCommands, def: &oz_core::arsenal::WeaponDef, stats: &oz_core::arsenal::Resolved) {
+    ui::label(panel, def.name, 18.0, ui::TEXT);
+    ui::label(panel, format!("{}  /  {}  /  {}", def.class.name(), action_name(def.action), caliber_name(def.caliber)), 12.0, ui::DIM);
+    let damage = if stats.pellets > 1 { format!("{:.0}x{}", stats.damage, stats.pellets) } else { format!("{:.0}", stats.damage) };
+    let rpm = 60.0 / stats.interval.max(0.01);
+    ui::label(panel, format!("DMG {damage}   {rpm:.0} RPM   MAG {}   RELOAD {:.1}s", stats.mag, stats.reload), 12.0, ui::GOOD);
+    for (name, value) in crate::gunsmith::BARS.iter().zip(crate::gunsmith::bars(stats)) {
+        panel.spawn(ui::row(6.0)).with_children(|row| {
+            row.spawn((Text::new(format!("{name:<9}")), TextFont { font_size: 11.0, ..default() }, TextColor(ui::DIM), Node { width: Val::Px(84.0), ..default() }));
+            row.spawn((Node { width: Val::Px(170.0), height: Val::Px(8.0), ..default() }, BackgroundColor(Color::srgba(0.1, 0.14, 0.17, 0.9)))).with_children(|track| {
+                track.spawn((Node { width: Val::Percent(value * 100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(ui::TEXT)));
+            });
+        });
+    }
+    panel.spawn(Node { height: Val::Px(6.0), ..default() });
 }

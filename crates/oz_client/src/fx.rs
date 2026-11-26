@@ -51,7 +51,8 @@ pub struct FxPlugin;
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<PlaySfx>()
-            .init_resource::<DeathInfo>().add_systems(Update, (spawn_effects, tick_particles, night_calls).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .init_resource::<DeathInfo>()
+            .add_systems(Update, (spawn_effects, tick_particles, night_calls, dress_smoke, swell_smoke).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -105,7 +106,7 @@ fn spawn_effects(
     local: Query<&Player, With<LocalPlayer>>,
     particles: Query<(), With<Particle>>,
     cameras: Query<&Transform, With<WorldCamera>>,
-    (role, mut death): (Res<NetRole>, ResMut<DeathInfo>),
+    (role, mut death, statics): (Res<NetRole>, ResMut<DeathInfo>, Res<Statics>),
     mut rng: Local<Option<Rng>>,
 ) {
     let me = local.single().map_or(255, |player| player.id);
@@ -164,6 +165,30 @@ fn spawn_effects(
                 view.shake += rumble(*at, radius * 0.45);
                 sounds.write(PlaySfx::new(Sfx::Explosion, Some(*at)));
             }
+            FxEvent::Smoke { at, radius, seconds } => {
+                // The host already made the cloud in its own simulation.
+                if *role == NetRole::Client {
+                    fx.commands.spawn((MatchEntity, SmokeCloud { radius: *radius, time: *seconds }, Transform::from_translation(*at)));
+                }
+                fx.burst(*at, 8, &[Paint::Iron, Paint::Bone], 3.0, 0.2, 0.6);
+                sounds.write(PlaySfx { volume: 0.6, ..PlaySfx::new(Sfx::Reload, Some(*at)) });
+            }
+            FxEvent::Flash { at, radius, seconds } => {
+                let size = Vec3::splat(0.4);
+                fx.particle(Shape::Shard, Paint::White, Transform::from_translation(*at).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.15, initial: 0.15, size, grow: 6.0 });
+                sounds.write(PlaySfx::new(Sfx::Explosion, Some(*at)));
+                // Blinded if we had a clear line to it; worse looking straight at it.
+                let eye = camera.translation;
+                let to = *at - eye;
+                let distance = to.length().max(1e-3);
+                let alive = local.single().is_ok();
+                if alive && distance < *radius && statics.raycast(eye, to / distance, distance).is_none() {
+                    let facing = (camera.forward().dot(to / distance) + 1.0) * 0.5;
+                    let strength = (1.0 - distance / radius) * (0.3 + 0.7 * facing * facing);
+                    view.blind = view.blind.max(seconds * strength + 0.3);
+                    view.shake += 0.6;
+                }
+            }
             FxEvent::EnemyDied { at, kind } => {
                 let (gibs, big) = content.enemies.get(*kind as usize).map_or((Paint::Steel, 1.0), |def| (def.gibs, def.radius / 0.6));
                 fx.burst(*at, (8.0 * big) as usize, &[gibs, Paint::Dark, Paint::Glow], 4.0 + big, 0.14 * big, 0.7);
@@ -214,6 +239,38 @@ fn night_calls(time: Res<Time>, state: Res<MatchState>, enemies: Query<&Transfor
         sounds.write(PlaySfx::new(Sfx::Growl, Some(caller.translation)));
     }
 }
+
+/// Gives a smoke cloud its puffs: a loose cluster of big grey shards.
+fn dress_smoke(mut commands: Commands, art: Res<Art>, clouds: Query<(Entity, &SmokeCloud), Added<SmokeCloud>>) {
+    for (entity, cloud) in &clouds {
+        let mut rng = Rng::new(entity.to_bits());
+        commands.entity(entity).insert((Visibility::Inherited, CloudAge::default())).with_children(|parent| {
+            for i in 0..14 {
+                let angle = i as f32 * 2.39996;
+                let reach = cloud.radius * 0.62 * ((i as f32 + 0.5) / 14.0).sqrt();
+                let at = Vec3::new(angle.cos() * reach, rng.range(-0.25, 0.45) * cloud.radius, angle.sin() * reach);
+                let size = Vec3::splat(cloud.radius * rng.range(0.5, 0.75));
+                let paint = if i % 3 == 0 { Paint::Bone } else { Paint::Iron };
+                parent.spawn((Mesh3d(art.primitive(Shape::Shard)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(at).with_scale(size).with_rotation(Quat::from_rotation_y(angle)), NotShadowCaster));
+            }
+        });
+    }
+}
+
+/// Clouds roll out quickly, churn slowly, and shrink away at the end.
+fn swell_smoke(time: Res<Time>, mut clouds: Query<(&mut Transform, &SmokeCloud, &mut CloudAge)>) {
+    let dt = time.delta_secs();
+    for (mut transform, cloud, mut age) in &mut clouds {
+        age.0 += dt;
+        let grow = (age.0 / 0.8).min(1.0);
+        let scale = (grow * (2.0 - grow)).max(0.05) * smoke_scale(cloud.time).max(0.05);
+        transform.scale = Vec3::splat(scale);
+        transform.rotate_y(dt * 0.08);
+    }
+}
+
+#[derive(Component, Default)]
+struct CloudAge(f32);
 
 fn tick_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<(Entity, &mut Transform, &mut Particle)>) {
     let dt = time.delta_secs().min(0.05);

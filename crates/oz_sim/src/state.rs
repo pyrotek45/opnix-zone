@@ -171,6 +171,10 @@ pub enum FxEvent {
     Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool, tracer: Paint, quiet: bool, local: bool },
     /// `victim` was taken down by `by` (a player id).
     Killed { victim: u8, by: u8 },
+    /// A smoke cloud appeared (clients build their own cloud from this).
+    Smoke { at: Vec3, radius: f32, seconds: f32 },
+    /// A flashbang went off; each machine blinds its own player if they saw it.
+    Flash { at: Vec3, radius: f32, seconds: f32 },
     /// A line of chat from a player.
     Chat { name: String, text: String },
     Explosion { at: Vec3, radius: f32 },

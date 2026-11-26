@@ -27,10 +27,20 @@ pub fn catalog(_: &Rules) -> Catalog {
             PerkDef { name: "PLATE CARRIER", blurb: "+30 health", effect: PerkEffect::Health(30.0) },
             PerkDef { name: "FAST HANDS", blurb: "Reload 35% faster", effect: PerkEffect::Reload(0.65) },
             PerkDef { name: "DEADEYE", blurb: "30% tighter spread", effect: PerkEffect::Spread(0.7) },
+            PerkDef { name: "SCAVENGER", blurb: "Kills refill a magazine of reserve ammo", effect: PerkEffect::Scavenger },
+            PerkDef { name: "GHOST", blurb: "Never shows on enemy radar", effect: PerkEffect::Ghost },
+            PerkDef { name: "FLAK JACKET", blurb: "Take 55% less explosive damage", effect: PerkEffect::FlakJacket(0.45) },
+            PerkDef { name: "QUICK DRAW", blurb: "Aim and swap 30% faster", effect: PerkEffect::Handling(1.3) },
+            PerkDef { name: "STEADY HANDS", blurb: "40% tighter hip fire", effect: PerkEffect::Hipfire(0.6) },
         ],
         gear: vec![
             GearDef { name: "FRAG GRENADE", blurb: "Thrown explosive on a short fuse", kind: GearKind::Frag { damage: 150.0, radius: 6.5 }, count: 2 },
-            GearDef { name: "STIM", blurb: "Instantly restores 70 health", kind: GearKind::Stim { heal: 70.0 }, count: 2 },
+            GearDef { name: "STIM", blurb: "Instantly restores 70 health and puts out fire", kind: GearKind::Stim { heal: 70.0 }, count: 2 },
+            GearDef { name: "SMOKE", blurb: "A thick cloud that blocks sight for 12 seconds", kind: GearKind::Smoke { radius: 5.5, seconds: 12.0 }, count: 2 },
+            GearDef { name: "FLASHBANG", blurb: "Blinds and deafens anyone facing the blast", kind: GearKind::Flash { radius: 12.0, seconds: 3.5 }, count: 2 },
+            GearDef { name: "PROXIMITY MINE", blurb: "Arms after a second, blows when an enemy comes close", kind: GearKind::Mine { damage: 170.0, radius: 4.0 }, count: 2 },
+            GearDef { name: "THROWING KNIFE", blurb: "Silent, fast, lethal on a direct hit", kind: GearKind::Knife { damage: 160.0 }, count: 3 },
+            GearDef { name: "AMMO PACK", blurb: "Refills reserves for you and teammates nearby", kind: GearKind::Ammo { radius: 6.0 }, count: 1 },
         ],
         ..default()
     }

@@ -29,6 +29,8 @@ pub enum Screen {
     Main,
     Join,
     Settings,
+    /// Key bindings.
+    Controls,
     None,
     Pause,
     Station { kind: u16, page: usize },
@@ -110,6 +112,11 @@ pub enum Act {
     JoinFound(usize),
     FindGames,
     ToggleSpectate,
+    /// Wait for a new key for this action (index into `bindings::Action::ALL`).
+    Rebind(u8),
+    ResetBindings,
+    /// Try the host we lost again.
+    Reconnect,
 }
 
 /// The action of the button that currently has focus (hover, keyboard or pad).

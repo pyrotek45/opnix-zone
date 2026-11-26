@@ -67,6 +67,8 @@ pub struct Pose {
     pub reloading: bool,
     pub sprinting: bool,
     pub dead: bool,
+    /// Leaning around cover, -1 (left) to 1 (right), smoothed.
+    pub lean: f32,
     /// Force a face (showroom); otherwise the face follows events.
     pub face: Option<usize>,
 }
@@ -377,6 +379,9 @@ fn pose_players(time: Res<Time>, mut robots: Query<(&mut Rig, &mut Pose, &Transf
         pose.reloading = player.flags & flags::RELOADING != 0;
         pose.sprinting = player.flags & flags::SPRINTING != 0;
         pose.dead = !health.alive();
+        let lean = if input.lean != 0 { input.lean } else { flags::lean(player.flags) };
+        let lean = if pose.stance == stance::PRONE || pose.dead { 0.0 } else { lean as f32 };
+        pose.lean += (lean - pose.lean) * (1.0 - (-dt * 12.0).exp());
         if health.hp < rig.last_hp - 0.5 {
             rig.hurt = 0.6;
         }
@@ -449,7 +454,9 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
 
         // Upper body: lean into the run, aim where the player looks.
         let prone = pose.stance == stance::PRONE && !pose.dead;
-        set(&mut transforms, rig.torso, Vec3::Y * 0.06, rot(lean) * Quat::from_rotation_y(swing * 0.08 * k.min(1.0)), blend);
+        // Leaning tips the whole upper body sideways from the hips.
+        let roll = Quat::from_rotation_z(-pose.lean * 0.55);
+        set(&mut transforms, rig.torso, Vec3::Y * 0.06, roll * rot(lean) * Quat::from_rotation_y(swing * 0.08 * k.min(1.0)), blend);
         let carry = if pose.sprinting && !pose.aiming { -0.75 } else if pose.reloading { -0.45 } else { 0.0 };
         let correction = if prone { FRAC_PI_2 } else { -lean };
         let aim_pitch = if pose.dead { -0.9 } else { (pose.pitch + carry).clamp(-1.3, 1.3) + correction };

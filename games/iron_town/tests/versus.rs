@@ -325,3 +325,87 @@ fn a_quick_tap_online_still_fires() {
     pump(&mut host, &mut client, 30);
     assert_eq!(shots_on_host(&mut host), before + 1, "the tap must reach the host as one shot");
 }
+
+#[test]
+fn a_dropped_guest_reconnects_into_the_same_seat() {
+    let mut host = app();
+    let mut rules = deathmatch_rules(31);
+    rules.team_size = 2;
+    start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
+    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let addr = link.host.local_addr().unwrap().to_string();
+    const TOKEN: u64 = 0xfeed_beef;
+
+    // Joins and waits until the host has the guest; returns the guest's id.
+    let connect = |host: &mut App, client: &mut App| -> u8 {
+        let world = client.world_mut();
+        net::join_as(&mut world.commands(), &addr, "GUEST", TOKEN);
+        world.flush();
+        let started = Instant::now();
+        loop {
+            host.update();
+            client.update();
+            std::thread::sleep(Duration::from_millis(1));
+            let me = client.world_mut().query_filtered::<&Player, With<LocalPlayer>>().single(client.world()).map(|p| p.id).ok();
+            let host_has = |id: u8, host: &mut App| host.world_mut().query::<&Player>().iter(host.world()).filter(|p| p.id == id).count() == 1;
+            if let Some(id) = me.filter(|id| host_has(*id, host)) {
+                return id;
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "guest never joined");
+        }
+    };
+    let mut first = app();
+    let id = connect(&mut host, &mut first);
+    for _ in 0..10 {
+        host.update();
+        first.update();
+    }
+    // Give the guest a score and a weapon state worth keeping.
+    let team = {
+        let mut query = host.world_mut().query::<&mut Player>();
+        let mut guest = query.iter_mut(host.world_mut()).find(|p| p.id == id).unwrap();
+        guest.kills = 7;
+        guest.deaths = 2;
+        guest.team
+    };
+
+    // The guest's game dies without saying goodbye, then comes back while the old connection still lingers.
+    let mut second = app();
+    let again = connect(&mut host, &mut second);
+    drop(first);
+    for _ in 0..30 {
+        host.update();
+        second.update();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(again, id, "came back with a different id");
+    let guests: Vec<(u8, u16, u16)> = host.world_mut().query_filtered::<&Player, Without<Bot>>().iter(host.world()).filter(|p| p.id != 0).map(|p| (p.team, p.kills, p.deaths)).collect();
+    assert_eq!(guests, vec![(team, 7, 2)], "the seat was not restored exactly once");
+}
+
+#[test]
+fn mines_catch_enemies_and_smoke_blocks_sight() {
+    use oz_sim::combat::{Mine, SmokeCloud, smoke_between};
+    let mut app = app();
+    let mut rules = deathmatch_rules(9);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    // Drop an armed mine at the enemy bot's feet.
+    let (bot_at, bot_team) = app.world_mut().query_filtered::<(&Transform, &Player), With<Bot>>().iter(app.world()).find(|(_, p)| p.team == 1).map(|(t, p)| (t.translation, p.team)).unwrap();
+    app.world_mut().spawn((MatchEntity, Mine { owner: 0, team: 1 - bot_team, damage: 500.0, radius: 4.0, arm: 0.0, life: 30.0 }, Transform::from_translation(bot_at)));
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_eq!(app.world_mut().query::<&Mine>().iter(app.world()).count(), 0, "the mine never went off");
+    assert_eq!(app.world().resource::<MatchState>().scores[0], 1, "the mine kill was not credited");
+
+    // A cloud between two points hides one from the other; off to the side it does not.
+    let cloud = (Transform::from_xyz(0.0, 1.5, 0.0), SmokeCloud { radius: 3.0, time: 10.0 });
+    let clouds = [(&cloud.0, &cloud.1)];
+    assert!(smoke_between(clouds, Vec3::new(-10.0, 1.5, 0.0), Vec3::new(10.0, 1.5, 0.0)));
+    assert!(!smoke_between(clouds, Vec3::new(-10.0, 1.5, 8.0), Vec3::new(10.0, 1.5, 8.0)));
+}

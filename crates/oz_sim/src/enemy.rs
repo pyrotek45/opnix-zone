@@ -230,7 +230,7 @@ pub fn act(
                 // Solve the arc so lobbed shots land on the target.
                 let velocity = (aim - from) / flight.max(0.05) + Vec3::Y * 0.5 * gravity * flight;
                 let look = if altitude > 0.0 { ShotLook::Bolt } else { ShotLook::Acid };
-                spawn_projectile(&mut commands, &mut ids, from, Projectile { velocity, gravity, damage, splash: 0.0, look, owner: None, team: 255, life: 5.0 });
+                spawn_projectile(&mut commands, &mut ids, from, Projectile { velocity, gravity, damage, splash: 0.0, look, owner: None, team: 255, life: 5.0, effect: crate::combat::Impact::Blast });
                 fx.write(FxEvent::Sound { sfx: Sfx::EnemyShot, at: Some(from) });
             }
         }

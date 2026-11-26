@@ -23,6 +23,7 @@ pub mod actors;
 pub mod art;
 pub mod chat;
 pub mod avatar;
+pub mod bindings;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod fx;
@@ -33,6 +34,7 @@ pub mod launch;
 pub mod loadout;
 pub mod lobby;
 pub mod predict;
+pub mod reconnect;
 pub mod menu;
 pub mod retro;
 pub mod scene;
@@ -82,6 +84,8 @@ impl Plugin for ClientPlugin {
         .add_plugins((
             retro::RetroPlugin,
             input::InputPlugin,
+            bindings::BindingsPlugin,
+            reconnect::ReconnectPlugin,
             art::ArtPlugin,
             view::ViewPlugin,
             scene::ScenePlugin,

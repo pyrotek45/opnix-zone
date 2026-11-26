@@ -31,6 +31,8 @@ pub struct Pose {
     pub stance: u8,
     pub yaw: f32,
     pub alive: bool,
+    /// Where leaning moved the head (see [`crate::player::lean_offset`]).
+    pub lean: Vec3,
 }
 
 #[derive(Resource, Default)]
@@ -78,7 +80,7 @@ impl LagHistory {
                         if pa.feet.distance(pb.feet) > 4.0 {
                             return Some(if k < 0.5 { pa } else { pb });
                         }
-                        Some(Pose { feet: pa.feet.lerp(pb.feet, k), stance: if k < 0.5 { pa.stance } else { pb.stance }, yaw: pb.yaw, alive: pa.alive && pb.alive, ..pb })
+                        Some(Pose { feet: pa.feet.lerp(pb.feet, k), stance: if k < 0.5 { pa.stance } else { pb.stance }, yaw: pb.yaw, alive: pa.alive && pb.alive, lean: pa.lean.lerp(pb.lean, k), ..pb })
                     }
                     (one, other) => one.or(other),
                 }
@@ -94,12 +96,12 @@ impl LagHistory {
 
 /// Authority: records every player's true position this frame.
 /// Remote players are recorded at their latest reported position, not the smoothed one.
-pub fn record_history(time: Res<Time>, mut history: ResMut<LagHistory>, players: Query<(Entity, &Transform, &PlayerInput, &Health, Option<&Remote>), With<Player>>) {
+pub fn record_history(time: Res<Time>, statics: Res<crate::session::Statics>, mut history: ResMut<LagHistory>, players: Query<(Entity, &Transform, &PlayerInput, &Health, Option<&Remote>), With<Player>>) {
     let poses = players
         .iter()
         .map(|(entity, transform, input, health, remote)| {
             let (feet, yaw) = remote.and_then(|r| r.latest()).unwrap_or((transform.translation, input.yaw));
-            Pose { entity, feet, stance: input.stance, yaw, alive: health.alive() }
+            Pose { entity, feet, stance: input.stance, yaw, alive: health.alive(), lean: crate::player::lean_offset(&statics, feet, &PlayerInput { yaw, ..*input }) }
         })
         .collect();
     history.record(time.elapsed_secs(), poses);
@@ -113,7 +115,7 @@ mod tests {
     fn rewinds_between_frames_and_respects_teleports() {
         let mut world = World::new();
         let e = world.spawn_empty().id();
-        let pose = |x: f32| Pose { entity: e, feet: Vec3::new(x, 0.0, 0.0), stance: 0, yaw: 0.0, alive: true };
+        let pose = |x: f32| Pose { entity: e, feet: Vec3::new(x, 0.0, 0.0), stance: 0, yaw: 0.0, alive: true, lean: Vec3::ZERO };
         let mut history = LagHistory::default();
         for i in 0..=10 {
             history.record(i as f32 * 0.1, vec![pose(i as f32)]);

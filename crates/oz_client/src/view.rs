@@ -67,6 +67,8 @@ pub struct ViewState {
     pub flash: f32,
     pub bob: f32,
     pub hurt: f32,
+    /// Flashbang whiteout, in seconds (above 1 is fully white).
+    pub blind: f32,
     pub hit: f32,
     pub kill: bool,
     /// Camera shake energy; explosions, hits and recoil add to it.
@@ -86,6 +88,9 @@ pub struct ViewState {
     shown: Option<(u8, [u8; SLOT_COUNT])>,
     /// Smoothed eye height (crouching and going prone glide).
     eye: f32,
+    /// Smoothed lean: head offset and roll.
+    lean: Vec3,
+    lean_roll: f32,
     /// 1 right after a shot, decaying over the weapon's cycle time (bolt / pump / slide animation).
     cycle: f32,
     /// Seconds left of the weapon inspect animation.
@@ -214,12 +219,12 @@ fn follow_player(
     mut sounds: EventWriter<crate::fx::PlaySfx>,
     mut lights: Query<&mut PointLight, With<MuzzleLight>>,
     mut view: ResMut<ViewState>,
-    players: Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health), With<LocalPlayer>>,
+    players: Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health, &Player), With<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<LocalPlayer>)>,
-    (role, prediction, settings): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>),
+    (role, prediction, settings, statics): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>, Res<Statics>),
 ) {
     let dt = time.delta_secs().min(0.05);
-    let (Ok((player, input, arsenal, mover, health)), Ok((mut camera, mut projection))) = (players.single(), cameras.single_mut()) else { return };
+    let (Ok((player, input, arsenal, mover, health, me)), Ok((mut camera, mut projection))) = (players.single(), cameras.single_mut()) else { return };
 
     // Recoil kicks whenever the shot counter advances: predicted locally when online.
     let index = held_weapon(input, arsenal) as usize;
@@ -268,6 +273,7 @@ fn follow_player(
     view.recoil = (view.recoil - dt * 6.0 * view.recoil.max(0.4)).max(0.0);
     view.flash = (view.flash - dt).max(0.0);
     view.hurt = (view.hurt - dt * 1.6).max(0.0);
+    view.blind = (view.blind - dt).max(0.0);
     view.hit = (view.hit - dt).max(0.0);
     let walking = (mover.speed / 5.4).min(1.6) * mover.grounded as u8 as f32;
     view.bob += dt * 9.5 * walking;
@@ -284,7 +290,11 @@ fn follow_player(
     let interval = content.weapons.get(index).map_or(0.2, |def| def.interval.max(0.05));
     view.cycle = (view.cycle - dt / interval).max(0.0);
     let aiming = input.held(buttons::AIM) && arsenal.reload <= 0.0 && health.alive();
-    let handling = stats.map_or(1.0, |s| s.handling);
+    let quick = match oz_sim::player::perk(&content, me) {
+        Some(oz_core::content::PerkEffect::Handling(scale)) => scale,
+        _ => 1.0,
+    };
+    let handling = stats.map_or(1.0, |s| s.handling) * quick;
     view.ads += (aiming as u8 as f32 - view.ads) * (1.0 - (-dt * 15.0 * handling).exp());
     view.scope_kind = stats.map_or(0, |s| s.scope);
     view.scoped = if view.scope_kind > 0 { ((view.ads - 0.8) / 0.2).clamp(0.0, 1.0) } else { 0.0 };
@@ -302,10 +312,17 @@ fn follow_player(
         view.eye = wanted_eye;
     }
     view.eye += (wanted_eye - view.eye) * (1.0 - (-dt * 10.0).exp());
-    let (eye, roll) = (view.eye, if health.alive() { 0.0 } else { 0.5 });
+    // Leaning glides the head out from cover and tilts the view.
+    let lean_k = 1.0 - (-dt * 12.0).exp();
+    let wanted_lean = if health.alive() { oz_sim::player::lean_offset(&statics, player.translation, input) } else { Vec3::ZERO };
+    let wanted_roll = if wanted_lean == Vec3::ZERO { 0.0 } else { -(input.lean as f32) * oz_sim::player::LEAN_ROLL * (wanted_lean.length() / oz_sim::player::LEAN_REACH).min(1.0) };
+    let (lean, lean_roll) = (view.lean, view.lean_roll);
+    view.lean = lean + (wanted_lean - lean) * lean_k;
+    view.lean_roll = lean_roll + (wanted_roll - lean_roll) * lean_k;
+    let (eye, roll) = (view.eye, if health.alive() { view.lean_roll } else { 0.5 });
     let t = time.elapsed_secs();
     let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
-    camera.translation = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob;
+    camera.translation = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob + view.lean;
     camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x, input.pitch + view.recoil * 0.012 + shake.y, roll + shake.z);
 }
 

@@ -22,13 +22,16 @@ pub struct Settings {
     pub volume: f32,
     pub callsign: String,
     pub last_address: String,
+    pub bindings: crate::bindings::Bindings,
+    /// Identifies this install to hosts, so a dropped connection can take its seat back.
+    pub token: u64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             sensitivity: 1.0, ads_sensitivity: 0.8, fov: 75.0, net_stats: false, invert_y: false, pixel_size: 3, dither: true, shadows: true, fullscreen: false, vsync: true, volume: 0.8,
-            callsign: "OPERATOR".into(), last_address: "127.0.0.1".into(),
+            callsign: "OPERATOR".into(), last_address: "127.0.0.1".into(), bindings: Default::default(), token: 0,
         }
     }
 }
@@ -44,7 +47,10 @@ fn path() -> Option<PathBuf> {
 impl Settings {
     pub fn load() -> Self {
         let mut s = Self::default();
-        let Some(text) = path().and_then(|p| fs::read_to_string(p).ok()) else { return s };
+        let Some(text) = path().and_then(|p| fs::read_to_string(p).ok()) else {
+            s.ensure_token();
+            return s;
+        };
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else { continue };
             let number = value.parse::<f32>().ok().filter(|n| n.is_finite());
@@ -63,10 +69,26 @@ impl Settings {
                 "volume" => s.volume = number.unwrap_or(0.8).clamp(0.0, 1.0),
                 "callsign" => s.callsign = sanitize(value, 16),
                 "last_address" => s.last_address = sanitize(value, 64),
-                _ => {}
+                "token" => s.token = value.parse().unwrap_or(0),
+                _ => s.bindings.load_line(key, value),
             }
         }
+        s.ensure_token();
         s
+    }
+
+    /// Makes up a reconnect token the first time the game runs, and saves it.
+    fn ensure_token(&mut self) {
+        if self.token != 0 {
+            return;
+        }
+        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
+        let mut x = time ^ ((std::process::id() as u64) << 32) ^ (self as *const Self as u64);
+        // splitmix64 finaliser
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+        self.token = (x ^ (x >> 31)).max(1);
+        self.save();
     }
 
     pub fn save(&self) {
@@ -75,6 +97,7 @@ impl Settings {
             "sensitivity={}\nads_sensitivity={}\nfov={}\nnet_stats={}\ninvert_y={}\npixel_size={}\ndither={}\nshadows={}\nfullscreen={}\nvsync={}\nvolume={}\ncallsign={}\nlast_address={}\n",
             self.sensitivity, self.ads_sensitivity, self.fov, self.net_stats, self.invert_y, self.pixel_size, self.dither, self.shadows, self.fullscreen, self.vsync, self.volume, self.callsign, self.last_address
         );
+        let text = text + &format!("token={}\n", self.token) + &self.bindings.save_lines();
         if let Some(dir) = path.parent() {
             let _ = fs::create_dir_all(dir);
         }

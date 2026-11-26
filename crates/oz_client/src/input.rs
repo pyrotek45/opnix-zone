@@ -6,19 +6,23 @@
 //! |-----------------|-------------------------|-----------------------------|
 //! | Move / look     | WASD / mouse            | left / right stick          |
 //! | Fire / aim      | LMB / RMB               | RT / LT                     |
-//! | Reload / use    | R / E                   | X                           |
+//! | Reload / use    | R / F                   | X                           |
 //! | Jump / sprint   | Space / Shift           | A / click left stick        |
 //! | Crouch / prone  | C or Ctrl / Z           | B tap / B hold              |
 //! | Hold breath     | Shift while scoped      | click left stick while scoped |
-//! | Weapons         | 1-9, wheel, Q           | Y next, LB previous         |
+//! | Weapons         | 1-9, wheel              | Y next, LB previous         |
+//! | Lean            | hold Q / E              | D-pad left / right (toggle) |
 //! | Gear            | G                       | RB                          |
 //! | Inspect weapon  | I                       | D-pad up                    |
 //! | Class / scores  | L / hold Tab            | D-pad down / hold Back      |
 //! | Chat / spectate | T / V                   | -                           |
 //! | Pause / back    | Esc                     | Start / B                   |
 //! | Menus           | arrows, Enter, mouse    | D-pad or stick, A, LB / RB for tabs |
+//!
+//! Keyboard and mouse keys can be changed in SETTINGS > CONTROLS (see `bindings`).
 
-use crate::{ClientSet, settings::Settings, ui::Screen};
+use crate::{
+    bindings::Action,ClientSet, settings::Settings, ui::Screen};
 use bevy::{
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
@@ -67,6 +71,10 @@ pub struct Controls {
     pub scoreboard: bool,
     /// Open text chat.
     pub chat: bool,
+    /// Leaning: -1 left, 1 right (keyboard: held).
+    pub lean: i8,
+    /// Gamepad lean toggles (D-pad left / right) this frame.
+    pub lean_toggle: i8,
     pub weapon_step: i32,
     pub weapon_slot: Option<u8>,
     pub pause: bool,
@@ -108,31 +116,35 @@ fn read_devices(
 ) {
     let was_gamepad = controls.gamepad;
     let mut c = Controls { gamepad: was_gamepad, ..default() };
-    let key = |code| keys.pressed(code);
     let tap = |code| keys.just_pressed(code);
 
-    // Keyboard and mouse.
-    c.movement = Vec2::new((key(KeyCode::KeyD) as i8 - key(KeyCode::KeyA) as i8) as f32, (key(KeyCode::KeyW) as i8 - key(KeyCode::KeyS) as i8) as f32);
-    let ads_scale = if mouse.pressed(MouseButton::Right) { settings.ads_sensitivity } else { 1.0 };
+    // Keyboard and mouse, through the player's bindings.
+    let binds = &settings.bindings;
+    let down = |action| binds.get(action).pressed(&keys, &mouse);
+    let hit = |action| binds.get(action).just_pressed(&keys, &mouse);
+    c.movement = Vec2::new((down(Action::Right) as i8 - down(Action::Left) as i8) as f32, (down(Action::Forward) as i8 - down(Action::Back) as i8) as f32);
+    let ads_scale = if down(Action::Aim) { settings.ads_sensitivity } else { 1.0 };
     c.look = motion.delta * 0.0022 * settings.sensitivity * ads_scale;
-    c.fire = mouse.pressed(MouseButton::Left);
-    c.fire_pressed = mouse.just_pressed(MouseButton::Left);
-    c.aim = mouse.pressed(MouseButton::Right);
-    c.aim_pressed = mouse.just_pressed(MouseButton::Right);
-    c.reload = key(KeyCode::KeyR);
-    c.reload_pressed = tap(KeyCode::KeyR);
-    c.jump = key(KeyCode::Space);
-    c.sprint = key(KeyCode::ShiftLeft);
-    c.interact = tap(KeyCode::KeyE);
-    c.crouch = tap(KeyCode::KeyC) || tap(KeyCode::ControlLeft);
-    c.prone = tap(KeyCode::KeyZ);
-    c.gear = key(KeyCode::KeyG);
-    c.inspect = tap(KeyCode::KeyI);
-    c.loadout = tap(KeyCode::KeyL);
-    c.scoreboard = key(KeyCode::Tab);
-    c.chat = tap(KeyCode::KeyT);
+    c.fire = down(Action::Fire);
+    c.fire_pressed = hit(Action::Fire);
+    c.aim = down(Action::Aim);
+    c.aim_pressed = hit(Action::Aim);
+    c.reload = down(Action::Reload);
+    c.reload_pressed = hit(Action::Reload);
+    c.jump = down(Action::Jump);
+    c.sprint = down(Action::Sprint);
+    c.interact = hit(Action::Interact);
+    c.crouch = hit(Action::Crouch);
+    c.prone = hit(Action::Prone);
+    c.gear = down(Action::Gear);
+    c.inspect = hit(Action::Inspect);
+    c.loadout = hit(Action::Loadout);
+    c.scoreboard = down(Action::Scoreboard);
+    c.chat = hit(Action::Chat);
+    // Hold to lean, like the old tactical shooters.
+    c.lean = down(Action::LeanRight) as i8 - down(Action::LeanLeft) as i8;
     c.pause = tap(KeyCode::Escape);
-    c.weapon_step = if scroll.delta.y > 0.0 { -1 } else if scroll.delta.y < 0.0 { 1 } else { 0 } + tap(KeyCode::KeyQ) as i32;
+    c.weapon_step = if scroll.delta.y > 0.0 { -1 } else if scroll.delta.y < 0.0 { 1 } else { 0 };
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
     c.weapon_slot = digits.iter().position(|code| tap(*code)).map(|i| i as u8);
     c.ui = UiNav {
@@ -176,6 +188,7 @@ fn read_devices(
         c.sprint |= held(GamepadButton::LeftThumb);
         c.gear |= held(GamepadButton::RightTrigger);
         c.inspect |= hit(GamepadButton::DPadUp);
+        c.lean_toggle += hit(GamepadButton::DPadRight) as i8 - hit(GamepadButton::DPadLeft) as i8;
         c.loadout |= hit(GamepadButton::DPadDown);
         c.scoreboard |= held(GamepadButton::Select);
         c.pause |= hit(GamepadButton::Start);
@@ -232,6 +245,8 @@ struct Body {
     sway_time: f32,
     sway: Vec2,
     breath: f32,
+    /// Gamepad lean, toggled with the D-pad.
+    pad_lean: i8,
 }
 
 /// Turns [`Controls`] into the local player's [`PlayerInput`].
@@ -275,6 +290,16 @@ fn drive_player(
         body.stance = stance::STAND;
     }
     input.stance = body.stance;
+
+    // Lean: held keys, or a D-pad toggle (press the same side again to stand up straight).
+    if controls.lean_toggle != 0 {
+        body.pad_lean = if body.pad_lean == controls.lean_toggle { 0 } else { controls.lean_toggle };
+    }
+    let sprinting = controls.sprint && controls.movement.y > 0.3 && !controls.aim;
+    if sprinting {
+        body.pad_lean = 0;
+    }
+    input.lean = if sprinting || body.stance == stance::PRONE { 0 } else if controls.lean != 0 { controls.lean } else { body.pad_lean };
 
     input.movement = controls.movement;
     let mut look = controls.look;

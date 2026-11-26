@@ -44,7 +44,9 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
+/// How long the host remembers someone who dropped, so they can reconnect into the same seat.
+pub const REJOIN_WINDOW: f32 = 600.0;
 /// How far behind the host's clock clients play back remote entities.
 pub const INTERPOLATION: f32 = 0.1;
 /// How far behind the host plays back remote players' reported positions.
@@ -156,7 +158,8 @@ pub struct Ping(pub u16);
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum C2S {
-    Hello { protocol: u32, name: String },
+    /// `token` identifies this install across reconnects (0 = none).
+    Hello { protocol: u32, name: String, token: u64 },
     /// `view` is the server time of the world the client is showing (for lag compensation).
     Input { input: PlayerInput, pos: Vec3, view: f32 },
     Command(PlayerCommand),
@@ -282,6 +285,25 @@ pub struct HostLink {
     beacon: Option<Beacon>,
     /// Automatic router port forwarding, if attempted.
     pub router: Option<Arc<Mutex<PortStatus>>>,
+    /// Peer -> reconnect token.
+    tokens: HashMap<PeerId, u64>,
+    /// Players who dropped recently, kept so they can take their seat back.
+    departed: Vec<Departed>,
+}
+
+/// Everything needed to put a reconnecting player back where they were.
+#[derive(Clone, Debug)]
+struct Departed {
+    token: u64,
+    id: u8,
+    team: u8,
+    kills: u16,
+    deaths: u16,
+    perk: u8,
+    gear: u8,
+    loadout: Option<crate::player::Loadout>,
+    arsenal: Arsenal,
+    left_at: f32,
 }
 
 impl HostLink {
@@ -293,6 +315,10 @@ impl HostLink {
 pub struct ClientLink {
     pub client: Client<S2C, C2S>,
     pub player: u8,
+    /// Where we connected and who we are, for reconnecting.
+    pub address: String,
+    pub name: String,
+    pub token: u64,
     send_timer: f32,
     ping_timer: f32,
     rtt: u16,
@@ -333,6 +359,8 @@ pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedi
         port: bound.port(),
         beacon: if public { Beacon::bind() } else { None },
         router: public.then(|| open_port(bound.port())),
+        tokens: HashMap::default(),
+        departed: Vec::new(),
     });
     Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0 })
 }
@@ -342,7 +370,17 @@ pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedi
 pub struct Joining {
     client: Option<Client<S2C, C2S>>,
     name: String,
+    address: String,
+    token: u64,
     waited: f32,
+}
+
+/// Set when a client loses its host unexpectedly: where to reconnect.
+#[derive(Resource, Clone, Debug)]
+pub struct LostHost {
+    pub address: String,
+    pub name: String,
+    pub token: u64,
 }
 
 /// Outcome of the last join attempt, for menus to display.
@@ -355,11 +393,16 @@ pub enum JoinStatus {
 }
 
 pub fn join(commands: &mut Commands, addr: &str, name: impl Into<String>) {
+    join_as(commands, addr, name, 0);
+}
+
+/// Joins with a reconnect token: a host that remembers the token gives back the same seat, team and score.
+pub fn join_as(commands: &mut Commands, addr: &str, name: impl Into<String>, token: u64) {
     let name = name.into();
     match Client::connect(addr) {
         Ok(mut client) => {
-            client.send(&C2S::Hello { protocol: PROTOCOL, name: name.clone() });
-            commands.insert_resource(Joining { client: Some(client), name, waited: 0.0 });
+            client.send(&C2S::Hello { protocol: PROTOCOL, name: name.clone(), token });
+            commands.insert_resource(Joining { client: Some(client), name, address: addr.to_string(), token, waited: 0.0 });
             commands.insert_resource(JoinStatus::Connecting);
         }
         Err(error) => commands.insert_resource(JoinStatus::Failed(format!("COULD NOT CONNECT: {error}"))),
@@ -389,7 +432,18 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
             // Take the socket out of the resource we are about to drop.
             let name = joining.name.clone();
             let Some(client) = joining.client.take() else { return };
-            let link = NetLink::Client(ClientLink { client, player, send_timer: 0.0, ping_timer: 0.0, rtt: 0, latched: 0, entities: HashMap::default() });
+            let link = NetLink::Client(ClientLink {
+                client,
+                player,
+                address: joining.address.clone(),
+                name: name.clone(),
+                token: joining.token,
+                send_timer: 0.0,
+                ping_timer: 0.0,
+                rtt: 0,
+                latched: 0,
+                entities: HashMap::default(),
+            });
             pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player), local_team: team });
             commands.insert_resource(JoinStatus::Idle);
         }
@@ -409,7 +463,7 @@ pub fn host_receive(
     state: Res<MatchState>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(Entity, &mut Player, &mut PlayerInput, &mut Remote)>,
+    mut players: Query<(Entity, &mut Player, &mut PlayerInput, &mut Remote, &Arsenal)>,
     // Everyone not driven over the network (local player, bots); remote players come from `players`.
     everyone: Query<(&Player, Has<crate::bots::Bot>), Without<Remote>>,
     mut orders: EventWriter<CommandEvent>,
@@ -433,14 +487,37 @@ pub fn host_receive(
     for event in events {
         match event {
             HostEvent::Connected(_) => {}
-            HostEvent::Message(peer, C2S::Hello { protocol, name }) => {
+            HostEvent::Message(peer, C2S::Hello { protocol, name, token }) => {
                 if protocol != PROTOCOL {
                     link.host.send(peer, &S2C::Refused("VERSION MISMATCH".into()));
                     continue;
                 }
-                let Some(id) = (1..crate::bots::FIRST_BOT_ID).find(|id| !link.peers.values().any(|used| used == id)) else {
-                    link.host.send(peer, &S2C::Refused("SERVER FULL".into()));
-                    continue;
+                // The same install connecting again while its old connection lingers: drop the old one.
+                if token != 0 {
+                    let old: Vec<PeerId> = link.tokens.iter().filter(|(p, t)| **t == token && **p != peer).map(|(p, _)| *p).collect();
+                    for old_peer in old {
+                        link.host.kick(old_peer);
+                        link.tokens.remove(&old_peer);
+                        if let Some(id) = link.peers.remove(&old_peer) {
+                            if let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id) {
+                                link.departed.push(Departed::from_player(token, player, arsenal, now));
+                                commands.entity(entity).despawn();
+                            }
+                        }
+                    }
+                }
+                link.departed.retain(|d| now - d.left_at < REJOIN_WINDOW);
+                let back = (token != 0).then(|| link.departed.iter().position(|d| d.token == token)).flatten().map(|i| link.departed.remove(i));
+                let free = |id: u8| !link.peers.values().any(|used| *used == id);
+                let id = match back.as_ref().map(|d| d.id).filter(|id| free(*id)) {
+                    Some(id) => id,
+                    None => {
+                        let Some(id) = (1..crate::bots::FIRST_BOT_ID).find(|id| free(*id)) else {
+                            link.host.send(peer, &S2C::Refused("SERVER FULL".into()));
+                            continue;
+                        };
+                        id
+                    }
                 };
                 let mut name: String = name.chars().filter(|c| !c.is_control()).take(16).collect::<String>().trim().to_string();
                 if name.is_empty() {
@@ -450,20 +527,30 @@ pub fn host_receive(
                 if everyone.iter().map(|(p, _)| &p.name).chain(players.iter().map(|(_, p, ..)| &p.name)).any(|n| *n == name) {
                     name = format!("{} {id}", name.chars().take(13).collect::<String>());
                 }
-                let team = crate::versus::team_for_newcomer(everyone.iter().map(|(p, bot)| (p.team, bot)).chain(players.iter().map(|(_, p, ..)| (p.team, false))));
+                let team = match &back {
+                    Some(seat) if rules.pvp => seat.team,
+                    _ => crate::versus::team_for_newcomer(everyone.iter().map(|(p, bot)| (p.team, bot)).chain(players.iter().map(|(_, p, ..)| (p.team, false)))),
+                };
                 let bundle = player_bundle(&content, &rules, &map, id, name.clone(), team);
                 let spawn = crate::player::spawn_point(&map, id, rules.pvp.then_some(team));
-                commands.spawn((bundle, ids.next(), Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now)));
+                let entity = commands.spawn((bundle, ids.next(), Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now))).id();
+                if let Some(seat) = back.clone() {
+                    let gear_count = content.gear.get(seat.gear as usize).map_or(0, |g| g.count);
+                    commands.entity(entity).queue(move |mut entity: EntityWorldMut| seat.restore(&mut entity, gear_count));
+                }
                 link.peers.insert(peer, id);
+                if token != 0 {
+                    link.tokens.insert(peer, token);
+                }
                 link.full_timer = 0.0;
                 link.host.send(peer, &S2C::Welcome { player: id, team, rules: rules.clone() });
-                fx.write(FxEvent::notice(format!("{name} JOINED")));
+                fx.write(FxEvent::notice(if back.is_some() { format!("{name} RECONNECTED") } else { format!("{name} JOINED") }));
             }
             HostEvent::Message(peer, message) => {
                 let Some(&id) = link.peers.get(&peer) else { continue };
                 match message {
                     C2S::Input { input, pos, view } => {
-                        if let Some((entity, _, mut current, mut remote)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
+                        if let Some((entity, _, mut current, mut remote, _)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
                             *current = input;
                             if pos.is_finite() {
                                 remote.push(now, pos, input.yaw);
@@ -486,9 +573,13 @@ pub fn host_receive(
                 }
             }
             HostEvent::Disconnected(peer) => {
+                let token = link.tokens.remove(&peer).unwrap_or(0);
                 let Some(id) = link.peers.remove(&peer) else { continue };
-                if let Some((entity, player, ..)) = players.iter().find(|(_, player, ..)| player.id == id) {
+                if let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id) {
                     fx.write(FxEvent::notice(format!("{} LEFT", player.name)));
+                    if token != 0 {
+                        link.departed.push(Departed::from_player(token, player, arsenal, now));
+                    }
                     commands.entity(entity).despawn();
                 }
             }
@@ -505,7 +596,7 @@ pub fn host_send(
     state: Res<MatchState>,
     players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput)>,
     enemies: Query<(&NetId, &Enemy, &Transform, &Health)>,
-    shots: Query<(&NetId, &Projectile, &Transform)>,
+    (shots, mines): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>),
     structures: Query<(&NetId, &Structure, &Transform, &Health)>,
     ores: Query<(&NetId, &OreNode, &Transform)>,
     changed: Query<(), Or<(Added<Structure>, Added<OreNode>)>>,
@@ -552,7 +643,12 @@ pub fn host_send(
         entities.push(EntState { id: id.0, kind: kind::ENEMY, sub: enemy.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: enemy.attacks, flags: 0 });
     }
     for (id, shot, transform) in &shots {
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: 0, flags: 0 });
+        // aux = owner + 1, so clients can hide copies of projectiles they already predicted.
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: shot.owner.map_or(0, |o| o.saturating_add(1)), flags: 0 });
+    }
+    // Mines travel as projectiles that never move.
+    for (id, _, transform) in &mines {
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Mine as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: 255, aux: 0, flags: 0 });
     }
     if full {
         for (id, structure, transform, health) in &structures {
@@ -634,6 +730,7 @@ pub fn client_receive(
                             input.weapon = e.aux & 0x3f;
                             input.pitch = unpack_pitch(e.pitch);
                             input.stance = e.flags & crate::player::flags::STANCE;
+                            input.lean = crate::player::flags::lean(e.flags);
                         }
                         if let Some(mut player) = player {
                             player.flags = e.flags;
@@ -653,7 +750,7 @@ pub fn client_receive(
                             .spawn((
                                 base,
                                 Player { flags: e.flags, ..Player::new(e.sub, format!("PLAYER {}", e.sub + 1), e.aux >> 6) },
-                                PlayerInput { weapon: e.aux & 0x3f, pitch: unpack_pitch(e.pitch), stance: e.flags & crate::player::flags::STANCE, ..default() },
+                                PlayerInput { weapon: e.aux & 0x3f, pitch: unpack_pitch(e.pitch), stance: e.flags & crate::player::flags::STANCE, lean: crate::player::flags::lean(e.flags), ..default() },
                                 Health { hp: 100.0 * hp, max: 100.0 },
                             ))
                             .id(),
@@ -662,7 +759,7 @@ pub fn client_receive(
                             commands.spawn((base, Enemy { kind: e.sub as u16, attacks: e.aux, ..default() }, Health { hp: def.hp * hp, max: def.hp })).id()
                         }
                         kind::PROJECTILE => {
-                            let shot = Projectile { velocity: Vec3::ZERO, gravity: 0.0, damage: 0.0, splash: 0.0, look: ShotLook::from_index(e.sub), owner: None, team: 255, life: 1.0 };
+                            let shot = Projectile { velocity: Vec3::ZERO, gravity: 0.0, damage: 0.0, splash: 0.0, look: ShotLook::from_index(e.sub), owner: e.aux.checked_sub(1), team: 255, life: 1.0, effect: crate::combat::Impact::Blast };
                             commands.spawn((base, shot)).id()
                         }
                         kind::STRUCTURE => {
@@ -704,6 +801,7 @@ pub fn client_receive(
             }
             ClientEvent::Message(_) => {}
             ClientEvent::Disconnected => {
+                commands.insert_resource(LostHost { address: link.address.clone(), name: link.name.clone(), token: link.token });
                 let why = if link.client.silent_for() > CLIENT_TIMEOUT { "THE HOST STOPPED RESPONDING" } else { "THE HOST CLOSED THE MATCH" };
                 commands.insert_resource(JoinStatus::Failed(why.into()));
                 crate::session::end_match(&mut next);
@@ -801,6 +899,42 @@ mod tests {
         for yaw in [0.0, 1.0, 3.0, 6.0] {
             let back = unpack_yaw(pack_yaw(Quat::from_rotation_y(yaw)));
             assert!((back - yaw).abs() < TAU / 200.0, "{yaw} -> {back}");
+        }
+    }
+}
+
+impl Departed {
+    fn from_player(token: u64, player: &Player, arsenal: &Arsenal, now: f32) -> Self {
+        Self {
+            token,
+            id: player.id,
+            team: player.team,
+            kills: player.kills,
+            deaths: player.deaths,
+            perk: player.perk,
+            gear: player.gear,
+            loadout: player.loadout,
+            arsenal: arsenal.clone(),
+            left_at: now,
+        }
+    }
+
+    /// Puts the remembered score, class and weapons onto a fresh player.
+    fn restore(&self, entity: &mut EntityWorldMut, gear_count: u8) {
+        if let Some(mut player) = entity.get_mut::<Player>() {
+            player.kills = self.kills;
+            player.deaths = self.deaths;
+            player.perk = self.perk;
+            player.gear = self.gear;
+            player.gear_left = gear_count;
+            player.loadout = self.loadout;
+        }
+        let current = self.arsenal.current;
+        if let Some(mut arsenal) = entity.get_mut::<Arsenal>() {
+            *arsenal = Arsenal { cooldown: 0.0, reload: 0.0, burst: 0, trigger: false, ..self.arsenal.clone() };
+        }
+        if let Some(mut input) = entity.get_mut::<PlayerInput>() {
+            input.weapon = current;
         }
     }
 }

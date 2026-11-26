@@ -72,6 +72,7 @@ impl Plugin for MenuPlugin {
                     crate::loadout::build_loadout,
                     crate::gunsmith::build_gunsmith,
                     crate::lobby::build_lobby,
+                    crate::bindings::build_controls,
                     ui::finish_rebuild,
                 )
                     .chain()
@@ -156,7 +157,7 @@ fn watch_match(
         _ => {}
     }
     *last_phase = now;
-    let pause = active && *role == NetRole::Offline && matches!(*screen, Screen::Pause | Screen::Settings);
+    let pause = active && *role == NetRole::Offline && matches!(*screen, Screen::Pause | Screen::Settings | Screen::Controls);
     if pause != time.is_paused() {
         if pause { time.pause() } else { time.unpause() }
     }
@@ -194,6 +195,7 @@ fn menu_actions(
             Act::Back => match *screen {
                 Screen::Join | Screen::Lineup => *screen = Screen::Main,
                 Screen::Settings => *screen = if in_match { Screen::Pause } else { Screen::Main },
+                Screen::Controls => *screen = Screen::Settings,
                 Screen::Pause | Screen::Chat => *screen = Screen::None,
                 Screen::GameOver => *screen = Screen::None,
                 _ => {}
@@ -222,7 +224,7 @@ fn menu_actions(
                 if let Some(game) = menu.found.get(*index).cloned() {
                     settings.last_address = game.address.to_string();
                     settings.save();
-                    net::join(&mut commands, &game.address.to_string(), settings.callsign.clone());
+                    net::join_as(&mut commands, &game.address.to_string(), settings.callsign.clone(), settings.token);
                 }
             }
             Act::ToggleSpectate => {
@@ -231,7 +233,7 @@ fn menu_actions(
             }
             Act::Connect => {
                 settings.save();
-                net::join(&mut commands, &normalize_address(&settings.last_address), settings.callsign.clone());
+                net::join_as(&mut commands, &normalize_address(&settings.last_address), settings.callsign.clone(), settings.token);
             }
             Act::Edit(field) => menu.editing = if menu.editing == Some(*field) { None } else { Some(*field) },
             Act::Set(setting, step) => {
@@ -294,6 +296,7 @@ fn build_menu(
     link: Res<NetLink>,
     phase: Res<State<MatchPhase>>,
     spectate: Res<crate::spectate::Spectate>,
+    reconnect: Res<crate::reconnect::Reconnect>,
 ) {
     if !dirty.0 {
         return;
@@ -327,8 +330,13 @@ fn build_menu(
                     ui::button(panel, order, "QUIT", Act::Quit);
                     if !menu.status.is_empty() {
                         ui::label(panel, menu.status.clone(), 14.0, ui::WARN);
+                    } else if let Some(status) = reconnect.status() {
+                        ui::label(panel, status, 14.0, ui::ACCENT);
                     } else if let JoinStatus::Failed(why) = &*join {
                         ui::label(panel, format!("DISCONNECTED: {why}"), 14.0, ui::WARN);
+                    }
+                    if reconnect.gave_up() {
+                        ui::button(panel, order, "RECONNECT", Act::Reconnect);
                     }
                 });
                 ui::label(root, "MOUSE  |  ARROWS + ENTER  |  D-PAD + A", 13.0, ui::DIM);
@@ -384,6 +392,7 @@ fn build_menu(
                     value(format!("VSYNC              <  {}  >", on_off(settings.vsync)), Setting::Vsync);
                     value(format!("VOLUME             <  {:.0}%  >", settings.volume * 100.0), Setting::Volume);
                     ui::label(panel, "A BIGGER PIXEL SIZE RENDERS FEWER PIXELS: THE FASTEST WAY TO GAIN FRAME RATE.", 13.0, ui::DIM);
+                    ui::button(panel, order, "CONTROLS", Act::Go(Screen::Controls));
                     ui::button(panel, order, "BACK", Act::Back);
                 });
             });
@@ -447,7 +456,7 @@ fn build_menu(
                 });
             });
         }
-        Screen::None | Screen::Station { .. } | Screen::Loadout | Screen::Lobby | Screen::Gunsmith { .. } | Screen::Chat => {}
+        Screen::None | Screen::Station { .. } | Screen::Loadout | Screen::Lobby | Screen::Gunsmith { .. } | Screen::Chat | Screen::Controls => {}
     }
 }
 
@@ -468,7 +477,7 @@ fn choose_stage(
         // The gunsmith drives the stage itself (it previews parts).
         Screen::Gunsmith { .. } => return,
         Screen::Main | Screen::Join => Stage::Operator { team: 2, weapon: None },
-        Screen::Settings if !in_match => Stage::Operator { team: 2, weapon: None },
+        Screen::Settings | Screen::Controls if !in_match => Stage::Operator { team: 2, weapon: None },
         Screen::Lineup => Stage::Lineup,
         Screen::Lobby => {
             let count = state.as_ref().map_or(1, |s| s.roster.iter().filter(|r| r.team == team).count().max(1) as u8);

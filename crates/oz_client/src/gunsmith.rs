@@ -13,7 +13,7 @@ use bevy::prelude::*;
 use oz_core::arsenal::{Resolved, SLOT_COUNT, SLOTS, options, resolve};
 use oz_sim::prelude::*;
 
-const BARS: [&str; 8] = ["DAMAGE", "RANGE", "ACCURACY", "CONTROL", "HANDLING", "FIRE RATE", "MOBILITY", "MAGAZINE"];
+pub const BARS: [&str; 8] = ["DAMAGE", "RANGE", "ACCURACY", "CONTROL", "HANDLING", "FIRE RATE", "MOBILITY", "MAGAZINE"];
 
 #[derive(Component, Clone, Copy)]
 struct StatFill(usize);
@@ -34,7 +34,7 @@ impl Plugin for GunsmithPlugin {
 }
 
 /// Each stat as 0..1 for the bars.
-fn bars(stats: &Resolved) -> [f32; 8] {
+pub fn bars(stats: &Resolved) -> [f32; 8] {
     [
         stats.damage * stats.pellets as f32 / 180.0,
         stats.range / 180.0,

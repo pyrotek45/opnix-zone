@@ -72,6 +72,35 @@ pub mod flags {
     pub const SPRINTING: u8 = 16;
     /// Fired an unsuppressed weapon recently: shows on enemy radar.
     pub const LOUD: u8 = 32;
+    pub const LEAN_LEFT: u8 = 64;
+    pub const LEAN_RIGHT: u8 = 128;
+
+    /// The lean direction (-1, 0, 1) encoded in a flags byte.
+    pub fn lean(bits: u8) -> i8 {
+        (bits & LEAN_RIGHT != 0) as i8 - (bits & LEAN_LEFT != 0) as i8
+    }
+}
+
+/// How far the head moves out when leaning around cover.
+pub const LEAN_REACH: f32 = 0.45;
+/// Body roll at full lean, in radians (for presentation).
+pub const LEAN_ROLL: f32 = 0.3;
+
+/// Where leaning puts the eye relative to standing straight: sideways,
+/// cut short by any wall in the way. Nothing while prone.
+pub fn lean_offset(statics: &StaticWorld, feet: Vec3, input: &PlayerInput) -> Vec3 {
+    if input.lean == 0 || input.stance == stance::PRONE {
+        return Vec3::ZERO;
+    }
+    let side = Quat::from_rotation_y(input.yaw) * Vec3::X * input.lean.signum() as f32;
+    let eye = feet + Vec3::Y * input.eye();
+    let reach = statics.raycast(eye, side, LEAN_REACH + 0.2).map_or(LEAN_REACH, |(d, _)| (d - 0.2).max(0.0)).min(LEAN_REACH);
+    side * reach - Vec3::Y * 0.08 * (reach / LEAN_REACH)
+}
+
+/// The point a player sees and shoots from.
+pub fn eye_point(statics: &StaticWorld, feet: Vec3, input: &PlayerInput) -> Vec3 {
+    feet + Vec3::Y * input.eye() + lean_offset(statics, feet, input)
 }
 
 #[derive(Component, Clone, Debug)]
@@ -208,6 +237,8 @@ pub struct PlayerInput {
     pub weapon: u8,
     /// See [`stance`].
     pub stance: u8,
+    /// Leaning around cover: -1 left, 0 upright, 1 right.
+    pub lean: i8,
 }
 
 impl PlayerInput {
@@ -332,7 +363,8 @@ pub fn move_players(
         }
         let wish = input.movement.clamp_length_max(1.0);
         let standing = input.stance == stance::STAND;
-        let sprinting = standing && input.held(buttons::SPRINT) && wish.y > 0.3 && !input.held(buttons::AIM);
+        let leaning = input.lean != 0;
+        let sprinting = standing && !leaning && input.held(buttons::SPRINT) && wish.y > 0.3 && !input.held(buttons::AIM);
         let perk_speed = match perk(&content, player) {
             Some(PerkEffect::Speed(multiplier)) => multiplier,
             _ => 1.0,
@@ -343,7 +375,7 @@ pub fn move_players(
             .zip(arsenal.state())
             .map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).mobility);
         let gait = if sprinting { SPRINT_SPEED } else if input.held(buttons::AIM) { WALK_SPEED * 0.6 } else { WALK_SPEED };
-        let speed = gait * perk_speed * weapon_speed * stance::speed(input.stance);
+        let speed = gait * perk_speed * weapon_speed * stance::speed(input.stance) * if leaning { 0.5 } else { 1.0 };
         let step = Quat::from_rotation_y(input.yaw) * Vec3::new(wish.x, 0.0, -wish.y) * speed * dt;
         let height = stance::height(input.stance);
 
@@ -401,6 +433,11 @@ pub fn presentation_flags(mut players: Query<(&mut Player, &PlayerInput, &Arsena
         if arsenal.loud > 0.0 {
             bits |= flags::LOUD;
         }
+        bits |= match input.lean {
+            l if l < 0 => flags::LEAN_LEFT,
+            l if l > 0 => flags::LEAN_RIGHT,
+            _ => 0,
+        };
         if player.flags != bits {
             player.flags = bits;
         }
