@@ -213,11 +213,10 @@ fn spawn_effects(
                                 .unwrap_or(-dir)
                         };
                         let count = holes.iter().len();
-                        if count > 500 {
-                            if let Some(oldest) = holes.iter().next() {
+                        if count > 500
+                            && let Some(oldest) = holes.iter().next() {
                                 fx.commands.entity(oldest).despawn();
                             }
-                        }
                         let size = Vec3::new(0.07, 0.07, 0.01) * fx.rng.range(0.8, 1.3);
                         let at = *to + normal * 0.012;
                         fx.commands.spawn((
