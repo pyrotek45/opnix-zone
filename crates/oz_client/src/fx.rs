@@ -14,6 +14,11 @@ const MAX_PARTICLES: usize = 500;
 #[derive(Component)]
 pub struct BulletHole;
 
+/// A loose fragment for other modules (glass, splinters, rubble): flies, falls and shrinks away.
+pub fn fragment(commands: &mut Commands, art: &Art, shape: Shape, paint: Paint, at: Vec3, size: Vec3, velocity: Vec3, life: f32) {
+    commands.spawn((MatchEntity, Mesh3d(art.primitive(shape)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(at).with_scale(size), Particle { velocity, gravity: 9.8, life, initial: life, size, grow: 0.0 }, NotShadowCaster));
+}
+
 #[derive(Component)]
 pub struct Particle {
     velocity: Vec3,

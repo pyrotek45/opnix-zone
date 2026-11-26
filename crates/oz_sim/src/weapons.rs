@@ -142,9 +142,9 @@ pub fn fire_weapons(
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
     mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health, Option<&ViewTime>)>,
-    solids: Query<(&Transform, &Solid), (With<Structure>, Without<OreNode>)>,
+    solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<OreNode>)>,
     mut ores: Query<(&Transform, &mut OreNode)>,
-    mut hits: EventWriter<Hit>,
+    (mut hits, mut traces): (EventWriter<Hit>, EventWriter<crate::breakables::Trace>),
     mut fx: EventWriter<FxEvent>,
     mut ore_carry: Local<[f32; 3]>,
 ) {
@@ -397,6 +397,8 @@ pub fn fire_weapons(
                         reach = d;
                     }
                     let end = eye + dir * reach;
+                    // Doors, glass and clutter along the way find out about it.
+                    traces.write(crate::breakables::Trace { origin: eye, dir, reach, damage: stats.damage * falloff(reach), by: player.id });
                     let mut end_at = end;
                     if let Some((d, item)) = enemy_ray(eye, dir, reach) {
                         end_at = eye + dir * d;

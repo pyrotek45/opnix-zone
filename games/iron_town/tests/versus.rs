@@ -609,3 +609,43 @@ fn ladders_lead_onto_roofs() {
     }
     assert!(highest > ladder.top - 0.1, "climbed to {highest}, roof at {}", ladder.top);
 }
+
+#[test]
+fn doors_glass_and_clutter_break() {
+    use oz_sim::breakables::{Trace, door};
+    let mut app = app();
+    let mut rules = deathmatch_rules(14);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    let map = app.world().resource::<Map>().0.clone();
+    assert!(!map.doors.is_empty() && !map.windows.is_empty() && !map.clutter.is_empty());
+
+    // A door opens for whoever stands at it and asks.
+    let spec = map.doors[0];
+    app.world_mut().query_filtered::<&mut Transform, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().translation = spec.center + Vec3::new(0.0, 0.0, 0.0);
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Door(0) });
+    app.update();
+    app.update();
+    assert_eq!(app.world().resource::<MatchState>().doors[0], door::OPEN);
+
+    // A round through a window shatters it.
+    let pane = map.windows[0];
+    let center = pane.center + Vec3::Y * pane.height * 0.5;
+    let across = if pane.along_x { Vec3::Z } else { Vec3::X };
+    app.world_mut().send_event(Trace { origin: center - across * 3.0, dir: across, reach: 6.0, damage: 30.0, by: 0 });
+    app.update();
+    assert_eq!(app.world().resource::<MatchState>().panes[0], 1);
+
+    // A barrel blown up takes its neighbourhood with it.
+    let barrel = map.clutter.iter().position(|c| c.kind == oz_core::worldgen::ClutterKind::Barrel).expect("a barrel");
+    let at = map.clutter[barrel].center();
+    app.world_mut().send_event(FxEvent::Explosion { at, radius: 4.0 });
+    for _ in 0..4 {
+        app.update();
+    }
+    assert_eq!(app.world().resource::<MatchState>().clutter[barrel], 0, "the barrel survived a blast on top of it");
+}

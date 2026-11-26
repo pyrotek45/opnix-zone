@@ -101,6 +101,11 @@ pub struct MatchState {
     pub weather_mode: u8,
     /// Seconds into the day/night cycle.
     pub clock: f32,
+    /// Breakables (see `breakables`): each door's state, each window (0 intact, 1 shattered),
+    /// and each piece of clutter's health (255 full, 0 wrecked).
+    pub doors: Vec<u8>,
+    pub panes: Vec<u8>,
+    pub clutter: Vec<u8>,
     /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
     #[serde(skip)]
     pub credits: Vec<u8>,
@@ -157,6 +162,8 @@ pub enum PlayerCommand {
     Chat(String),
     /// Versus: call in the oldest earned killstreak reward.
     UseStreak,
+    /// Open or close the door with this index (see `breakables`).
+    Door(u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

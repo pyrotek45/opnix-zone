@@ -368,7 +368,7 @@ fn update_text(
     screen: Res<Screen>,
     mut notices: ResMut<Notices>,
     spectate: Res<crate::spectate::Spectate>,
-    (death, prediction, role, settings, cover): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>, Res<crate::settings::Settings>, Res<crate::cover::Cover>),
+    (death, prediction, role, settings, cover, door_prompt): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>, Res<crate::settings::Settings>, Res<crate::cover::Cover>, Res<crate::props::DoorPrompt>),
     (players, subject): (Query<(&Health, &Arsenal, &Player, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
     mut texts: Query<(&Num, &mut Text)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
@@ -406,6 +406,8 @@ fn update_text(
     } else if let Some(kind) = placing.kind {
         let name = content.structures.get(kind as usize).map_or("STRUCTURE", |s| s.name);
         format!("{name}\n[{fire_key}] BUILD   [{rotate_key}] ROTATE   [{cancel_key}] DONE")
+    } else if let Some((_, open)) = door_prompt.0 {
+        format!("[{use_key}]  {} DOOR", if open { "CLOSE" } else { "OPEN" })
     } else if let Some((_, kind)) = nearby.0 {
         format!("[{use_key}]  {}", content.stations.get(kind as usize).map_or("STATION", |s| s.name))
     } else if weapon.is_some_and(|(def, owned)| def.mag > 0 && owned.ammo == 0 && arsenal.reload <= 0.0) {

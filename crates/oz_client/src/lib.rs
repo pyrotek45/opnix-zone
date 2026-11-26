@@ -37,6 +37,7 @@ pub mod launch;
 pub mod loadout;
 pub mod lobby;
 pub mod predict;
+pub mod props;
 pub mod reconnect;
 pub mod menu;
 pub mod optics;
@@ -103,7 +104,7 @@ impl Plugin for ClientPlugin {
             hud::HudPlugin,
             loadout::LoadoutPlugin,
         ))
-        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin, wreck::WreckPlugin, ambient::AmbientPlugin, optics::OpticsPlugin,
+        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin, wreck::WreckPlugin, ambient::AmbientPlugin, optics::OpticsPlugin, props::PropsPlugin,
         ));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);

@@ -115,7 +115,7 @@ pub fn drive_bots(
     mut budget: ResMut<NavBudget>,
     mut rng: ResMut<SimRng>,
     mut players: Query<(Entity, Option<&mut Bot>, &Player, &Transform, &mut PlayerInput, &Health, &Arsenal, Option<&mut crate::combat::Stunned>)>,
-    solids: Query<(&Transform, &Solid), (With<Structure>, Without<Player>)>,
+    solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Player>)>,
     smokes: Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>,
 ) {
     let dt = sim_dt(&time);

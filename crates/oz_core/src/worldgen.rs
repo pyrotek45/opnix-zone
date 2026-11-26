@@ -216,6 +216,74 @@ pub struct WindowSpec {
     pub height: f32,
 }
 
+/// Street furniture that can be shot up, knocked over or blown apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ClutterKind {
+    Bin,
+    /// Explodes when destroyed.
+    Barrel,
+    Bench,
+    Mailbox,
+    /// A parked car: big cover, and it blows up.
+    Car,
+    Crates,
+}
+
+impl ClutterKind {
+    /// Collision half-extents along its own axes (unrotated), centred `half.y` above the ground.
+    pub fn half(self) -> Vec3 {
+        match self {
+            ClutterKind::Bin => Vec3::new(0.4, 0.55, 0.35),
+            ClutterKind::Barrel => Vec3::new(0.32, 0.5, 0.32),
+            ClutterKind::Bench => Vec3::new(0.9, 0.3, 0.3),
+            ClutterKind::Mailbox => Vec3::new(0.25, 0.6, 0.25),
+            ClutterKind::Car => Vec3::new(1.0, 0.75, 2.1),
+            ClutterKind::Crates => Vec3::new(0.6, 0.6, 0.6),
+        }
+    }
+
+    /// Damage it takes before it breaks.
+    pub fn health(self) -> f32 {
+        match self {
+            ClutterKind::Bin => 45.0,
+            ClutterKind::Barrel => 35.0,
+            ClutterKind::Bench => 80.0,
+            ClutterKind::Mailbox => 55.0,
+            ClutterKind::Car => 420.0,
+            ClutterKind::Crates => 60.0,
+        }
+    }
+
+    /// (damage, radius) of the blast when it goes, if it explodes.
+    pub fn blast(self) -> Option<(f32, f32)> {
+        match self {
+            ClutterKind::Barrel => Some((130.0, 5.0)),
+            ClutterKind::Car => Some((180.0, 6.5)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clutter {
+    pub kind: ClutterKind,
+    pub pos: Vec3,
+    /// Turned a quarter: its X and Z extents swap.
+    pub turned: bool,
+}
+
+impl Clutter {
+    /// World-axis collision half-extents.
+    pub fn half(&self) -> Vec3 {
+        let h = self.kind.half();
+        if self.turned { Vec3::new(h.z, h.y, h.x) } else { h }
+    }
+
+    pub fn center(&self) -> Vec3 {
+        self.pos + Vec3::Y * self.kind.half().y
+    }
+}
+
 /// A ladder up an outside wall to a roof.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ladder {
@@ -267,6 +335,8 @@ pub struct World {
     pub fountain: Option<Vec3>,
     /// Flag pole tops (flags wave in the wind).
     pub flags: Vec<Vec3>,
+    /// Breakable street furniture.
+    pub clutter: Vec<Clutter>,
     side: usize,
     heights: Vec<f32>,
 }
@@ -293,7 +363,7 @@ impl World {
         let mut world = World {
             recipe, water: WATER_LEVEL, islands, props: Vec::new(), blocks: Vec::new(), deposits: Vec::new(), landings: Vec::new(),
             core: Vec2::ZERO, spawn: Vec2::new(0.0, 6.0), pads: Vec::new(), team_spawns: [Vec::new(), Vec::new()], side, heights: Vec::new(),
-            doors: Vec::new(), windows: Vec::new(), ladders: Vec::new(), grass: Vec::new(), fountain: None, flags: Vec::new(),
+            doors: Vec::new(), windows: Vec::new(), ladders: Vec::new(), grass: Vec::new(), fountain: None, flags: Vec::new(), clutter: Vec::new(),
         };
         world.heights = (0..side * side)
             .map(|i| {
@@ -494,6 +564,7 @@ impl World {
             self.props.push(Prop { kind, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw, scale });
         }
         self.plaza(rng);
+        self.street_clutter(rng);
         self.greenery(rng);
         let look = self.recipe.biome.look();
         for _ in 0..look.palms / 3 {
@@ -803,6 +874,40 @@ impl World {
             self.props.push(Prop { kind: PropKind::Lamp, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: a, scale: 1.0 });
         }
         let _ = rng;
+    }
+
+    /// Bins, barrels, benches, mailboxes, crate stacks and parked cars along the streets.
+    fn street_clutter(&mut self, rng: &mut Rng) {
+        let kinds = [
+            (ClutterKind::Bin, 14),
+            (ClutterKind::Barrel, 10),
+            (ClutterKind::Bench, 8),
+            (ClutterKind::Mailbox, 6),
+            (ClutterKind::Crates, 8),
+            (ClutterKind::Car, 6),
+        ];
+        for (kind, count) in kinds {
+            let mut placed = 0;
+            for _ in 0..count * 12 {
+                if placed >= count {
+                    break;
+                }
+                // Streets run between the lots on the 21 m grid.
+                let along = rng.range(-55.0, 55.0);
+                let street = (rng.below(5) as f32 - 2.0) * 21.0 + 10.5 * if rng.chance(0.5) { 1.0 } else { -1.0 };
+                let across = rng.range(-2.6, 2.6);
+                let on_x = rng.chance(0.5);
+                let p = if on_x { Vec2::new(along, street + across) } else { Vec2::new(street + across, along) };
+                let turned = !on_x;
+                let half = kind.half();
+                let reach = half.x.max(half.z) + 0.8;
+                if p.x.abs() > 54.0 || p.length() < 6.0 || self.occupied(p, reach) || self.clutter.iter().any(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) < reach + 1.5) {
+                    continue;
+                }
+                self.clutter.push(Clutter { kind, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned });
+                placed += 1;
+            }
+        }
     }
 
     /// Trees along the streets, bushes by the walls, and grass wherever nothing is built.

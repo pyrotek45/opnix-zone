@@ -238,6 +238,8 @@ pub fn process_commands(
             PlayerCommand::Mode(_) => continue,
             // Handled by `killstreak::use_streaks`.
             PlayerCommand::UseStreak => continue,
+            // Handled by `breakables::work_doors`.
+            PlayerCommand::Door(_) => continue,
         };
         fx.write(FxEvent::Cue { to: id, sfx: Sfx::Buy });
         if let Some(text) = done {

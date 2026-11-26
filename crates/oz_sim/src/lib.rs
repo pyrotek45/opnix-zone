@@ -24,6 +24,7 @@
 //! A game mode is "a catalog + rules + a director plugin" (see `games/ember_atoll`).
 
 pub mod bots;
+pub mod breakables;
 pub mod combat;
 pub mod enemy;
 pub mod killstreak;
@@ -99,11 +100,15 @@ impl Plugin for SimPlugin {
             .add_event::<state::FxEvent>()
             .add_event::<state::CommandEvent>()
             .add_event::<combat::Hit>()
+            .add_event::<breakables::Trace>()
+            .init_resource::<breakables::Blasts>()
             .configure_sets(Update, (SimSet::Receive, SimSet::Orders, SimSet::Logic, SimSet::Resolve, SimSet::Send).chain())
             .configure_sets(Update, (SimSet::Orders, SimSet::Logic, SimSet::Resolve).run_if(in_state(Active)).run_if(authority))
             .add_systems(Update, (net::poll_joining, session::start_pending_match).chain().before(SimSet::Receive))
             .add_systems(Update, (net::host_receive, net::client_receive).in_set(SimSet::Receive).run_if(in_state(Active)))
-            .add_systems(Update, (orders::process_commands, killstreak::use_streaks).chain().in_set(SimSet::Orders))
+            .add_systems(Update, (orders::process_commands, killstreak::use_streaks, breakables::work_doors).chain().in_set(SimSet::Orders))
+            .add_systems(OnEnter(Active), breakables::spawn_breakables)
+            .add_systems(Update, breakables::sync_breakables.run_if(in_state(Active)))
             .add_systems(Update, (versus::run_versus, versus::fill_teams).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
             .add_systems(
                 Update,
@@ -125,7 +130,7 @@ impl Plugin for SimPlugin {
                     .chain()
                     .in_set(SimSet::Logic),
             )
-            .add_systems(Update, (combat::resolve_hits, player::presentation_flags, versus::update_roster).chain().in_set(SimSet::Resolve))
+            .add_systems(Update, (breakables::collect_blasts, breakables::break_things, combat::resolve_hits, player::presentation_flags, versus::update_roster).chain().in_set(SimSet::Resolve))
             .add_systems(Update, (player::move_players, net::smooth_remote).after(SimSet::Receive).before(SimSet::Orders).run_if(in_state(Active)))
             .add_systems(Update, (net::host_send, net::client_send).in_set(SimSet::Send).run_if(in_state(Active)))
             .add_systems(Update, combat::tick_smoke.run_if(in_state(Active)))

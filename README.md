@@ -143,6 +143,14 @@ one in when you like. Streaks reset when you die, earned rewards wait:
 
 Bots call in theirs as well; enemy call-ins flash a warning.
 
+**The town changes as you fight.** Doors open and close (walk up and press
+Use; bots shoulder through them) and can be shot or blown off their hinges.
+Window glass shatters when a round or a blast goes through it. Street
+clutter - bins, benches, mailboxes, crate stacks, parked cars and red
+barrels - is cover until it is shot apart; barrels and cars explode and can
+set each other off. Bullet holes, scorch marks, rubble and robot wreckage
+stay where they fall. Ladders lead up to the roofs.
+
 **Juice:** medal banners that slam onto the screen (double / triple kill,
 headshot, revenge, first blood), a headshot ding, killstreak fanfares, a
 little zoom punch on every kill, robots bursting into sparks and plates when
