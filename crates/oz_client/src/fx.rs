@@ -133,8 +133,17 @@ fn spawn_effects(
                 sounds.write(PlaySfx { volume: if *quiet { 0.3 } else { 1.0 }, ..PlaySfx::new(Sfx::Shot(*sound), (*by != me).then_some(*from)) });
             }
             FxEvent::Explosion { at, radius } => {
-                let size = Vec3::splat(radius * 0.25);
-                fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(*at).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.22, initial: 0.22, size, grow: 3.2 });
+                // A short hot core, an orange fireball, then dark smoke and debris.
+                let core = Vec3::splat(radius * 0.08);
+                fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(*at).with_scale(core), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.1, initial: 0.1, size: core, grow: 2.5 });
+                let ball = Vec3::splat(radius * 0.11);
+                fx.particle(Shape::Shard, Paint::Glow, Transform::from_translation(*at + Vec3::Y * 0.3).with_scale(ball), Particle { velocity: Vec3::Y * 1.5, gravity: 0.0, life: 0.3, initial: 0.3, size: ball, grow: 2.2 });
+                for i in 0..5 {
+                    let drift = Vec3::new(fx.rng.range(-1.0, 1.0), fx.rng.range(1.5, 3.0), fx.rng.range(-1.0, 1.0));
+                    let puff = Vec3::splat(radius * fx.rng.range(0.05, 0.09));
+                    let at = *at + drift * 0.3 + Vec3::Y * 0.2 * i as f32;
+                    fx.particle(Shape::Shard, Paint::Dark, Transform::from_translation(at).with_scale(puff), Particle { velocity: drift, gravity: 0.0, life: 0.9, initial: 0.9, size: puff, grow: 1.6 });
+                }
                 fx.burst(*at, 22, &[Paint::Glow, Paint::Spark, Paint::Dark, Paint::Rust], 9.0, 0.22, 0.9);
                 view.shake += rumble(*at, radius * 0.45);
                 sounds.write(PlaySfx::new(Sfx::Explosion, Some(*at)));
@@ -200,7 +209,8 @@ fn tick_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<
         }
         let age = 1.0 - particle.life / particle.initial;
         if particle.grow > 0.0 {
-            transform.scale = particle.size * (1.0 + particle.grow * age);
+            transform.scale = particle.size * (1.0 + particle.grow * age) * (1.0 - age * age * 0.6);
+            transform.translation += particle.velocity * dt;
         } else if particle.gravity > 0.0 {
             particle.velocity.y -= particle.gravity * dt;
             transform.translation += particle.velocity * dt;

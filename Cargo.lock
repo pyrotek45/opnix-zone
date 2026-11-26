@@ -2377,6 +2377,7 @@ dependencies = [
  "bevy",
  "oz_client",
  "oz_core",
+ "oz_net",
  "oz_sim",
 ]
 

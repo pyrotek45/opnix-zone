@@ -105,6 +105,10 @@ enum GunGroup {
     Shell,
 }
 
+/// Label for the first-person camera; the spectator camera runs after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FollowPlayer;
+
 pub struct ViewPlugin;
 
 impl Plugin for ViewPlugin {
@@ -113,7 +117,7 @@ impl Plugin for ViewPlugin {
             .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
             .add_systems(Startup, setup_presentation)
             .add_systems(Update, resize_target)
-            .add_systems(Update, (follow_player, viewmodel).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (follow_player, viewmodel).chain().in_set(FollowPlayer).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -323,6 +327,7 @@ fn viewmodel(
     mut gun: Query<(Entity, &mut Transform, &mut Visibility), (With<GunRoot>, Without<MuzzleFlash>, Without<GunGroup>)>,
     mut groups: Query<(&GunGroup, &mut Transform, &mut Visibility), (Without<GunRoot>, Without<MuzzleFlash>)>,
     mut flash: Query<(&mut Transform, &mut Visibility), (With<MuzzleFlash>, Without<GunRoot>, Without<GunGroup>)>,
+    spectate: Res<crate::spectate::Spectate>,
 ) {
     let (Ok((arsenal, health, mover)), Ok((root, mut transform, mut visibility))) = (players.single(), gun.single_mut()) else { return };
     let index = arsenal.current as usize;
@@ -359,7 +364,7 @@ fn viewmodel(
     }
 
     // A magnified scope fills the view: hide the gun behind the overlay.
-    *visibility = if health.alive() && view.scoped < 0.5 { Visibility::Inherited } else { Visibility::Hidden };
+    *visibility = if health.alive() && view.scoped < 0.5 && !spectate.enabled { Visibility::Inherited } else { Visibility::Hidden };
     let t = time.elapsed_secs();
     let walking = (mover.speed / 5.4).min(1.6) * (1.0 - view.ads * 0.94);
 
@@ -449,7 +454,7 @@ fn viewmodel(
     }
 
     if let Ok((mut flash_transform, mut flash_visibility)) = flash.single_mut() {
-        let lit = view.flash > 0.0 && health.alive() && def.mag > 0 && view.scoped < 0.5 && !stats.quiet;
+        let lit = view.flash > 0.0 && health.alive() && def.mag > 0 && view.scoped < 0.5 && !stats.quiet && !spectate.enabled;
         *flash_visibility = if lit { Visibility::Inherited } else { Visibility::Hidden };
         flash_transform.translation = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.08) * GUN_SCALE);
         flash_transform.scale = Vec3::new(0.06, 0.06, 0.15) * (0.7 + view.flash * 14.0);

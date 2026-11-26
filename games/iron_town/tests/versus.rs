@@ -176,3 +176,45 @@ fn a_guest_joins_the_other_team_and_replaces_a_bot() {
         assert!(started.elapsed() < Duration::from_secs(20), "guest never settled: host teams {:?}, guest team {local_team:?}, guest sees {seen}", teams(&mut host));
     }
 }
+
+#[test]
+fn guests_see_every_player_where_the_host_has_them() {
+    let (mut host, mut client) = (app(), app());
+    let mut rules = deathmatch_rules(77);
+    rules.team_size = 3;
+    start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
+    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let addr = link.host.local_addr().unwrap().to_string();
+    let world = client.world_mut();
+    net::join(&mut world.commands(), &addr, "GUEST");
+    world.flush();
+    let started = Instant::now();
+    while count_players(&mut client) < 6 {
+        host.update();
+        client.update();
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(started.elapsed() < Duration::from_secs(20), "guest never saw everyone");
+    }
+    lobby(&mut host, LobbyAction::Start);
+    for _ in 0..400 {
+        host.update();
+        client.update();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let positions = |app: &mut App| -> Vec<(u8, u8, Vec3)> {
+        let mut v: Vec<_> = app.world_mut().query::<(&Player, &Transform)>().iter(app.world()).map(|(p, t)| (p.id, p.team, t.translation)).collect();
+        v.sort_by_key(|(id, ..)| *id);
+        v
+    };
+    let (on_host, on_client) = (positions(&mut host), positions(&mut client));
+    for (id, team, at) in &on_host {
+        let seen = on_client.iter().find(|(cid, ..)| cid == id);
+        let Some((_, seen_team, seen_at)) = seen else { panic!("guest is missing player {id}") };
+        assert_eq!(team, seen_team, "player {id} is on the wrong team for the guest");
+        assert!(at.distance(*seen_at) < 3.0, "player {id} (team {team}) is at {at} on the host but {seen_at} for the guest");
+    }
+}
+
+fn count_players(app: &mut App) -> usize {
+    app.world_mut().query::<&Player>().iter(app.world()).count()
+}

@@ -347,6 +347,7 @@ fn update_text(
     placing: Res<Placement>,
     screen: Res<Screen>,
     mut notices: ResMut<Notices>,
+    spectate: Res<crate::spectate::Spectate>,
     players: Query<(&Health, &Arsenal, &Player), With<LocalPlayer>>,
     mut texts: Query<(&Num, &mut Text)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
@@ -366,7 +367,9 @@ fn update_text(
     let weapon = content.weapons.get(index).zip(arsenal.weapons.get(index));
 
     let (use_key, fire_key, cancel_key, rotate_key) = if controls.gamepad { ("X", "RT", "B", "X") } else { ("E", "LMB", "ESC", "R") };
-    let prompt = if !health.alive() {
+    let prompt = if spectate.enabled {
+        String::new()
+    } else if !health.alive() {
         format!("DOWN  -  BACK IN {:.0}", player.respawn.ceil())
     } else if let Some(kind) = placing.kind {
         let name = content.structures.get(kind as usize).map_or("STRUCTURE", |s| s.name);
@@ -379,7 +382,10 @@ fn update_text(
         String::new()
     };
     // Controls are shown while a match is young, then get out of the way.
-    let hint = if *shown_for > 30.0 {
+    let watching = format!("SPECTATING  {}      [V] BACK TO YOUR PLAYER", spectate.name);
+    let hint = if spectate.enabled {
+        watching.as_str()
+    } else if *shown_for > 30.0 {
         ""
     } else if controls.gamepad {
         "STICKS MOVE / LOOK    RT FIRE    LT AIM    X RELOAD / USE    A JUMP    B GEAR    LB RB WEAPON    START PAUSE"
@@ -414,6 +420,7 @@ fn update_shapes(
     content: Res<Content>,
     rules: Res<Rules>,
     view: Res<ViewState>,
+    spectate: Res<crate::spectate::Spectate>,
     players: Query<(&Health, &Arsenal, &Player, &Transform, &PlayerInput, &Mover), With<LocalPlayer>>,
     enemies: Query<&Transform, With<Enemy>>,
     others: Query<(&Transform, &Player, &Health), Without<LocalPlayer>>,
@@ -499,7 +506,7 @@ fn update_shapes(
     let owned: Vec<usize> = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).collect();
     let gap = 5.0 + (mover.speed * 1.1).min(9.0) + view.recoil * 9.0 + if view.hit > 0.0 { 3.0 } else { 0.0 };
     let cross_color = if view.hit > 0.0 { if view.kill { RED } else { AMBER } } else { ui::TEXT };
-    let show_cross = health.alive() && view.ads < 0.85;
+    let show_cross = health.alive() && view.ads < 0.85 && !spectate.enabled;
 
     for (segment, mut color, mut node) in &mut segments {
         let tint = match *segment {

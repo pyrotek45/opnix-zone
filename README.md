@@ -41,11 +41,19 @@ Friends pick **JOIN GAME** and type the host's address.
   mesh VPN such as Tailscale or ZeroTier and join the host's VPN address.
   There is no relay or NAT punch-through yet.
 
-A headless dedicated server is also included if you ever want one:
+Headless dedicated servers are included too, for running a match on a spare
+machine. The Iron Town one starts each match on its own after a short lobby:
+
+```bash
+cargo run --release -p iron_town --bin iron_server -- --teams 4 --score 30
+```
 
 ```bash
 cargo run --release -p ember_atoll --bin ember_server -- --mode 0 --port 27650
 ```
+
+Press **V** in a match (or launch with `--spectate`) to watch other players
+over the shoulder; the camera cuts to whoever is in a firefight.
 
 ## Controls
 
