@@ -66,7 +66,7 @@ fn break_apart(
     let count = debris.iter().len();
     if count > MAX_DEBRIS {
         for entity in debris.iter().take(count - MAX_DEBRIS) {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
     }
     let positions: Vec<(u8, Vec3)> = robots.iter().map(|(_, p, t)| (p.id, t.translation)).collect();

@@ -220,10 +220,7 @@ mod tests {
     /// robots would be culled while in plain view (the "flickering robot" bug).
     #[test]
     fn meshes_keep_what_culling_needs() {
-        let mut builder = MeshBuilder::default();
-        builder.positions = vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [0.0, 2.0, 1.0]];
-        builder.normals = vec![[0.0, 1.0, 0.0]; 3];
-        builder.colors = vec![[1.0; 4]; 3];
+        let builder = MeshBuilder { positions: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [0.0, 2.0, 1.0]], normals: vec![[0.0, 1.0, 0.0]; 3], colors: vec![[1.0; 4]; 3] };
         let mesh = builder.build();
         assert!(mesh.asset_usage.contains(RenderAssetUsages::MAIN_WORLD));
         use bevy::render::mesh::MeshAabb;

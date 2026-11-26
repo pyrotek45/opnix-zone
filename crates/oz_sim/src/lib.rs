@@ -118,6 +118,7 @@ impl Plugin for SimPlugin {
                     nav::refill_budget,
                     player::vitals,
                     bots::drive_bots,
+                    player::enforce_headroom,
                     weapons::fire_weapons,
                     enemy::think,
                     enemy::act,

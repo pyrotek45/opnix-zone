@@ -255,6 +255,16 @@ cargo test --workspace
 The suite runs the real simulation headlessly, including full matches over
 real sockets (host + client), bot matches, mining, purchases and a stress test.
 
+`games/iron_town/tests/soak.rs` plays full bot matches on random towns and
+both fixed maps, with one seat driven by a "chaos monkey" (random running,
+jumping, stance changes, leaning and shooting), and checks every tick that
+nobody is inside a wall, under the ground, out of bounds, stuck in the air or
+teleporting, and that no shot reaches anyone through a wall. Run it long:
+
+```bash
+SOAK_SECONDS=600 SOAK_SEEDS=1,2,3,4,5,6,7,8 cargo test --release -p iron_town --test soak -- --nocapture
+```
+
 ## Documentation
 
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - crates, data flow, netcode.

@@ -170,7 +170,7 @@ pub fn run_streaks(
             let at = Vec3::new(p.x, ground.max(p.y - 3.0) + 0.4, p.z);
             fx.write(FxEvent::Explosion { at, radius: BOMB_RADIUS });
             crate::combat::splash(&grid, &mut hits, at, BOMB_RADIUS, BOMB_DAMAGE, Some(strike.owner), None);
-            blast_players(&content, &mut state, &mut fx, &mut players, at, BOMB_RADIUS, BOMB_DAMAGE, strike.team, strike.owner, None);
+            blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, BOMB_RADIUS, BOMB_DAMAGE, strike.team, strike.owner, None);
             strike.dropped += 1;
         }
         if strike.dropped >= BOMBS {

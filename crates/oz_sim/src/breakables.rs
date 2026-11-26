@@ -183,6 +183,7 @@ pub fn collect_blasts(mut events: EventReader<FxEvent>, mut blasts: ResMut<Blast
 #[allow(clippy::too_many_arguments)]
 pub fn break_things(
     map: Res<Map>,
+    statics: Res<crate::session::Statics>,
     content: Res<Content>,
     grid: Res<Grid>,
     mut state: ResMut<MatchState>,
@@ -275,12 +276,12 @@ pub fn break_things(
         fx.write(FxEvent::Explosion { at, radius });
         splash(&grid, &mut hits, at, radius, damage, (by != 255).then_some(by), None);
         if by != 255 {
-            blast_players(&content, &mut state, &mut fx, &mut players, at, radius, damage, 255, by, None);
+            blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, radius, damage, 255, by, None);
         } else {
             // Nobody to credit: it just hurts whoever is close.
             for (transform, mut health, mut player) in &mut players {
                 let distance = (transform.translation + Vec3::Y).distance(at);
-                if distance < radius {
+                if distance < radius && !crate::combat::sheltered(&statics, at, transform.translation) {
                     let amount = damage * (1.0 - 0.7 * distance / radius) * crate::combat::blast_scale(&content, &player);
                     player.last_hit = crate::player::part::BLAST;
                     crate::player::damage_player(&mut health, &mut player, amount, None, &mut state, &mut fx);

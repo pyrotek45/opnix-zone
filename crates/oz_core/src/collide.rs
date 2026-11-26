@@ -130,9 +130,15 @@ impl StaticWorld {
 
     /// Highest walkable top under (x, z) that is no more than a step above `feet`.
     pub fn support(&self, x: f32, z: f32, feet: f32) -> f32 {
+        self.support_within(x, z, feet, 0.12)
+    }
+
+    /// Like [`Self::support`], for a body `radius` wide: a robot whose body is
+    /// over the edge of a ledge stands on it rather than sliding down into it.
+    pub fn support_within(&self, x: f32, z: f32, feet: f32, radius: f32) -> f32 {
         let mut best = f32::NEG_INFINITY;
-        self.near(x, z, 0.2, |_, b| {
-            if b.touches(x, z, 0.12) && b.top() <= feet + STEP {
+        self.near(x, z, radius + 0.08, |_, b| {
+            if b.touches(x, z, radius) && b.top() <= feet + STEP {
                 best = best.max(b.top());
             }
         });
@@ -237,5 +243,20 @@ mod tests {
         assert!(w.raycast(Vec3::new(-10.0, 4.0, 0.0), Vec3::X, 40.0).is_none());
         assert!(w.overlaps(Vec3::new(4.0, 1.0, 0.0), Vec3::splat(0.5), None));
         assert!(!w.overlaps(Vec3::new(4.0, 1.0, 0.0), Vec3::splat(0.5), Some(Vec3::new(4.15, 0.0, 0.0))));
+    }
+}
+
+#[cfg(test)]
+mod support_tests {
+    use super::*;
+
+    #[test]
+    fn a_body_over_a_ledge_stands_on_it() {
+        let mut world = StaticWorld::new(50.0);
+        world.add(Aabb::span(Vec3::new(0.0, 0.0, -2.0), Vec3::new(1.0, 1.2, 2.0)));
+        // Centre just off the ledge, body still over it.
+        let (x, z) = (-0.2, 0.0);
+        assert_eq!(world.support(x, z, 1.25), f32::NEG_INFINITY, "the centre alone misses it");
+        assert!((world.support_within(x, z, 1.25, 0.27) - 1.2).abs() < 1e-5);
     }
 }

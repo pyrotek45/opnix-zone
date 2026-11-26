@@ -279,7 +279,18 @@ pub fn blast_scale(content: &Content, player: &Player) -> f32 {
 
 /// Damages players caught in a blast (versus), with falloff and Flak Jacket.
 #[allow(clippy::too_many_arguments)]
+/// Is a robot standing at `feet` completely behind solid walls as seen from a
+/// blast at `at`? Blasts do not go through buildings.
+pub fn sheltered(statics: &oz_core::collide::StaticWorld, at: Vec3, feet: Vec3) -> bool {
+    [0.4, 1.1, 1.7].into_iter().all(|h| {
+        let to = feet + Vec3::Y * h - at;
+        let length = to.length();
+        length > 0.3 && statics.raycast(at, to / length, length - 0.2).is_some()
+    })
+}
+
 pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
+    statics: &oz_core::collide::StaticWorld,
     content: &Content,
     state: &mut MatchState,
     fx: &mut EventWriter<FxEvent>,
@@ -294,7 +305,7 @@ pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
     let name = state.roster.iter().find(|r| r.id == owner).map_or(String::new(), |r| r.name.clone());
     for (target, mut health, mut player) in players.iter_mut() {
         let distance = (target.translation + Vec3::Y).distance(at);
-        if player.team != team && Some(player.id) != skip && distance < radius {
+        if player.team != team && Some(player.id) != skip && distance < radius && !sheltered(statics, at, target.translation) {
             let amount = damage * (1.0 - 0.7 * distance / radius) * blast_scale(content, &player);
             player.last_hit = crate::player::part::BLAST;
             // A big blast tears a leg off anyone it does not kill outright.
@@ -332,6 +343,7 @@ pub fn fly_projectiles(
     mut players: Query<(&Transform, &mut Health, &mut Player), (Without<Projectile>, Without<Structure>)>,
     mut structures: Query<(&Transform, &Solid, &mut Health), (With<Structure>, Without<Projectile>, Without<Player>)>,
     bots: Query<(Entity, &Transform, &crate::player::PlayerInput), (With<crate::bots::Bot>, Without<Projectile>)>,
+    props: Query<(&Transform, &Solid), (Or<(With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Projectile>, Without<Structure>, Without<Player>)>,
     mut hits: EventWriter<Hit>,
     mut fx: EventWriter<FxEvent>,
 ) {
@@ -351,13 +363,23 @@ pub fn fly_projectiles(
         if to.y <= map.height(to.x, to.z) || shot.life <= 0.0 {
             impact = Some(to);
         }
+        // The first wall, door or prop in the way this step: nothing beyond it can be hit.
+        let mut wall = length;
         if let Some((d, _)) = statics.raycast(from, dir, length) {
+            wall = d;
+        }
+        for (transform, solid) in &props {
+            if let Some(d) = ray_box(from, dir, solid.center(transform), solid.half, wall) {
+                wall = wall.min(d);
+            }
+        }
+        if wall < length {
             // Grenades and rockets burst just in front of walls rather than inside them.
-            impact = Some(from + dir * (d - 0.05).max(0.0));
+            impact = Some(from + dir * (wall - 0.05).max(0.0));
         }
         if let Some(owner) = shot.owner {
             if harmful {
-                if let Some((d, item)) = grid.raycast(from, dir, length) {
+                if let Some((d, item)) = grid.raycast(from, dir, wall) {
                     impact = Some(from + dir * d);
                     hits.write(Hit::plain(item.entity, shot.damage, shot.owner));
                     if shot.splash > 0.0 {
@@ -372,21 +394,22 @@ pub fn fly_projectiles(
                 let name = state.roster.iter().find(|r| r.id == owner).map_or(String::new(), |r| r.name.clone());
                 let mut direct = None;
                 for (target, mut health, mut player) in &mut players {
-                    if player.team != shot.team && health.alive() && ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.6).is_some_and(|d| d <= length) {
+                    if let Some(d) = ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.6).filter(|d| *d <= wall)
+                        && player.team != shot.team && health.alive() {
                         if harmful {
                             damage_player(&mut health, &mut player, shot.damage, Some((&name, shot.team, owner)), &mut state, &mut fx);
                         }
                         direct = Some(player.id);
-                        impact = Some(to);
+                        impact = Some(from + dir * d);
                     }
                 }
                 if let (Some(at), true) = (impact, harmful && shot.splash > 0.0) {
-                    blast_players(&content, &mut state, &mut fx, &mut players, at, shot.splash, shot.damage, shot.team, owner, direct);
+                    blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, shot.splash, shot.damage, shot.team, owner, direct);
                 }
             }
         } else {
             for (target, mut health, mut player) in &mut players {
-                if health.alive() && ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.75).is_some_and(|d| d <= length) {
+                if health.alive() && ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.75).is_some_and(|d| d <= wall) {
                     damage_player(&mut health, &mut player, shot.damage, None, &mut state, &mut fx);
                     impact = Some(to);
                 }
@@ -454,6 +477,7 @@ pub fn run_mines(
     time: Res<Time>,
     content: Res<Content>,
     grid: Res<Grid>,
+    statics: Res<crate::session::Statics>,
     mut state: ResMut<MatchState>,
     mut commands: Commands,
     mut mines: Query<(Entity, &Transform, &mut Mine)>,
@@ -481,7 +505,7 @@ pub fn run_mines(
         commands.entity(entity).despawn();
         fx.write(FxEvent::Explosion { at, radius: mine.radius });
         splash(&grid, &mut hits, at, mine.radius, mine.damage, Some(mine.owner), None);
-        blast_players(&content, &mut state, &mut fx, &mut players, at, mine.radius, mine.damage, mine.team, mine.owner, None);
+        blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, mine.radius, mine.damage, mine.team, mine.owner, None);
     }
 }
 
@@ -590,5 +614,26 @@ mod tests {
         assert_eq!(item.entity, near);
         assert!((d - 109.0).abs() < 1e-3);
         assert!(grid.raycast(Vec3::new(-100.0, 1.0, 9.0), Vec3::X, 300.0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod wall_tests {
+    use super::sheltered;
+    use bevy::prelude::*;
+    use oz_core::collide::{Aabb, StaticWorld};
+
+    #[test]
+    fn blasts_do_not_go_through_walls() {
+        let mut world = StaticWorld::new(50.0);
+        // A wall 3 m tall between x = 0 and x = 0.3.
+        world.add(Aabb::span(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.3, 3.0, 5.0)));
+        let blast = Vec3::new(-2.0, 0.5, 0.0);
+        assert!(sheltered(&world, blast, Vec3::new(2.0, 0.0, 0.0)), "behind the wall is safe");
+        assert!(!sheltered(&world, blast, Vec3::new(-3.0, 0.0, 1.0)), "the same side is not");
+        // Peeking over a waist-high wall still gets you hurt.
+        let mut low = StaticWorld::new(50.0);
+        low.add(Aabb::span(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.3, 1.0, 5.0)));
+        assert!(!sheltered(&low, blast, Vec3::new(2.0, 0.0, 0.0)));
     }
 }

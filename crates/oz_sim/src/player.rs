@@ -25,6 +25,9 @@ pub const SPRINT_SPEED: f32 = 8.2;
 const JUMP_SPEED: f32 = 6.2;
 const GRAVITY: f32 = 15.0;
 const BODY_RADIUS: f32 = 0.3;
+/// How far out from its rungs a climber's body hangs: enough to clear the
+/// wall and the floor slabs that stick out of it.
+pub const LADDER_STANDOFF: f32 = 0.45;
 
 /// Bit flags for [`PlayerInput::buttons`].
 pub mod buttons {
@@ -431,20 +434,44 @@ pub fn ground_under(map: &GameMap, statics: &StaticWorld, x: f32, z: f32, feet: 
 
 /// Moves every player this machine controls: its own (movement is
 /// owner-authoritative so it always feels instant) and, on the authority, bots.
+///
+/// Standing up needs headroom: under a low ceiling, a stairway or a beam
+/// overhead in mid-jump you stay down until there is room.
+fn headroom(statics: &StaticWorld, feet: Vec3, input: &mut PlayerInput) {
+    let fits = |stance: u8| !statics.blocked(feet.x, feet.z, feet.y + 0.5, stance::height(stance) - 0.5, BODY_RADIUS * 0.7);
+    if let Some(room) = (input.stance..=stance::PRONE).find(|s| fits(*s))
+        && room != input.stance
+    {
+        input.stance = room;
+    }
+}
+
+/// Applies [`headroom`] to stances chosen after movement (bots decide later
+/// in the tick), so nobody shoots or is drawn standing with their head in a ceiling.
+pub fn enforce_headroom(statics: Res<Statics>, mut players: Query<(&Transform, &mut PlayerInput, &Health)>) {
+    for (transform, mut input, health) in &mut players {
+        if health.alive() {
+            headroom(&statics, transform.translation, &mut input);
+        }
+    }
+}
+
 pub fn move_players(
     time: Res<Time>,
     map: Res<Map>,
     statics: Res<Statics>,
     content: Res<Content>,
-    mut players: Query<(&mut Transform, &PlayerInput, &mut Mover, &Health, &Player, &Arsenal), Or<(With<LocalPlayer>, With<Bot>)>>,
+    mut players: Query<(&mut Transform, &mut PlayerInput, &mut Mover, &Health, &Player, &Arsenal), Or<(With<LocalPlayer>, With<Bot>)>>,
     solids: Query<(&Transform, &Solid), Without<Player>>,
 ) {
     let dt = sim_dt(&time);
-    for (mut transform, input, mut mover, health, player, arsenal) in &mut players {
+    for (mut transform, mut input, mut mover, health, player, arsenal) in &mut players {
         if !health.alive() {
             mover.speed = 0.0;
             continue;
         }
+        headroom(&statics, transform.translation, &mut input);
+        let input = &*input;
         let wish = input.movement.clamp_length_max(1.0);
         let standing = input.stance == stance::STAND;
         let leaning = input.lean != 0;
@@ -481,8 +508,11 @@ pub fn move_players(
             near && before.y < l.top - 0.01 && before.y > l.foot.y - 0.6 && facing.dot(-l.out) > 0.35 && wish.y > 0.3
         });
         if let Some(ladder) = ladder {
-            // On the rungs: straight up, no stepping sideways (or through the windows).
-            pos = before;
+            // On the rungs: straight up a line clear of the wall and any ledge on it,
+            // no stepping sideways (or through the windows).
+            let line = Vec2::new(ladder.foot.x, ladder.foot.z) + ladder.out * LADDER_STANDOFF;
+            let pull = (line - before.xz()).clamp_length_max(2.0 * dt);
+            pos = before + Vec3::new(pull.x, 0.0, pull.y);
             pos.y = (pos.y + 3.2 * dt).min(ladder.top + 0.02);
             mover.vertical = 0.0;
             mover.grounded = true;
@@ -496,6 +526,8 @@ pub fn move_players(
             mover.vertical = JUMP_SPEED;
             mover.grounded = false;
         }
+        // Standing on the lip of a ledge counts as standing on it.
+        let ground = if mover.grounded { ground.max(statics.support_within(pos.x, pos.z, pos.y, BODY_RADIUS * 0.9)) } else { ground };
         if mover.grounded && pos.y - ground < oz_core::collide::STEP {
             pos.y = ground; // Stick to slopes and stairs.
         } else {
@@ -503,14 +535,24 @@ pub fn move_players(
             pos.y += mover.vertical * dt;
             mover.grounded = false;
             // Bump heads on ceilings.
+            // Bump heads on ceilings, without poking into them.
             if mover.vertical > 0.0 && statics.blocked(pos.x, pos.z, pos.y + 0.5, height - 0.5, BODY_RADIUS * 0.7) {
                 mover.vertical = 0.0;
+                pos.y = before.y;
             }
-            let landing = ground_under(&map, &statics, pos.x, pos.z, pos.y.max(before.y));
+            // Land on whatever is under any part of the body, not just its centre:
+            // coming down beside a ledge must not sink the body into it.
+            let from = pos.y.max(before.y);
+            let landing = ground_under(&map, &statics, pos.x, pos.z, from).max(statics.support_within(pos.x, pos.z, from, BODY_RADIUS * 0.9));
             if pos.y <= landing {
                 pos.y = landing;
                 mover.vertical = 0.0;
                 mover.grounded = true;
+            }
+            // Still overlapping a wall (drifted sideways into it in mid-air): undo the drift.
+            if statics.blocked(pos.x, pos.z, pos.y, height, BODY_RADIUS * 0.9) && !statics.blocked(before.x, before.z, pos.y, height, BODY_RADIUS * 0.9) {
+                pos.x = before.x;
+                pos.z = before.z;
             }
         }
         mover.speed = (pos - before).xz().length() / dt.max(1e-4);

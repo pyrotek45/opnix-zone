@@ -228,7 +228,8 @@ pub fn fire_weapons(
                     ref kind => throw(kind, dir).map(|(velocity, shot)| Projectile { velocity, owner: Some(player.id), team: player.team, ..shot }),
                 };
                 if let Some(shot) = shot {
-                    spawn_projectile(&mut commands, &mut ids, eye + dir * 0.7, shot);
+                    let out = obstruction(&map, &statics, &solids, eye, dir, 0.7);
+                    spawn_projectile(&mut commands, &mut ids, eye + dir * (out - 0.15).max(0.0), shot);
                     fx.write(FxEvent::Sound { sfx: Sfx::PinPull, at: Some(eye) });
                     fx.write(FxEvent::Sound { sfx: Sfx::Throw, at: Some(eye) });
                 }
@@ -346,8 +347,12 @@ pub fn fire_weapons(
             FireMode::Projectile { speed, gravity } => {
                 let dir = spread_dir(look, spread, &mut rng);
                 let projectile = Projectile { velocity: dir * speed, gravity, damage: stats.damage, splash: stats.splash, look: ShotLook::Rocket, owner: Some(player.id), team: player.team, life: 6.0, effect: Impact::Blast };
-                spawn_projectile(&mut commands, &mut ids, eye + dir * 0.8, projectile);
-                fx.write(shot(from + dir * 1.5, false));
+                // Never start past a wall the shooter is pressed against.
+                let out = obstruction(&map, &statics, &solids, eye, dir, 0.8);
+                spawn_projectile(&mut commands, &mut ids, eye + dir * (out - 0.15).max(0.0), projectile);
+                // The launch flash stops at a wall too.
+                let flash = obstruction(&map, &statics, &solids, eye, dir, from.distance(eye) + 1.5);
+                fx.write(shot(eye + dir * flash, false));
             }
             FireMode::Beam => {
                 let dir = look * Vec3::NEG_Z;
