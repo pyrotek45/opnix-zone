@@ -215,7 +215,7 @@ pub fn run_versus(
             if state.weather_mode == 5 {
                 state.timer -= dt;
                 if state.timer <= 0.0 {
-                    let seed = (state.clock * 1000.0) as u64 ^ state.scores[0] as u64 * 31 ^ state.scores[1] as u64 * 97;
+                    let seed = (state.clock * 1000.0) as u64 ^ (state.scores[0] as u64 * 31) ^ (state.scores[1] as u64 * 97);
                     let next = oz_core::worldgen::Weather::ALL[(seed % 4) as usize];
                     state.timer = 70.0 + (seed % 80) as f32;
                     if next != state.weather {
