@@ -13,3 +13,6 @@ oz_core.workspace = true
 oz_sim.workspace = true
 oz_client.workspace = true
 bevy.workspace = true
+
+[lints]
+workspace = true

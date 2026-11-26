@@ -19,6 +19,11 @@ bincode = "1.3"
 # Headless subset: enough for the simulation and dedicated servers.
 bevy = { version = "=0.16.1", default-features = false, features = ["std", "async_executor", "multi_threaded", "bevy_state", "bevy_log"] }
 
+# Bevy systems naturally take many parameters and use rich query types.
+[workspace.lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
+
 [profile.dev]
 opt-level = 1
 

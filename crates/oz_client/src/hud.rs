@@ -339,7 +339,7 @@ fn update_shapes(
     let Ok((health, arsenal, me, transform, input, mover)) = players.single() else { return };
     if let Ok(mut overlay) = hurt.single_mut() {
         let low = if health.alive() { (0.35 - health.fraction()).max(0.0) * 0.6 } else { 0.45 };
-        set(&mut overlay.0, Color::srgba(0.8, 0.05, 0.05, (view.hurt * 0.35 + low).min(0.6)));
+        set(&mut overlay.0, Color::srgba(0.8, 0.05, 0.05, (view.hurt * 0.16 + low * 0.6).min(0.32)));
     }
     for (zone, mut node) in &mut zones {
         let on = match zone {

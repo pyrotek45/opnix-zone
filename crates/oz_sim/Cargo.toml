@@ -12,3 +12,6 @@ bevy.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true
+
+[lints]
+workspace = true
