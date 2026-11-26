@@ -1,0 +1,14 @@
+[package]
+name = "oz_sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oz_core.workspace = true
+oz_net.workspace = true
+serde.workspace = true
+bevy.workspace = true
+
+[dev-dependencies]
+bincode.workspace = true
