@@ -216,14 +216,16 @@ fn follow_player(
     mut view: ResMut<ViewState>,
     players: Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health), With<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<LocalPlayer>)>,
+    (role, prediction, settings): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>),
 ) {
     let dt = time.delta_secs().min(0.05);
     let (Ok((player, input, arsenal, mover, health)), Ok((mut camera, mut projection))) = (players.single(), cameras.single_mut()) else { return };
 
-    // Recoil kicks whenever the authoritative shot counter advances.
-    let index = arsenal.current as usize;
-    if arsenal.shots != view.last_shots {
-        view.last_shots = arsenal.shots;
+    // Recoil kicks whenever the shot counter advances: predicted locally when online.
+    let index = held_weapon(input, arsenal) as usize;
+    let shots = if *role == NetRole::Client { prediction.total } else { arsenal.shots };
+    if shots != view.last_shots {
+        view.last_shots = shots;
         if let Some(def) = content.weapons.get(index) {
             view.recoil = (view.recoil + def.recoil).min(2.5);
             view.flash = 0.05;
@@ -239,12 +241,12 @@ fn follow_player(
         view.inspect = 0.0;
     }
     view.inspect = (view.inspect - dt).max(0.0);
-    if view.last_weapon != Some(arsenal.current) {
+    if view.last_weapon != Some(index as u8) {
         if view.last_weapon.is_some() {
             view.swap = 1.0;
             sounds.write(crate::fx::PlaySfx::new(Sfx::Swap, None));
         }
-        view.last_weapon = Some(arsenal.current);
+        view.last_weapon = Some(index as u8);
     }
     // Landing: dip the camera and thump in proportion to the fall.
     if mover.grounded && !view.was_grounded && view.fall_speed < -4.5 {
@@ -289,7 +291,9 @@ fn follow_player(
 
     let ads_fov = stats.map_or(BASE_FOV, |s| s.ads_fov);
     if let Projection::Perspective(perspective) = &mut *projection {
-        perspective.fov = (BASE_FOV + (ads_fov - BASE_FOV) * view.ads + 5.0 * view.sprint * (1.0 - view.ads) + view.kick * 0.9).to_radians();
+        let base = settings.fov;
+        let ads_fov = ads_fov * base / BASE_FOV;
+        perspective.fov = (base + (ads_fov - base) * view.ads + 5.0 * view.sprint * (1.0 - view.ads) + view.kick * 0.9).to_radians();
     }
 
     let bob = Vec3::new(0.0, (view.bob * 2.0).sin() * 0.035 * walking * (1.0 - view.ads), 0.0);
@@ -303,6 +307,12 @@ fn follow_player(
     let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
     camera.translation = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob;
     camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x, input.pitch + view.recoil * 0.012 + shake.y, roll + shake.z);
+}
+
+/// The weapon to show in the hands: the one the player asked for if they own it
+/// (instant online), otherwise whatever the host says they hold.
+pub fn held_weapon(input: &PlayerInput, arsenal: &Arsenal) -> u8 {
+    if arsenal.owns(input.weapon as usize) { input.weapon } else { arsenal.current }
 }
 
 fn ease(t: f32) -> f32 {
@@ -323,19 +333,20 @@ fn viewmodel(
     mut view: ResMut<ViewState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
-    players: Query<(&Arsenal, &Health, &Mover), With<LocalPlayer>>,
+    players: Query<(&Arsenal, &Health, &Mover, &PlayerInput), With<LocalPlayer>>,
     mut gun: Query<(Entity, &mut Transform, &mut Visibility), (With<GunRoot>, Without<MuzzleFlash>, Without<GunGroup>)>,
     mut groups: Query<(&GunGroup, &mut Transform, &mut Visibility), (Without<GunRoot>, Without<MuzzleFlash>)>,
     mut flash: Query<(&mut Transform, &mut Visibility), (With<MuzzleFlash>, Without<GunRoot>, Without<GunGroup>)>,
     spectate: Res<crate::spectate::Spectate>,
 ) {
-    let (Ok((arsenal, health, mover)), Ok((root, mut transform, mut visibility))) = (players.single(), gun.single_mut()) else { return };
-    let index = arsenal.current as usize;
+    let (Ok((arsenal, health, mover, input)), Ok((root, mut transform, mut visibility))) = (players.single(), gun.single_mut()) else { return };
+    let held = held_weapon(input, arsenal);
+    let index = held as usize;
     let (Some(def), Some(state)) = (content.weapons.get(index), arsenal.weapons.get(index)) else { return };
     let stats = resolve(def, state, &content.attachments);
 
     // Rebuild the hands only when the weapon or its attachments change.
-    let signature = (arsenal.current, state.equipped);
+    let signature = (held, state.equipped);
     if view.shown != Some(signature) {
         view.shown = Some(signature);
         let mut model = assemble(def, &state.equipped);

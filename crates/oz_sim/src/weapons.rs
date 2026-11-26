@@ -7,6 +7,7 @@ use crate::{
     player::{Arsenal, Health, Player, PlayerInput, buttons, damage_player, perk, stance},
     session::{Content, Map, Statics},
     sim_dt,
+    lagcomp::{LagHistory, ViewTime},
     state::{FxEvent, MatchState, Phase, Rules, SimRng},
     structures::{OreNode, Structure},
 };
@@ -32,6 +33,7 @@ fn muzzle(eye: Vec3, look: Quat, length: f32) -> Vec3 {
 }
 
 /// A player as a target for other players' shots (versus modes).
+#[derive(Clone)]
 struct Body {
     entity: Entity,
     id: u8,
@@ -116,14 +118,14 @@ pub fn fire_weapons(
     time: Res<Time>,
     map: Res<Map>,
     statics: Res<Statics>,
-    rules: Res<Rules>,
+    (rules, history): (Res<Rules>, Res<LagHistory>),
     content: Res<Content>,
     grid: Res<Grid>,
     mut state: ResMut<MatchState>,
     mut rng: ResMut<SimRng>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health)>,
+    mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health, Option<&ViewTime>)>,
     solids: Query<(&Transform, &Solid), (With<Structure>, Without<OreNode>)>,
     mut ores: Query<(&Transform, &mut OreNode)>,
     mut hits: EventWriter<Hit>,
@@ -134,7 +136,7 @@ pub fn fire_weapons(
     let bodies: Vec<Body> = if rules.pvp {
         players
             .iter()
-            .filter(|(.., health)| health.alive())
+            .filter(|(.., health, _)| health.alive())
             .map(|(entity, player, transform, input, ..)| Body { entity, id: player.id, team: player.team, feet: transform.translation, stance: input.stance, yaw: input.yaw, name: player.name.clone() })
             .collect()
     } else {
@@ -143,7 +145,8 @@ pub fn fire_weapons(
     let mut struck: Vec<Strike> = Vec::new();
     let lobby = state.phase == Phase::Lobby;
 
-    for (entity, mut player, transform, input, mut arsenal, mut health) in &mut players {
+    let now = time.elapsed_secs();
+    for (entity, mut player, transform, input, mut arsenal, mut health, view) in &mut players {
         // Plain reborrow so separate fields can be borrowed at once.
         let arsenal = &mut *arsenal;
         arsenal.cooldown = (arsenal.cooldown - dt).max(0.0);
@@ -156,6 +159,19 @@ pub fn fire_weapons(
         let eye = transform.translation + Vec3::Y * input.eye();
         let look = input.look();
         let me = bodies.iter().position(|body| body.entity == entity);
+        // Lag compensation: remote shooters hit the world as they saw it.
+        let rewound: Option<Vec<Body>> = view.filter(|_| rules.pvp && !history.is_empty()).map(|view| {
+            let at = history.clamp(now, view.0);
+            bodies
+                .iter()
+                .filter_map(|b| match history.pose_at(at, b.entity) {
+                    Some(pose) if pose.alive => Some(Body { feet: pose.feet, stance: pose.stance, yaw: pose.yaw, name: b.name.clone(), ..*b }),
+                    Some(_) => None,
+                    None => Some(Body { name: b.name.clone(), ..*b }),
+                })
+                .collect()
+        });
+        let targets: &[Body] = rewound.as_deref().unwrap_or(&bodies);
 
         // Gear: one use per button press.
         let gear_pressed = input.held(buttons::GEAR) && !player.gear_latch;
@@ -254,6 +270,7 @@ pub fn fire_weapons(
             }
         }
         arsenal.shots = arsenal.shots.wrapping_add(1);
+        player.protect = 0.0;
         if !stats.quiet {
             arsenal.loud = 1.5;
         }
@@ -263,10 +280,10 @@ pub fn fire_weapons(
         let from = muzzle(eye, look, stats.length);
         let aiming = input.held(buttons::AIM);
         let spread = stats.spread * if aiming { stats.ads_spread } else { 1.0 } * stance::steadiness(input.stance);
-        let shot = |to: Vec3, beam: bool| FxEvent::Shot { by: player.id, sound: def.sound, from, to, beam, tracer: stats.tracer, quiet: stats.quiet };
+        let shot = |to: Vec3, beam: bool| FxEvent::Shot { by: player.id, sound: def.sound, from, to, beam, tracer: stats.tracer, quiet: stats.quiet, local: false };
         // Nearest enemy-team player along a ray, within `reach`.
         let player_hit = |dir: Vec3, reach: f32| {
-            bodies
+            targets
                 .iter()
                 .filter(|body| body.team != player.team)
                 .filter_map(|body| body.hit(eye, dir).filter(|(d, _)| *d <= reach).map(|(d, head)| (d, head, body.entity)))
@@ -343,7 +360,7 @@ pub fn fire_weapons(
                     // Explosive rounds also catch nearby players.
                     if stats.splash > 0.0 && rules.pvp {
                         if let Some(me) = me {
-                            for body in bodies.iter().filter(|b| b.team != player.team && Some(b.entity) != body.map(|h| h.2)) {
+                            for body in targets.iter().filter(|b| b.team != player.team && Some(b.entity) != body.map(|h| h.2)) {
                                 let distance = body.chest().distance(end_at);
                                 if distance < stats.splash {
                                     struck.push((body.entity, stats.damage * 0.4 * (1.0 - distance / stats.splash), me, 0.0));
@@ -359,7 +376,7 @@ pub fn fire_weapons(
 
     for (victim, damage, attacker, burn) in struck {
         let attacker = &bodies[attacker];
-        if let Ok((_, mut player, _, _, _, mut health)) = players.get_mut(victim) {
+        if let Ok((_, mut player, _, _, _, mut health, _)) = players.get_mut(victim) {
             if burn > 0.0 {
                 player.burn = burn;
                 player.burn_time = BURN_SECONDS;

@@ -106,6 +106,11 @@ pub struct RosterEntry {
     pub alive: bool,
     pub kills: u16,
     pub deaths: u16,
+    /// Round trip to the host in ms (0 for the host and bots).
+    pub ping: u16,
+    /// What they are holding, so everyone sees their real attachments.
+    pub weapon: u8,
+    pub parts: [u8; oz_core::arsenal::SLOT_COUNT],
 }
 
 impl MatchState {
@@ -138,6 +143,8 @@ pub enum PlayerCommand {
     Mode(u8),
     /// Versus lobby controls.
     Lobby(LobbyAction),
+    /// A line of text chat.
+    Chat(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,7 +167,12 @@ pub struct CommandEvent {
 #[derive(Event, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FxEvent {
     /// A shot or beam. `by` is a player id, or 255 for turrets.
-    Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool, tracer: Paint, quiet: bool },
+    /// `local` marks a shot the client predicted itself; the host never sets it.
+    Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool, tracer: Paint, quiet: bool, local: bool },
+    /// `victim` was taken down by `by` (a player id).
+    Killed { victim: u8, by: u8 },
+    /// A line of chat from a player.
+    Chat { name: String, text: String },
     Explosion { at: Vec3, radius: f32 },
     EnemyDied { at: Vec3, kind: u16 },
     StructureLost { at: Vec3 },

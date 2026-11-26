@@ -209,6 +209,8 @@ pub fn cleanup_match(mut commands: Commands, entities: Query<Entity, With<MatchE
         commands.entity(entity).despawn();
     }
     commands.remove_resource::<Nav>();
+    commands.insert_resource(crate::lagcomp::LagHistory::default());
+    commands.insert_resource(crate::net::ServerClock::default());
     commands.insert_resource(NetLink::None);
     commands.insert_resource(NetRole::Offline);
 }

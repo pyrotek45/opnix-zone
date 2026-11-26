@@ -227,6 +227,13 @@ pub fn process_commands(
                 }
             }
             PlayerCommand::Lobby(_) => continue,
+            PlayerCommand::Chat(text) => {
+                let text: String = text.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(80).collect::<String>().trim().to_uppercase();
+                if !text.is_empty() {
+                    fx.write(FxEvent::Chat { name: player.name.clone(), text });
+                }
+                continue;
+            }
             // Mode actions belong to the mode's director, which reads the same events.
             PlayerCommand::Mode(_) => continue,
         };

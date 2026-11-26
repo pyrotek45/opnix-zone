@@ -40,6 +40,8 @@ pub enum Screen {
     Gunsmith { weapon: u8, slot: u8, from: Back },
     /// Every robot pose side by side.
     Lineup,
+    /// Typing a chat message (the game keeps running behind it).
+    Chat,
     GameOver,
 }
 
@@ -53,6 +55,9 @@ pub enum Back {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setting {
     Sensitivity,
+    AdsSensitivity,
+    Fov,
+    NetStats,
     InvertY,
     PixelSize,
     Dither,
@@ -101,6 +106,10 @@ pub enum Act {
     Part(u8, u8),
     // Lobby.
     Lobby(LobbyAction),
+    /// Join a game found on the local network (index into the finder's list).
+    JoinFound(usize),
+    FindGames,
+    ToggleSpectate,
 }
 
 /// The action of the button that currently has focus (hover, keyboard or pad).

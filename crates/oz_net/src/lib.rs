@@ -9,12 +9,14 @@
 //! Because gameplay never touches sockets directly, the wire layer can later
 //! be swapped (UDP, relay, Steam sockets) without changing any game code.
 
+pub mod lan;
+
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     io::{self, ErrorKind, Read, Write},
     marker::PhantomData,
     net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub const DEFAULT_PORT: u16 = 27_650;
@@ -29,13 +31,15 @@ struct Link {
     inbox: Vec<u8>,
     outbox: Vec<u8>,
     closed: bool,
+    /// When bytes last arrived; used to spot dead connections.
+    heard: Instant,
 }
 
 impl Link {
     fn new(stream: TcpStream) -> io::Result<Self> {
         stream.set_nonblocking(true)?;
         stream.set_nodelay(true)?;
-        Ok(Self { stream, inbox: Vec::new(), outbox: Vec::new(), closed: false })
+        Ok(Self { stream, inbox: Vec::new(), outbox: Vec::new(), closed: false, heard: Instant::now() })
     }
 
     fn queue<T: Serialize>(&mut self, message: &T) {
@@ -70,7 +74,10 @@ impl Link {
                     self.closed = true;
                     break;
                 }
-                Ok(n) => self.inbox.extend_from_slice(&buffer[..n]),
+                Ok(n) => {
+                    self.inbox.extend_from_slice(&buffer[..n]);
+                    self.heard = Instant::now();
+                }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(_) => {
@@ -165,6 +172,11 @@ impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
         }
     }
 
+    /// How long since this peer last sent anything.
+    pub fn silent_for(&self, peer: PeerId) -> Option<Duration> {
+        self.peers.iter().find(|(id, _)| *id == peer).map(|(_, link)| link.heard.elapsed())
+    }
+
     pub fn kick(&mut self, peer: PeerId) {
         self.peers.retain(|(id, _)| *id != peer);
     }
@@ -208,6 +220,11 @@ impl<In: DeserializeOwned, Out: Serialize> Client<In, Out> {
     pub fn send(&mut self, message: &Out) {
         self.link.queue(message);
         self.link.flush();
+    }
+
+    /// How long since the host last sent anything.
+    pub fn silent_for(&self) -> Duration {
+        self.link.heard.elapsed()
     }
 
     pub fn is_connected(&self) -> bool {

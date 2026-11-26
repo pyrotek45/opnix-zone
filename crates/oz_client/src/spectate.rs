@@ -21,13 +21,17 @@ pub struct Spectate {
     rotation: Option<Quat>,
 }
 
+/// Label for the spectator camera; name tags run after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Spectating;
+
 pub struct SpectatePlugin;
 
 impl Plugin for SpectatePlugin {
     fn build(&self, app: &mut App) {
         let enabled = std::env::args().any(|a| a == "--spectate");
         app.insert_resource(Spectate { enabled, ..default() })
-            .add_systems(Update, follow.in_set(ClientSet::Present).after(crate::view::FollowPlayer).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, follow.in_set(Spectating).in_set(ClientSet::Present).after(crate::view::FollowPlayer).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -41,6 +45,8 @@ fn follow(
     players: Query<(Entity, &Player, &Transform, &PlayerInput, &Health), Without<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Player>)>,
     mut last_shot: Local<HashMap<u8, f32>>,
+    (local, mut death): (Query<&Health, With<LocalPlayer>>, ResMut<crate::fx::DeathInfo>),
+    mut was_dead: Local<bool>,
 ) {
     let now = time.elapsed_secs();
     for event in events.read() {
@@ -53,11 +59,30 @@ fn follow(
         spectate.position = None;
         spectate.rotation = None;
     }
-    if !spectate.enabled {
+    // While dead, watch whoever got you until you are back in.
+    let dead = local.single().is_ok_and(|h| !h.alive());
+    if !dead {
+        death.killer = None;
+    }
+    let killer = death.killer.filter(|_| dead).and_then(|id| players.iter().find(|(_, p, .., h)| p.id == id && h.alive()).map(|(e, ..)| e));
+    if dead != *was_dead {
+        *was_dead = dead;
+        spectate.position = None;
+        spectate.rotation = None;
+    }
+    if !spectate.enabled && killer.is_none() {
         return;
     }
     let dt = time.delta_secs().min(0.05);
     spectate.hold -= dt;
+    if let Some(killer) = killer {
+        if spectate.target != Some(killer) {
+            spectate.position = None;
+            spectate.rotation = None;
+        }
+        spectate.target = Some(killer);
+        spectate.hold = 1.0;
+    }
 
     // Cut when the shot has run long or the subject went down; prefer whoever is shooting.
     let current = spectate.target.and_then(|e| players.get(e).ok()).filter(|(.., health)| health.alive());

@@ -23,7 +23,7 @@ pub fn versus(rules: Option<Res<Rules>>) -> bool {
 }
 
 /// Authority: rebuilds the roster and hands out kill credits. Runs in every mode.
-pub fn update_roster(mut state: ResMut<MatchState>, mut players: Query<(&mut Player, &Health, Has<Bot>)>) {
+pub fn update_roster(mut state: ResMut<MatchState>, mut players: Query<(&mut Player, &Health, &PlayerInput, &Arsenal, Has<Bot>)>) {
     for id in std::mem::take(&mut state.credits) {
         if let Some((mut player, ..)) = players.iter_mut().find(|(p, ..)| p.id == id) {
             player.kills += 1;
@@ -31,7 +31,19 @@ pub fn update_roster(mut state: ResMut<MatchState>, mut players: Query<(&mut Pla
     }
     let mut roster: Vec<RosterEntry> = players
         .iter()
-        .map(|(p, health, bot)| RosterEntry { id: p.id, name: p.name.clone(), team: p.team, bot, ready: p.ready || bot, alive: health.alive(), kills: p.kills, deaths: p.deaths })
+        .map(|(p, health, input, arsenal, bot)| RosterEntry {
+            id: p.id,
+            name: p.name.clone(),
+            team: p.team,
+            bot,
+            ready: p.ready || bot,
+            alive: health.alive(),
+            kills: p.kills,
+            deaths: p.deaths,
+            ping: p.ping,
+            weapon: input.weapon,
+            parts: arsenal.weapons.get(input.weapon as usize).map_or([0; oz_core::arsenal::SLOT_COUNT], |w| w.equipped),
+        })
         .collect();
     roster.sort_by_key(|entry| (entry.team, entry.bot, entry.id));
     if state.roster != roster {

@@ -21,6 +21,12 @@ pub struct Particle {
     grow: f32,
 }
 
+/// Who last took the local player down, for the death screen and kill-cam.
+#[derive(Resource, Default)]
+pub struct DeathInfo {
+    pub killer: Option<u8>,
+}
+
 /// Request to play a sound. Consumed by the audio module when it is enabled.
 #[derive(Event, Clone, Copy)]
 pub struct PlaySfx {
@@ -44,7 +50,8 @@ pub struct FxPlugin;
 
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<PlaySfx>().add_systems(Update, (spawn_effects, tick_particles, night_calls).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+        app.add_event::<PlaySfx>()
+            .init_resource::<DeathInfo>().add_systems(Update, (spawn_effects, tick_particles, night_calls).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -98,6 +105,7 @@ fn spawn_effects(
     local: Query<&Player, With<LocalPlayer>>,
     particles: Query<(), With<Particle>>,
     cameras: Query<&Transform, With<WorldCamera>>,
+    (role, mut death): (Res<NetRole>, ResMut<DeathInfo>),
     mut rng: Local<Option<Rng>>,
 ) {
     let me = local.single().map_or(255, |player| player.id);
@@ -108,7 +116,15 @@ fn spawn_effects(
     let mut fx = Spawner { commands: &mut commands, art: &art, rng, budget: MAX_PARTICLES.saturating_sub(particles.iter().len()) };
     for event in events.read() {
         match event {
-            FxEvent::Shot { by, sound, from, to, beam, tracer, quiet } => {
+            FxEvent::Shot { by, local, .. } if *role == NetRole::Client && *by == me && !*local => {
+                // Our own shot, already shown when we predicted it.
+            }
+            FxEvent::Killed { victim, by } => {
+                if *victim == me {
+                    death.killer = Some(*by);
+                }
+            }
+            FxEvent::Shot { by, sound, from, to, beam, tracer, quiet, .. } => {
                 if *beam {
                     fx.streak(*from, *to, 0.035, Paint::Aether, 0.11);
                     fx.burst(*to, 1, &[Paint::Aether, Paint::Spark], 2.0, 0.06, 0.25);

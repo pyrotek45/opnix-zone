@@ -26,11 +26,18 @@ pub struct MenuState {
     pub team_size: u8,
     editing: Option<Field>,
     status: String,
+    /// Games answering on the local network, and the search in progress.
+    found: Vec<oz_net::lan::Found>,
+    searching: bool,
 }
+
+/// The LAN search socket lives outside `MenuState` so the state stays plain data.
+#[derive(Resource)]
+struct Search(oz_net::lan::Finder);
 
 impl Default for MenuState {
     fn default() -> Self {
-        Self { mode: 0, biome: 0, threat: 1, team_size: 2, editing: None, status: String::new() }
+        Self { mode: 0, biome: 0, threat: 1, team_size: 2, editing: None, status: String::new(), found: Vec::new(), searching: false }
     }
 }
 
@@ -54,7 +61,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<JoinStatus>()
             .add_systems(OnEnter(MatchPhase::Active), (|mut screen: ResMut<Screen>| *screen = Screen::None).in_set(EnterMatch))
             .add_systems(OnExit(MatchPhase::Active), |mut screen: ResMut<Screen>| *screen = Screen::Main)
-            .add_systems(Update, (type_text, toggle_pause, menu_actions, watch_match, apply_settings).chain().in_set(MenuActions).in_set(ClientSet::Input).after(crate::input::ReadDevices))
+            .add_systems(Update, (type_text, toggle_pause, menu_actions, watch_match, apply_settings, search_lan).chain().in_set(MenuActions).in_set(ClientSet::Input).after(crate::input::ReadDevices))
             .add_systems(
                 Update,
                 (
@@ -171,19 +178,23 @@ fn menu_actions(
     mut next: ResMut<NextState<MatchPhase>>,
     mut commands: Commands,
     mut exit: EventWriter<AppExit>,
+    mut spectate: ResMut<crate::spectate::Spectate>,
 ) {
     let in_match = *phase.get() == MatchPhase::Active;
     for ActEvent(act) in events.read() {
         let cycle = |value: usize, step: i32, len: usize| (value as i32 + step).rem_euclid(len as i32) as usize;
         match act {
             Act::Go(target) => {
+                if *target == Screen::Join {
+                    start_search(&mut commands, &mut menu);
+                }
                 *screen = target.clone();
                 menu.status.clear();
             }
             Act::Back => match *screen {
                 Screen::Join | Screen::Lineup => *screen = Screen::Main,
                 Screen::Settings => *screen = if in_match { Screen::Pause } else { Screen::Main },
-                Screen::Pause => *screen = Screen::None,
+                Screen::Pause | Screen::Chat => *screen = Screen::None,
                 Screen::GameOver => *screen = Screen::None,
                 _ => {}
             },
@@ -206,6 +217,18 @@ fn menu_actions(
                     }
                 }
             }
+            Act::FindGames => start_search(&mut commands, &mut menu),
+            Act::JoinFound(index) => {
+                if let Some(game) = menu.found.get(*index).cloned() {
+                    settings.last_address = game.address.to_string();
+                    settings.save();
+                    net::join(&mut commands, &game.address.to_string(), settings.callsign.clone());
+                }
+            }
+            Act::ToggleSpectate => {
+                spectate.enabled = !spectate.enabled;
+                *screen = Screen::None;
+            }
             Act::Connect => {
                 settings.save();
                 net::join(&mut commands, &normalize_address(&settings.last_address), settings.callsign.clone());
@@ -215,6 +238,9 @@ fn menu_actions(
                 let step = *step as f32;
                 match setting {
                     Setting::Sensitivity => settings.sensitivity = (settings.sensitivity + 0.1 * step).clamp(0.2, 3.0),
+                    Setting::AdsSensitivity => settings.ads_sensitivity = (settings.ads_sensitivity + 0.05 * step).clamp(0.2, 2.0),
+                    Setting::Fov => settings.fov = (settings.fov + 5.0 * step).clamp(60.0, 100.0),
+                    Setting::NetStats => settings.net_stats = !settings.net_stats,
                     Setting::InvertY => settings.invert_y = !settings.invert_y,
                     Setting::PixelSize => settings.pixel_size = (settings.pixel_size as i32 + step as i32 - 1).rem_euclid(6) as u32 + 1,
                     Setting::Dither => settings.dither = !settings.dither,
@@ -267,6 +293,7 @@ fn build_menu(
     state: Option<Res<MatchState>>,
     link: Res<NetLink>,
     phase: Res<State<MatchPhase>>,
+    spectate: Res<crate::spectate::Spectate>,
 ) {
     if !dirty.0 {
         return;
@@ -300,6 +327,8 @@ fn build_menu(
                     ui::button(panel, order, "QUIT", Act::Quit);
                     if !menu.status.is_empty() {
                         ui::label(panel, menu.status.clone(), 14.0, ui::WARN);
+                    } else if let JoinStatus::Failed(why) = &*join {
+                        ui::label(panel, format!("DISCONNECTED: {why}"), 14.0, ui::WARN);
                     }
                 });
                 ui::label(root, "MOUSE  |  ARROWS + ENTER  |  D-PAD + A", 13.0, ui::DIM);
@@ -319,8 +348,16 @@ fn build_menu(
                     ui::button(panel, order, field("ADDRESS", &settings.last_address, menu.editing == Some(Field::Address)), Act::Edit(Field::Address));
                     ui::label(panel, format!("HOST IP OR NAME. PORT {DEFAULT_PORT} IS USED UNLESS YOU ADD :PORT"), 13.0, ui::DIM);
                     ui::button(panel, order, "CONNECT", Act::Connect);
-                    ui::button(panel, order, "BACK", Act::Back);
                     ui::label(panel, status.0, 14.0, status.1);
+                    ui::label(panel, "GAMES ON YOUR NETWORK", 15.0, ui::ACCENT);
+                    if menu.found.is_empty() {
+                        ui::label(panel, if menu.searching { "SEARCHING..." } else { "NONE FOUND. HOSTS ON OTHER NETWORKS: TYPE THEIR ADDRESS ABOVE." }, 13.0, ui::DIM);
+                    }
+                    for (index, game) in menu.found.iter().enumerate() {
+                        ui::button(panel, order, format!("{:<18} {:<16} {} PLAYER(S)", game.name, game.mode, game.players), Act::JoinFound(index));
+                    }
+                    ui::button(panel, order, "SEARCH AGAIN", Act::FindGames);
+                    ui::button(panel, order, "BACK", Act::Back);
                 });
             });
         }
@@ -336,6 +373,9 @@ fn build_menu(
                         ui::stepper(panel, order, text, left, right);
                     };
                     value(format!("LOOK SENSITIVITY   <  {:.1}  >", settings.sensitivity), Setting::Sensitivity);
+                    value(format!("AIM SENSITIVITY    <  {:.2}  >", settings.ads_sensitivity), Setting::AdsSensitivity);
+                    value(format!("FIELD OF VIEW      <  {:.0}  >", settings.fov), Setting::Fov);
+                    value(format!("FPS / PING         <  {}  >", on_off(settings.net_stats)), Setting::NetStats);
                     value(format!("INVERT Y           <  {}  >", on_off(settings.invert_y)), Setting::InvertY);
                     value(format!("PIXEL SIZE         <  {}  >", settings.pixel_size), Setting::PixelSize);
                     value(format!("RETRO DITHER       <  {}  >", on_off(settings.dither)), Setting::Dither);
@@ -350,14 +390,19 @@ fn build_menu(
         }
         Screen::Pause => {
             let net = match &*link {
-                NetLink::Host(host) => format!("HOSTING ON PORT {DEFAULT_PORT} - {} GUEST(S) CONNECTED", host.peers.len()),
+                NetLink::Host(host) => format!("{} GUEST(S) CONNECTED\n{}", host.peers.len(), crate::lobby::hosting_info(host)),
                 NetLink::Client(_) => "CONNECTED TO A HOST - THE MATCH KEEPS RUNNING".into(),
                 NetLink::None => "SOLO - TIME IS FROZEN".into(),
             };
+            let versus = state.as_deref().is_some_and(|s| matches!(s.phase, Phase::Live | Phase::Lobby | Phase::Won));
             ui::root(&mut commands, 0.6).with_children(|root| {
                 ui::label(root, "PAUSED", 34.0, ui::TEXT);
                 root.spawn(ui::panel(420.0)).with_children(|panel| {
                     ui::button(panel, order, "RESUME", Act::Go(Screen::None));
+                    if versus {
+                        ui::button(panel, order, "CHANGE CLASS", Act::Go(Screen::Loadout));
+                    }
+                    ui::button(panel, order, if spectate.enabled { "STOP SPECTATING" } else { "SPECTATE" }, Act::ToggleSpectate);
                     ui::button(panel, order, "SETTINGS", Act::Go(Screen::Settings));
                     ui::button(panel, order, "LEAVE MATCH", Act::Leave);
                     ui::label(panel, net, 13.0, ui::DIM);
@@ -402,7 +447,7 @@ fn build_menu(
                 });
             });
         }
-        Screen::None | Screen::Station { .. } | Screen::Loadout | Screen::Lobby | Screen::Gunsmith { .. } => {}
+        Screen::None | Screen::Station { .. } | Screen::Loadout | Screen::Lobby | Screen::Gunsmith { .. } | Screen::Chat => {}
     }
 }
 
@@ -437,5 +482,31 @@ fn choose_stage(
     };
     if *stage != wanted {
         *stage = wanted;
+    }
+}
+
+fn start_search(commands: &mut Commands, menu: &mut MenuState) {
+    menu.found.clear();
+    match oz_net::lan::Finder::start() {
+        Ok(finder) => {
+            commands.insert_resource(Search(finder));
+            menu.searching = true;
+        }
+        Err(_) => menu.searching = false,
+    }
+}
+
+/// Collects LAN replies while a search is running.
+fn search_lan(mut commands: Commands, search: Option<ResMut<Search>>, mut menu: ResMut<MenuState>, mut dirty: ResMut<UiDirty>) {
+    let Some(mut search) = search else { return };
+    let running = search.0.poll();
+    if search.0.found != menu.found {
+        menu.found = search.0.found.clone();
+        dirty.0 = true;
+    }
+    if !running {
+        commands.remove_resource::<Search>();
+        menu.searching = false;
+        dirty.0 = true;
     }
 }

@@ -32,14 +32,35 @@ operator pose side by side.
 
 ## Playing online (no cloud server needed)
 
-One player hosts from the main menu (**HOST GAME**); the host plays too.
-Friends pick **JOIN GAME** and type the host's address.
+One player picks **HOST GAME** and plays too. Friends pick **JOIN GAME**.
 
-* **Same network (LAN):** use the host's local IP, e.g. `192.168.1.20`.
-* **Over the internet:** the host must be reachable on TCP port **27650**.
-  Either forward that port on the host's router, or put everyone on a free
-  mesh VPN such as Tailscale or ZeroTier and join the host's VPN address.
-  There is no relay or NAT punch-through yet.
+* **Same network (LAN):** the host shows up under *Games on your network* on
+  the Join screen - click it. Nothing to type.
+* **Over the internet:** the host's lobby and pause menu show the addresses
+  to share. When you host, the game asks your router to open TCP port
+  **27650** automatically (UPnP). If the router allows it, the lobby shows
+  your internet address to give friends. If not, forward that port by hand,
+  or put everyone on a free mesh VPN such as Tailscale or ZeroTier and use the
+  host's VPN address. There is no relay server.
+
+What makes it play well online:
+
+* **Lag compensation.** Other players are shown 0.1 s in the past from a
+  buffer (smooth even with jitter), and every input tells the host what
+  moment you were looking at. When you fire, the host rewinds everyone to
+  that moment (up to 0.35 s) before checking the hit: if it was on your
+  screen, it hits.
+* **Instant shooting.** Your own recoil, muzzle flash, sound, tracer and ammo
+  count happen immediately on your machine; the host confirms in the
+  background. Quick taps between network sends are never lost, and weapon
+  swaps show at once.
+* **Clean failures.** Ping is on the scoreboard (and in the corner with
+  *FPS / PING* on). Silent connections time out on both sides, and you are
+  told why you were disconnected.
+* **Players:** name tags over teammates, enemy names under your crosshair,
+  text chat (**T**), a kill-cam on your killer while you wait to respawn,
+  spawn protection, spawns away from the enemy, duplicate names told apart,
+  and everyone sees each other's real attachments.
 
 Headless dedicated servers are included too, for running a match on a spare
 machine. The Iron Town one starts each match on its own after a short lobby:
@@ -69,6 +90,7 @@ over the shoulder; the camera cuts to whoever is in a firefight.
 | Gear | G | RB |
 | Inspect weapon | I | D-pad up |
 | Change class / scoreboard (Iron Town) | L / hold Tab | D-pad down / hold Back |
+| Chat / spectate | T / V | - |
 | Pause / back | Esc | Start / B |
 | Menus | mouse, or arrows + Enter | D-pad or stick + A, LB / RB for tabs |
 

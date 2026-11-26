@@ -15,13 +15,16 @@
   bots path through doors and around furniture but do not climb yet.
 * **Remote players' attachments** are shown with each gun's factory parts on
   other clients (the host sees bots' real parts). Stats are always correct.
-* **No lag compensation or shot prediction.** The host resolves shots from each
-  client's reported aim, and a client sees its own shots after one round trip.
-  Fine on LAN and good connections; competitive play over poor links will want both.
+* **Co-op enemies are not rewound.** Lag compensation covers players in
+  versus modes; Ember Atoll's sea creatures are hit where the host has them.
+* **Grenades and rockets are not predicted** on clients; they appear after a
+  round trip.
 * **Movement is owner-authoritative.** It feels instant but trusts clients;
   there is no anti-cheat.
-* **TCP transport, direct connections only.** Internet play needs a forwarded
-  port or a mesh VPN; there is no relay, lobby browser or NAT punch-through.
+* **TCP transport, direct connections.** The host tries UPnP; routers without
+  it need a forwarded port or a mesh VPN. There is no relay, internet server
+  browser or NAT punch-through.
+* **No key rebinding** yet; the bindings are fixed (see the README).
 * **Snapshots are full-state.** They are compact, but very large matches will
   want delta compression and interest management.
 * **Mining logistics are abstract.** Drills feed the shared stock directly;

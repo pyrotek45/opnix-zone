@@ -44,14 +44,27 @@ Listen-server model: the host owns the simulation and also plays.
 
 * Clients send `PlayerInput` 30 times a second plus their own position
   (movement is owner-authoritative so it always feels instant), and
-  `PlayerCommand`s for shared-state changes.
-* The host broadcasts quantised snapshots (`EntState`, 15 bytes each).
-  Fast entities (players, enemies, projectiles) go in every snapshot; slow
-  ones (structures, ore) only in periodic full snapshots or when the set changes.
+  `PlayerCommand`s for shared-state changes. Buttons pressed between sends are
+  latched into the next one, so a one-frame tap still arrives.
+* The host broadcasts quantised snapshots (`EntState`, 17 bytes each),
+  stamped with the host clock. Fast entities go in every snapshot; slow ones
+  (structures, ore) only in periodic full snapshots or when the set changes.
+* Clients keep a `ServerClock` and play every remote entity back
+  `INTERPOLATION` (0.1 s) behind it from a small sample buffer (`Remote`).
+* **Lag compensation** (`oz_sim::lagcomp`): the host records every player's
+  true pose each frame. Inputs carry the client's playback time; when a remote
+  player fires, `weapons` tests the shot against everyone rewound to that
+  time (capped at 0.35 s).
+* **Prediction** (`oz_client::predict`): on a client, the trigger, fire rate
+  and bursts run locally so your shots, recoil and ammo count are instant. The
+  host's shot counter confirms them; the host's echo of your own shots is
+  dropped.
 * One-shot effects travel as `FxEvent` batches, so every machine replays the
   same tracers, explosions and sounds.
-* Clients rebuild the same components the host has (`Enemy`, `Structure`...),
-  which is why the presentation code is identical on both sides.
+* Pings run once a second; silent connections are dropped (6 s on a client,
+  10 s on the host).
+* `oz_net::lan` adds LAN discovery (UDP broadcast on 27651) and UPnP port
+  forwarding on a background thread.
 * The map is never sent: host and clients generate it from the same `WorldRecipe`.
 
 `oz_net` hides the wire. Swapping TCP for UDP, a relay, or a platform socket

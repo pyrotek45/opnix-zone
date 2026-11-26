@@ -335,13 +335,16 @@ fn hold_weapons(
     content: Res<Content>,
     mut cache: ResMut<GunCache>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut robots: Query<(&mut Rig, &PlayerInput, Option<&Arsenal>), With<PlayerRobot>>,
+    mut robots: Query<(&mut Rig, &PlayerInput, &Player, Option<&Arsenal>), With<PlayerRobot>>,
+    state: Res<MatchState>,
 ) {
-    for (mut rig, input, arsenal) in &mut robots {
-        // The host knows real attachments; clients see each gun's factory parts.
+    for (mut rig, input, player, arsenal) in &mut robots {
+        // The host knows real attachments; clients learn them from the roster.
+        let roster = state.roster.iter().find(|r| r.id == player.id && r.weapon == input.weapon).map(|r| r.parts);
         let parts = arsenal
             .and_then(|a| a.weapons.get(input.weapon as usize))
             .map(|w| w.equipped)
+            .or(roster)
             .or_else(|| content.weapons.get(input.weapon as usize).map(|d| d.defaults))
             .unwrap_or([0; SLOT_COUNT]);
         let wanted = Some((input.weapon, parts));

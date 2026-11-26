@@ -104,13 +104,17 @@ pub struct Player {
     pub burn_by: Option<u8>,
     /// See [`flags`].
     pub flags: u8,
+    /// Round trip to the host in ms, as the client reports it.
+    pub ping: u16,
+    /// Seconds of spawn protection left (versus). Firing ends it early.
+    pub protect: f32,
 }
 
 impl Player {
     pub fn new(id: u8, name: impl Into<String>, team: u8) -> Self {
         Self {
             id, name: name.into(), team, respawn: 0.0, calm: 0.0, life: 0.0, kills: 0, deaths: 0, ready: false, perk: 0, gear: 0, gear_left: 0,
-            gear_latch: false, loadout: None, burn: 0.0, burn_time: 0.0, burn_by: None, flags: 0,
+            gear_latch: false, loadout: None, burn: 0.0, burn_time: 0.0, burn_by: None, flags: 0, ping: 0, protect: 0.0,
         }
     }
 
@@ -164,7 +168,7 @@ pub fn refill(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsenal) {
 /// Hurts a player and handles the kill: score, feed, hit marker. Returns true on a kill.
 /// `attacker` is (name, team, id).
 pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, attacker: Option<(&str, u8, u8)>, state: &mut MatchState, fx: &mut EventWriter<FxEvent>) -> bool {
-    if !health.alive() || state.phase == Phase::Lobby {
+    if !health.alive() || state.phase == Phase::Lobby || (victim.protect > 0.0 && attacker.is_some()) {
         return false;
     }
     health.hp -= amount;
@@ -181,6 +185,7 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
             state.scores[(team as usize).min(1)] += 1;
             state.credits.push(id);
             fx.write(FxEvent::notice(format!("{name}  >  {}", victim.name)));
+            fx.write(FxEvent::Killed { victim: victim.id, by: id });
         }
     }
     killed
@@ -414,10 +419,13 @@ pub fn vitals(
     mut fx: EventWriter<FxEvent>,
 ) {
     let dt = sim_dt(&time);
+    // Where every living fighter is, so respawns can pick the safest spot.
+    let fighters: Vec<(u8, Vec3)> = players.iter().filter(|(_, h, ..)| h.alive()).map(|(p, _, t, ..)| (p.team, t.translation)).collect();
     for (mut player, mut health, mut transform, mut arsenal, mut input) in &mut players {
         if health.alive() {
             player.calm += dt;
             player.life += dt;
+            player.protect = (player.protect - dt).max(0.0);
             arsenal.loud = (arsenal.loud - dt).max(0.0);
             if player.burn_time > 0.0 {
                 player.burn_time -= dt;
@@ -443,6 +451,12 @@ pub fn vitals(
         player.respawn -= dt;
         if player.respawn <= 0.0 && !state.over() {
             respawn(&content, &map, &rules, &state, &mut player, &mut health, &mut transform, &mut arsenal, &mut input);
+            if rules.pvp {
+                // Pick the base spot furthest from any enemy, and shield the player briefly.
+                let enemies: Vec<Vec3> = fighters.iter().filter(|(team, _)| *team != player.team).map(|(_, at)| *at).collect();
+                transform.translation = safest_spawn(&map, player.team, &enemies);
+                player.protect = 2.5;
+            }
         }
     }
 }
@@ -462,6 +476,19 @@ pub fn respawn(content: &Catalog, map: &GameMap, rules: &Rules, state: &MatchSta
     health.hp = health.max;
     transform.translation = spawn_point(map, player.id, rules.pvp.then_some(player.team));
     input.stance = stance::STAND;
+}
+
+/// The team spawn point furthest from the nearest enemy.
+pub fn safest_spawn(map: &GameMap, team: u8, enemies: &[Vec3]) -> Vec3 {
+    let spawns = &map.team_spawns[(team as usize).min(1)];
+    spawns
+        .iter()
+        .map(|p| map.ground(p.x, p.y))
+        .max_by(|a, b| {
+            let nearest = |at: &Vec3| enemies.iter().map(|e| e.distance(*at)).fold(f32::MAX, f32::min);
+            nearest(a).total_cmp(&nearest(b))
+        })
+        .unwrap_or_else(|| spawn_point(map, 0, Some(team)))
 }
 
 pub fn max_health(catalog: &Catalog, state: &MatchState, player: &Player) -> f32 {

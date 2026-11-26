@@ -5,10 +5,17 @@
 //! * The host owns the simulation. Clients send their input (and their own
 //!   position - movement is owner-authoritative so it feels instant) plus
 //!   [`PlayerCommand`]s for anything that changes shared state.
-//! * The host broadcasts quantised [`Snapshot`]s (15 bytes per entity) at
+//! * The host broadcasts quantised [`Snapshot`]s (17 bytes per entity) at
 //!   20 Hz, dropping to 10 Hz for very large battles. Slow-changing entities
 //!   (structures, ore) only travel in periodic "full" snapshots or when the
 //!   set changes.
+//! * Every snapshot is stamped with the host's clock. Clients keep a
+//!   [`ServerClock`] and play remote entities back [`INTERPOLATION`] seconds
+//!   behind it from a small buffer, which is smooth even with jitter. Inputs
+//!   carry that playback time, so the host can rewind for lag compensation
+//!   (see [`crate::lagcomp`]).
+//! * Quick taps between input sends are latched so no shot is ever lost, and
+//!   both sides drop connections that go silent.
 //! * One-shot effects travel as [`FxEvent`] batches, so clients replay the
 //!   exact same tracers, explosions and sounds as the host.
 //!
@@ -20,17 +27,32 @@ use crate::{
     enemy::Enemy,
     player::{Arsenal, Health, LocalPlayer, Player, PlayerInput},
     session::{Content, Map, MatchEntity, MatchSetup, PendingMatch, player_bundle},
-    sim_dt,
     state::{CommandEvent, FxEvent, MatchPhase, MatchState, NetRole, PlayerCommand, Rules},
     structures::{OreNode, Structure},
 };
 use bevy::{platform::collections::HashMap, prelude::*};
 use oz_core::{content::ShotLook, economy::Ore};
-use oz_net::{Client, ClientEvent, Host, HostEvent, PeerId};
+use oz_net::{
+    Client, ClientEvent, Host, HostEvent, PeerId,
+    lan::{Beacon, PortStatus, open_port},
+};
 use serde::{Deserialize, Serialize};
-use std::f32::consts::TAU;
+use std::{
+    collections::VecDeque,
+    f32::consts::TAU,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
+/// How far behind the host's clock clients play back remote entities.
+pub const INTERPOLATION: f32 = 0.1;
+/// How far behind the host plays back remote players' reported positions.
+const HOST_INTERPOLATION: f32 = 0.05;
+/// Connections silent for this long are treated as gone.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(6);
+const HOST_TIMEOUT: Duration = Duration::from_secs(10);
+const PING_EVERY: f32 = 1.0;
 const INPUT_RATE: f32 = 1.0 / 30.0;
 const FULL_SNAPSHOT_EVERY: f32 = 1.0;
 
@@ -50,18 +72,96 @@ impl NetIds {
     }
 }
 
-/// Interpolation target for entities whose position arrives over the network.
-#[derive(Component, Clone, Copy, Debug)]
+/// Recent positions of an entity driven over the network: (time, position, yaw), oldest first.
+#[derive(Component, Clone, Debug, Default)]
 pub struct Remote {
-    pub pos: Vec3,
-    pub yaw: f32,
+    samples: VecDeque<(f32, Vec3, f32)>,
 }
+
+impl Remote {
+    pub fn at(time: f32, pos: Vec3, yaw: f32) -> Self {
+        let mut remote = Self::default();
+        remote.push(time, pos, yaw);
+        remote
+    }
+
+    pub fn push(&mut self, time: f32, pos: Vec3, yaw: f32) {
+        // Out-of-order or same-time samples replace the newest instead of reordering.
+        if self.samples.back().is_some_and(|(t, ..)| *t >= time) {
+            self.samples.pop_back();
+        }
+        self.samples.push_back((time, pos, yaw));
+        while self.samples.len() > 12 {
+            self.samples.pop_front();
+        }
+    }
+
+    pub fn latest(&self) -> Option<(Vec3, f32)> {
+        self.samples.back().map(|(_, pos, yaw)| (*pos, *yaw))
+    }
+
+    /// Position and yaw at `time`, interpolated between the samples around it.
+    pub fn sample(&self, time: f32) -> Option<(Vec3, f32)> {
+        let after = self.samples.iter().position(|(t, ..)| *t >= time);
+        match after {
+            None => self.latest(),
+            Some(0) => self.samples.front().map(|(_, p, y)| (*p, *y)),
+            Some(i) => {
+                let ((ta, pa, ya), (tb, pb, yb)) = (self.samples[i - 1], self.samples[i]);
+                // Teleports (respawns) snap instead of sliding across the map.
+                if pa.distance(pb) > 8.0 {
+                    return Some((pb, yb));
+                }
+                let k = ((time - ta) / (tb - ta).max(1e-4)).clamp(0.0, 1.0);
+                let turn = (yb - ya + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI;
+                Some((pa.lerp(pb, k), ya + turn * k))
+            }
+        }
+    }
+}
+
+/// Client: estimate of the host's clock (`host time = local time + offset`).
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct ServerClock {
+    pub offset: f32,
+    pub synced: bool,
+}
+
+impl ServerClock {
+    pub fn now(&self, local: f32) -> f32 {
+        local + self.offset
+    }
+
+    /// The moment of the world a client is currently showing.
+    pub fn view(&self, local: f32) -> f32 {
+        self.now(local) - INTERPOLATION
+    }
+
+    /// Feeds a snapshot timestamp. Fast arrivals pull the estimate forward at once;
+    /// slow ones (network hiccups) only nudge it back, so jitter never makes time jump backwards.
+    fn observe(&mut self, server_time: f32, local: f32) {
+        let sample = server_time - local;
+        if !self.synced || sample > self.offset {
+            self.offset = sample;
+            self.synced = true;
+        } else {
+            self.offset += (sample - self.offset) * 0.02;
+        }
+    }
+}
+
+/// Round-trip time to the host in milliseconds (clients), for display.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct Ping(pub u16);
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum C2S {
     Hello { protocol: u32, name: String },
-    Input { input: PlayerInput, pos: Vec3 },
+    /// `view` is the server time of the world the client is showing (for lag compensation).
+    Input { input: PlayerInput, pos: Vec3, view: f32 },
     Command(PlayerCommand),
+    /// `sent` comes back in a pong; `rtt` reports the last measured round trip in ms.
+    Ping { sent: f32, rtt: u16 },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -71,6 +171,7 @@ pub enum S2C {
     Snapshot(Snapshot),
     You(Private),
     Fx(Vec<FxEvent>),
+    Pong { sent: f32 },
 }
 
 mod kind {
@@ -106,6 +207,8 @@ pub struct EntState {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Snapshot {
+    /// The host's clock when this snapshot was taken.
+    pub time: f32,
     /// Full snapshots also carry static entities and prune ones that vanished.
     pub full: bool,
     pub state: MatchState,
@@ -173,12 +276,28 @@ pub struct HostLink {
     pub peers: HashMap<PeerId, u8>,
     send_timer: f32,
     full_timer: f32,
+    /// The port players connect to.
+    pub port: u16,
+    /// Answers "who is hosting?" on the local network.
+    beacon: Option<Beacon>,
+    /// Automatic router port forwarding, if attempted.
+    pub router: Option<Arc<Mutex<PortStatus>>>,
+}
+
+impl HostLink {
+    pub fn router_status(&self) -> Option<PortStatus> {
+        self.router.as_ref().and_then(|status| status.lock().ok().map(|s| s.clone()))
+    }
 }
 
 pub struct ClientLink {
     pub client: Client<S2C, C2S>,
     pub player: u8,
     send_timer: f32,
+    ping_timer: f32,
+    rtt: u16,
+    /// Buttons pressed since the last input send, so short taps are never lost.
+    latched: u8,
     /// Net id -> (local entity, static?).
     entities: HashMap<u32, (Entity, bool)>,
 }
@@ -201,9 +320,20 @@ impl NetLink {
 }
 
 /// Opens a listen server and returns a setup ready for [`PendingMatch`].
+/// Loopback-only hosts (tests, local experiments) skip LAN discovery and router setup.
 pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedicated: bool) -> std::io::Result<MatchSetup> {
     let host = Host::bind(addr)?;
-    let link = NetLink::Host(HostLink { host, peers: HashMap::default(), send_timer: 0.0, full_timer: 0.0 });
+    let bound = host.local_addr()?;
+    let public = !bound.ip().is_loopback();
+    let link = NetLink::Host(HostLink {
+        host,
+        peers: HashMap::default(),
+        send_timer: 0.0,
+        full_timer: 0.0,
+        port: bound.port(),
+        beacon: if public { Beacon::bind() } else { None },
+        router: public.then(|| open_port(bound.port())),
+    });
     Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0 })
 }
 
@@ -259,7 +389,7 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
             // Take the socket out of the resource we are about to drop.
             let name = joining.name.clone();
             let Some(client) = joining.client.take() else { return };
-            let link = NetLink::Client(ClientLink { client, player, send_timer: 0.0, entities: HashMap::default() });
+            let link = NetLink::Client(ClientLink { client, player, send_timer: 0.0, ping_timer: 0.0, rtt: 0, latched: 0, entities: HashMap::default() });
             pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player), local_team: team });
             commands.insert_resource(JoinStatus::Idle);
         }
@@ -270,19 +400,37 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
 /// Host: accept players, apply their input, forward their commands.
 #[allow(clippy::too_many_arguments)]
 pub fn host_receive(
+    time: Res<Time>,
     mut link: ResMut<NetLink>,
     content: Res<Content>,
     map: Res<Map>,
     rules: Res<Rules>,
+    modes: Res<crate::session::Modes>,
+    state: Res<MatchState>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(Entity, &Player, &mut PlayerInput, &mut Remote)>,
-    everyone: Query<(&Player, Has<crate::bots::Bot>)>,
+    mut players: Query<(Entity, &mut Player, &mut PlayerInput, &mut Remote)>,
+    // Everyone not driven over the network (local player, bots); remote players come from `players`.
+    everyone: Query<(&Player, Has<crate::bots::Bot>), Without<Remote>>,
     mut orders: EventWriter<CommandEvent>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let NetLink::Host(link) = &mut *link else { return };
-    for event in link.host.poll() {
+    let now = time.elapsed_secs();
+    if let Some(beacon) = &link.beacon {
+        let mode = modes.0.get(rules.mode as usize).map_or("MATCH", |m| m.name);
+        let host_name = state.roster.iter().find(|r| r.id == 0).map_or("DEDICATED SERVER", |r| r.name.as_str());
+        let humans = state.roster.iter().filter(|r| !r.bot).count() as u8;
+        beacon.poll(link.port, host_name, mode, humans);
+    }
+    // Peers that went quiet are dropped as if they had disconnected.
+    let stale: Vec<PeerId> = link.peers.keys().copied().filter(|peer| link.host.silent_for(*peer).is_some_and(|d| d > HOST_TIMEOUT)).collect();
+    let mut events = link.host.poll();
+    for peer in stale {
+        link.host.kick(peer);
+        events.push(HostEvent::Disconnected(peer));
+    }
+    for event in events {
         match event {
             HostEvent::Connected(_) => {}
             HostEvent::Message(peer, C2S::Hello { protocol, name }) => {
@@ -294,11 +442,18 @@ pub fn host_receive(
                     link.host.send(peer, &S2C::Refused("SERVER FULL".into()));
                     continue;
                 };
-                let name: String = name.chars().filter(|c| !c.is_control()).take(16).collect();
-                let team = crate::versus::team_for_newcomer(everyone.iter().map(|(p, bot)| (p.team, bot)));
+                let mut name: String = name.chars().filter(|c| !c.is_control()).take(16).collect::<String>().trim().to_string();
+                if name.is_empty() {
+                    name = format!("PLAYER {id}");
+                }
+                // Two players with the same name get told apart.
+                if everyone.iter().map(|(p, _)| &p.name).chain(players.iter().map(|(_, p, ..)| &p.name)).any(|n| *n == name) {
+                    name = format!("{} {id}", name.chars().take(13).collect::<String>());
+                }
+                let team = crate::versus::team_for_newcomer(everyone.iter().map(|(p, bot)| (p.team, bot)).chain(players.iter().map(|(_, p, ..)| (p.team, false))));
                 let bundle = player_bundle(&content, &rules, &map, id, name.clone(), team);
                 let spawn = crate::player::spawn_point(&map, id, rules.pvp.then_some(team));
-                commands.spawn((bundle, ids.next(), Remote { pos: spawn, yaw: 0.0 }));
+                commands.spawn((bundle, ids.next(), Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now)));
                 link.peers.insert(peer, id);
                 link.full_timer = 0.0;
                 link.host.send(peer, &S2C::Welcome { player: id, team, rules: rules.clone() });
@@ -307,13 +462,21 @@ pub fn host_receive(
             HostEvent::Message(peer, message) => {
                 let Some(&id) = link.peers.get(&peer) else { continue };
                 match message {
-                    C2S::Input { input, pos } => {
-                        if let Some((_, _, mut current, mut remote)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
+                    C2S::Input { input, pos, view } => {
+                        if let Some((entity, _, mut current, mut remote)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
                             *current = input;
                             if pos.is_finite() {
-                                remote.pos = pos;
-                                remote.yaw = input.yaw;
+                                remote.push(now, pos, input.yaw);
                             }
+                            if view.is_finite() {
+                                commands.entity(entity).insert(crate::lagcomp::ViewTime(view));
+                            }
+                        }
+                    }
+                    C2S::Ping { sent, rtt } => {
+                        link.host.send(peer, &S2C::Pong { sent });
+                        if let Some((_, mut player, ..)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
+                            player.ping = rtt;
                         }
                     }
                     C2S::Command(command) => {
@@ -400,7 +563,7 @@ pub fn host_send(
             entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0 });
         }
     }
-    link.host.broadcast(&S2C::Snapshot(Snapshot { full, state: state.clone(), entities }));
+    link.host.broadcast(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), full, state: state.clone(), entities }));
 
     let peers: Vec<(PeerId, u8)> = link.peers.iter().map(|(peer, id)| (*peer, *id)).collect();
     for (peer, id) in peers {
@@ -415,6 +578,9 @@ pub fn host_send(
 /// Client: apply snapshots, private state and effects.
 #[allow(clippy::too_many_arguments)]
 pub fn client_receive(
+    time: Res<Time>,
+    mut clock: ResMut<ServerClock>,
+    mut ping: ResMut<Ping>,
     mut link: ResMut<NetLink>,
     content: Res<Content>,
     rules: Res<Rules>,
@@ -428,9 +594,19 @@ pub fn client_receive(
 ) {
     let NetLink::Client(link) = &mut *link else { return };
     let q = Quant::new(&rules);
-    for event in link.client.poll() {
+    let local_now = time.elapsed_secs();
+    let mut events = link.client.poll();
+    if link.client.silent_for() > CLIENT_TIMEOUT && link.client.is_connected() {
+        events.push(ClientEvent::Disconnected);
+    }
+    for event in events {
         match event {
+            ClientEvent::Message(S2C::Pong { sent }) => {
+                link.rtt = ((local_now - sent).max(0.0) * 1000.0) as u16;
+                ping.0 = link.rtt;
+            }
             ClientEvent::Message(S2C::Snapshot(snapshot)) => {
+                clock.observe(snapshot.time, local_now);
                 *state = snapshot.state.clone();
                 let mut seen = bevy::platform::collections::HashSet::with_capacity(snapshot.entities.len());
                 for e in &snapshot.entities {
@@ -441,7 +617,7 @@ pub fn client_receive(
                     let (pos, yaw) = (q.unpack(e.pos), unpack_yaw(e.yaw));
                     if let Some((entity, _)) = link.entities.get(&e.id) {
                         let Ok((mut remote, health, enemy, structure, ore, input, player)) = remotes.get_mut(*entity) else { continue };
-                        *remote = Remote { pos, yaw };
+                        remote.push(snapshot.time, pos, yaw);
                         if let Some(mut health) = health {
                             health.hp = health.max * e.hp as f32 / 255.0;
                         }
@@ -470,7 +646,7 @@ pub fn client_receive(
                         }
                         continue;
                     }
-                    let base = (MatchEntity, NetId(e.id), Remote { pos, yaw }, Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)));
+                    let base = (MatchEntity, NetId(e.id), Remote::at(snapshot.time, pos, yaw), Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)));
                     let hp = e.hp as f32 / 255.0;
                     let entity = match e.kind {
                         kind::PLAYER => commands
@@ -528,8 +704,10 @@ pub fn client_receive(
             }
             ClientEvent::Message(_) => {}
             ClientEvent::Disconnected => {
-                commands.insert_resource(JoinStatus::Failed("CONNECTION TO HOST LOST".into()));
+                let why = if link.client.silent_for() > CLIENT_TIMEOUT { "THE HOST STOPPED RESPONDING" } else { "THE HOST CLOSED THE MATCH" };
+                commands.insert_resource(JoinStatus::Failed(why.into()));
                 crate::session::end_match(&mut next);
+                break;
             }
         }
     }
@@ -538,6 +716,7 @@ pub fn client_receive(
 /// Client: send input at a fixed rate, and commands immediately.
 pub fn client_send(
     time: Res<Time>,
+    clock: Res<ServerClock>,
     mut link: ResMut<NetLink>,
     local: Query<(&PlayerInput, &Transform), With<LocalPlayer>>,
     mut orders: EventReader<CommandEvent>,
@@ -546,25 +725,33 @@ pub fn client_send(
     for order in orders.read() {
         link.client.send(&C2S::Command(order.command.clone()));
     }
+    let Ok((input, transform)) = local.single() else { return };
+    link.latched |= input.buttons;
+    let now = time.elapsed_secs();
+    link.ping_timer -= time.delta_secs();
+    if link.ping_timer <= 0.0 {
+        link.ping_timer = PING_EVERY;
+        link.client.send(&C2S::Ping { sent: now, rtt: link.rtt });
+    }
     link.send_timer -= time.delta_secs();
     if link.send_timer <= 0.0 {
         link.send_timer = INPUT_RATE;
-        if let Ok((input, transform)) = local.single() {
-            link.client.send(&C2S::Input { input: *input, pos: transform.translation });
-        }
+        // Anything pressed since the last send counts, so a quick tap still fires.
+        let sent = PlayerInput { buttons: input.buttons | link.latched, ..*input };
+        link.latched = 0;
+        link.client.send(&C2S::Input { input: sent, pos: transform.translation, view: clock.view(now) });
     }
 }
 
-/// Eases networked entities toward their latest known position.
-pub fn smooth_remote(time: Res<Time>, mut remotes: Query<(&mut Transform, &Remote)>) {
-    let blend = 1.0 - (-14.0 * sim_dt(&time)).exp();
+/// Plays networked entities back from their sample buffers, a little in the past.
+pub fn smooth_remote(time: Res<Time>, role: Res<NetRole>, clock: Res<ServerClock>, mut remotes: Query<(&mut Transform, &Remote)>) {
+    let now = time.elapsed_secs();
+    let playback = if *role == NetRole::Client { clock.view(now) } else { now - HOST_INTERPOLATION };
     for (mut transform, remote) in &mut remotes {
-        if transform.translation.distance_squared(remote.pos) > 64.0 {
-            transform.translation = remote.pos;
-        } else {
-            transform.translation = transform.translation.lerp(remote.pos, blend);
+        if let Some((pos, yaw)) = remote.sample(playback) {
+            transform.translation = pos;
+            transform.rotation = Quat::from_rotation_y(yaw);
         }
-        transform.rotation = transform.rotation.slerp(Quat::from_rotation_y(remote.yaw), blend);
     }
 }
 
@@ -576,6 +763,31 @@ mod tests {
     fn entity_state_is_compact() {
         let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7 };
         assert_eq!(bincode::serialize(&state).unwrap().len(), 17);
+    }
+
+    #[test]
+    fn remote_playback_interpolates_and_snaps_on_teleport() {
+        let mut remote = Remote::at(0.0, Vec3::ZERO, 0.0);
+        remote.push(0.1, Vec3::new(1.0, 0.0, 0.0), 6.2);
+        let (pos, yaw) = remote.sample(0.05).unwrap();
+        assert!((pos.x - 0.5).abs() < 1e-4);
+        // The short way round from 0 to 6.2 rad is backwards through zero.
+        assert!(yaw < 0.0 && yaw > -0.1);
+        remote.push(0.2, Vec3::new(50.0, 0.0, 0.0), 0.0);
+        assert_eq!(remote.sample(0.15).unwrap().0.x, 50.0);
+        assert_eq!(remote.sample(9.0).unwrap().0.x, 50.0);
+    }
+
+    #[test]
+    fn server_clock_prefers_fast_arrivals() {
+        let mut clock = ServerClock::default();
+        clock.observe(10.0, 1.0);
+        assert_eq!(clock.offset, 9.0);
+        // A late packet barely moves the estimate; an early one wins outright.
+        clock.observe(10.5, 1.8);
+        assert!(clock.offset < 9.0 && clock.offset > 8.98);
+        clock.observe(11.0, 1.9);
+        assert!((clock.offset - 9.1).abs() < 1e-4);
     }
 
     #[test]

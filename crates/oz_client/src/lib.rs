@@ -21,6 +21,7 @@
 
 pub mod actors;
 pub mod art;
+pub mod chat;
 pub mod avatar;
 #[cfg(feature = "audio")]
 pub mod audio;
@@ -31,6 +32,7 @@ pub mod input;
 pub mod launch;
 pub mod loadout;
 pub mod lobby;
+pub mod predict;
 pub mod menu;
 pub mod retro;
 pub mod scene;
@@ -38,6 +40,7 @@ pub mod settings;
 pub mod showroom;
 pub mod spectate;
 pub mod stations;
+pub mod tags;
 pub mod ui;
 pub mod view;
 
@@ -90,7 +93,7 @@ impl Plugin for ClientPlugin {
             hud::HudPlugin,
             loadout::LoadoutPlugin,
         ))
-        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin,
+        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin,
         ));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);

@@ -14,6 +14,19 @@ use crate::{
 use bevy::{ecs::hierarchy::ChildSpawnerCommands, prelude::*};
 use oz_sim::prelude::*;
 
+/// What to tell friends: the LAN address, and the internet address if the router opened the port.
+pub fn hosting_info(host: &oz_sim::net::HostLink) -> String {
+    use oz_net::lan::{PortStatus, local_ip};
+    let lan = local_ip().map_or("NO NETWORK".to_string(), |ip| format!("{ip}:{}", host.port));
+    let internet = match host.router_status() {
+        Some(PortStatus::Open(ip)) => format!("INTERNET  {ip}:{}  (PORT OPENED)", host.port),
+        Some(PortStatus::Trying) => "INTERNET  OPENING ROUTER PORT...".to_string(),
+        Some(PortStatus::Unavailable(_)) => format!("INTERNET  FORWARD TCP {} OR USE A VPN", host.port),
+        None => "LOCAL ONLY".to_string(),
+    };
+    format!("LAN  {lan}      {internet}")
+}
+
 pub const TEAM_NAMES: [&str; 2] = ["TEAL", "CORAL"];
 pub const TEAM_COLORS: [Color; 2] = [Color::srgb(0.25, 0.8, 0.82), Color::srgb(0.95, 0.52, 0.42)];
 
@@ -25,7 +38,7 @@ pub struct LobbyPlugin;
 impl Plugin for LobbyPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, lobby_actions.in_set(ClientSet::Input).after(crate::input::ReadDevices).before(crate::menu::MenuActions).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, (refresh_lobby, scoreboard).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (refresh_lobby.before(crate::menu::BuildScreens), scoreboard).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -42,12 +55,18 @@ fn lobby_actions(mut events: EventReader<ActEvent>, screen: Res<Screen>, players
 }
 
 /// Rebuild the lobby whenever anything on it changes.
-fn refresh_lobby(screen: Res<Screen>, state: Res<MatchState>, mut dirty: ResMut<UiDirty>, mut last: Local<Option<(Vec<RosterEntry>, u8, i32, Phase)>>) {
+fn refresh_lobby(screen: Res<Screen>, state: Res<MatchState>, link: Res<NetLink>, mut dirty: ResMut<UiDirty>, mut last: Local<Option<(Vec<RosterEntry>, u8, i32, Phase, String)>>) {
     if *screen != Screen::Lobby {
         *last = None;
         return;
     }
-    let signature = (state.roster.clone(), state.team_size, state.countdown.ceil() as i32, state.phase);
+    let router = match &*link {
+        NetLink::Host(host) => format!("{:?}", host.router_status()),
+        _ => String::new(),
+    };
+    // Ping changes constantly; leave it out so the lobby does not rebuild every frame.
+    let roster: Vec<RosterEntry> = state.roster.iter().map(|r| RosterEntry { ping: 0, weapon: 0, parts: Default::default(), ..r.clone() }).collect();
+    let signature = (roster, state.team_size, state.countdown.ceil() as i32, state.phase, router);
     if last.as_ref() != Some(&signature) {
         if last.is_some() {
             dirty.0 = true;
@@ -80,6 +99,9 @@ fn card(parent: &mut ChildSpawnerCommands, entry: &RosterEntry, me: u8, show_sco
                 tag("HOST", ui::TEXT);
             }
             if show_score {
+                if !entry.bot && entry.id != 0 {
+                    tag(&format!("{}MS", entry.ping), if entry.ping > 150 { ui::WARN } else { ui::DIM });
+                }
                 tag(&format!("{} / {}", entry.kills, entry.deaths), ui::TEXT);
             } else if entry.bot {
                 tag("BOT", ui::DIM);
@@ -129,6 +151,7 @@ pub fn build_lobby(
     screen: Res<Screen>,
     controls: Res<Controls>,
     role: Res<NetRole>,
+    link: Res<NetLink>,
     rules: Option<Res<Rules>>,
     state: Option<Res<MatchState>>,
     modes: Res<Modes>,
@@ -187,6 +210,9 @@ pub fn build_lobby(
                 }
                 ui::sized_button(row, order, "LEAVE", Act::Leave, None, Val::Px(110.0));
             });
+            if let NetLink::Host(host) = &*link {
+                ui::label(bottom, hosting_info(host), 13.0, ui::ACCENT);
+            }
             let hint = if controls.gamepad { "D-PAD / STICK TO MOVE   A SELECT   LEFT / RIGHT ON TEAM SIZE" } else { "CLICK, OR ARROWS + ENTER.  LEFT / RIGHT CHANGES TEAM SIZE." };
             ui::label(bottom, hint, 12.0, ui::DIM);
         });

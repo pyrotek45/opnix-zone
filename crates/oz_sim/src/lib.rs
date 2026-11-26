@@ -15,6 +15,7 @@
 //! * [`enemy`] - catalog-driven AI (melee, ranged, flyers).
 //! * [`structures`] - turrets, walls, drills and ore deposits.
 //! * [`orders`] - every purchase / build / upgrade is a validated [`state::PlayerCommand`].
+//! * [`lagcomp`] - host-side rewind so remote players hit what they saw.
 //! * [`nav`] - walkability grid and A* pathfinding for AI.
 //! * [`versus`] - lobby, teams, bot backfill, scoring and rematches.
 //! * [`net`] - host/client replication on top of `oz_net`.
@@ -25,6 +26,7 @@
 pub mod bots;
 pub mod combat;
 pub mod enemy;
+pub mod lagcomp;
 pub mod nav;
 pub mod net;
 pub mod orders;
@@ -89,6 +91,9 @@ impl Plugin for SimPlugin {
             .init_resource::<session::PendingMatch>()
             .init_resource::<net::NetLink>()
             .init_resource::<nav::NavScratch>()
+            .init_resource::<lagcomp::LagHistory>()
+            .init_resource::<net::ServerClock>()
+            .init_resource::<net::Ping>()
             .init_resource::<nav::NavBudget>()
             .add_event::<state::FxEvent>()
             .add_event::<state::CommandEvent>()
@@ -103,6 +108,7 @@ impl Plugin for SimPlugin {
                 Update,
                 (
                     combat::rebuild_grid,
+                    lagcomp::record_history,
                     nav::refill_budget,
                     player::vitals,
                     bots::drive_bots,

@@ -218,3 +218,110 @@ fn guests_see_every_player_where_the_host_has_them() {
 fn count_players(app: &mut App) -> usize {
     app.world_mut().query::<&Player>().iter(app.world()).count()
 }
+
+#[test]
+fn lag_compensation_hits_what_the_shooter_saw() {
+    use oz_sim::lagcomp::ViewTime;
+    let mut app = app();
+    let mut rules = deathmatch_rules(5);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(phase(&app), Phase::Live);
+
+    // Freeze the enemy bot so the test controls it.
+    let world = app.world_mut();
+    let target = world.query_filtered::<Entity, With<Bot>>().single(world).unwrap();
+    world.entity_mut(target).remove::<Bot>();
+
+    // Find an open sightline in the plaza: shooter, target's old spot A, new spot B.
+    let statics = app.world().resource::<Statics>().clone();
+    let map = app.world().resource::<Map>().clone();
+    let clear = |a: Vec3, b: Vec3| statics.raycast(a, (b - a).normalize(), a.distance(b)).is_none();
+    let (shooter, a, b) = (-12..12)
+        .flat_map(|x| (-12..12).map(move |z| (x as f32 * 1.5, z as f32 * 1.5)))
+        .map(|(x, z)| (map.ground(x, z - 9.0), map.ground(x, z), map.ground(x + 6.0, z)))
+        .find(|(s, a, b)| clear(*s + Vec3::Y * 1.7, *a + Vec3::Y * 1.0) && clear(*s + Vec3::Y * 1.7, *b + Vec3::Y * 1.0) && (a.y - s.y).abs() < 0.3)
+        .expect("an open spot in the plaza");
+
+    let place = |app: &mut App, entity: Entity, at: Vec3| app.world_mut().get_mut::<Transform>(entity).unwrap().translation = at;
+    let me = app.world_mut().query_filtered::<Entity, With<LocalPlayer>>().single(app.world()).unwrap();
+    place(&mut app, me, shooter);
+    place(&mut app, target, a);
+    for _ in 0..6 {
+        app.update();
+    }
+    let seen_at = app.world().resource::<Time>().elapsed_secs();
+    for _ in 0..6 {
+        app.update();
+    }
+    place(&mut app, target, b);
+    for _ in 0..4 {
+        app.update();
+    }
+
+    // Aim at where the target *was*, and pull the trigger.
+    let fire = |app: &mut App, view: Option<f32>| -> f32 {
+        let world = app.world_mut();
+        world.get_mut::<Health>(target).unwrap().hp = 100.0;
+        let to = (a + Vec3::Y * 1.05) - (shooter + Vec3::Y * EYE);
+        let mut shooter_entity = world.entity_mut(me);
+        match view {
+            Some(t) => shooter_entity.insert(ViewTime(t)),
+            None => shooter_entity.remove::<ViewTime>(),
+        };
+        let mut input = world.get_mut::<PlayerInput>(me).unwrap();
+        input.yaw = f32::atan2(-to.x, -to.z);
+        input.pitch = (to.y / to.length()).asin();
+        input.buttons = 0;
+        world.get_mut::<Arsenal>(me).unwrap().cooldown = 0.0;
+        app.update();
+        app.world_mut().get_mut::<PlayerInput>(me).unwrap().buttons = buttons::FIRE;
+        app.update();
+        app.world_mut().get_mut::<PlayerInput>(me).unwrap().buttons = 0;
+        app.update();
+        app.world().get::<Health>(target).unwrap().hp
+    };
+    let rewound = fire(&mut app, Some(seen_at));
+    let current = fire(&mut app, None);
+    assert!(rewound < 100.0, "a shot at what the shooter saw should land (hp {rewound})");
+    assert_eq!(current, 100.0, "without a view time the target has moved and the shot misses");
+}
+
+#[test]
+fn a_quick_tap_online_still_fires() {
+    let (mut host, mut client) = (app(), app());
+    let mut rules = deathmatch_rules(31);
+    rules.team_size = 1;
+    start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
+    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let addr = link.host.local_addr().unwrap().to_string();
+    let world = client.world_mut();
+    net::join(&mut world.commands(), &addr, "GUEST");
+    world.flush();
+    let pump = |host: &mut App, client: &mut App, frames: usize| {
+        for _ in 0..frames {
+            host.update();
+            client.update();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    pump(&mut host, &mut client, 60);
+    lobby(&mut host, LobbyAction::Start);
+    pump(&mut host, &mut client, (6.5 / FRAME) as usize);
+    assert_eq!(phase(&host), Phase::Live);
+
+    let guest = client.world_mut().query_filtered::<&Player, With<LocalPlayer>>().single(client.world()).unwrap().id;
+    let shots_on_host = |host: &mut App| host.world_mut().query::<(&Player, &Arsenal)>().iter(host.world()).find(|(p, _)| p.id == guest).map(|(_, a)| a.shots).unwrap();
+    let before = shots_on_host(&mut host);
+    // Hold the trigger for a single client frame: shorter than one input send.
+    let mut input = client.world_mut().query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(client.world_mut()).unwrap();
+    input.buttons = buttons::FIRE;
+    client.update();
+    client.world_mut().query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(client.world_mut()).unwrap().buttons = 0;
+    pump(&mut host, &mut client, 30);
+    assert_eq!(shots_on_host(&mut host), before + 1, "the tap must reach the host as one shot");
+}

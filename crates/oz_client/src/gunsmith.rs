@@ -29,7 +29,7 @@ pub struct GunsmithPlugin;
 impl Plugin for GunsmithPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, gunsmith_actions.in_set(ClientSet::Input).after(crate::input::ReadDevices).after(crate::loadout::LoadoutInput).after(crate::stations::StationInput).before(crate::menu::MenuActions).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, preview.in_set(ClientSet::Present).after(crate::menu::BuildScreens).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (refresh.before(crate::menu::BuildScreens), preview.after(crate::menu::BuildScreens)).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -252,4 +252,24 @@ fn preview(
             text.0 = description;
         }
     }
+}
+
+/// Rebuilds the screen when a fitted part or the money changes, so FITTED and prices stay true.
+fn refresh(
+    screen: Res<Screen>,
+    state: Res<MatchState>,
+    players: Query<&Arsenal, With<LocalPlayer>>,
+    mut dirty: ResMut<UiDirty>,
+    mut last: Local<Option<(u8, [u8; SLOT_COUNT], [u8; SLOT_COUNT], u32)>>,
+) {
+    let Screen::Gunsmith { weapon, .. } = *screen else {
+        *last = None;
+        return;
+    };
+    let Some(owned) = players.single().ok().and_then(|a| a.weapons.get(weapon as usize).copied()) else { return };
+    let signature = (weapon, owned.equipped, owned.purchased, state.stock.credits);
+    if last.is_some_and(|l| l != signature) {
+        dirty.0 = true;
+    }
+    *last = Some(signature);
 }

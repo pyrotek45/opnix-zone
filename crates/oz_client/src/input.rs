@@ -14,6 +14,7 @@
 //! | Gear            | G                       | RB                          |
 //! | Inspect weapon  | I                       | D-pad up                    |
 //! | Class / scores  | L / hold Tab            | D-pad down / hold Back      |
+//! | Chat / spectate | T / V                   | -                           |
 //! | Pause / back    | Esc                     | Start / B                   |
 //! | Menus           | arrows, Enter, mouse    | D-pad or stick, A, LB / RB for tabs |
 
@@ -64,6 +65,8 @@ pub struct Controls {
     pub loadout: bool,
     /// Show the scoreboard (held).
     pub scoreboard: bool,
+    /// Open text chat.
+    pub chat: bool,
     pub weapon_step: i32,
     pub weapon_slot: Option<u8>,
     pub pause: bool,
@@ -110,7 +113,8 @@ fn read_devices(
 
     // Keyboard and mouse.
     c.movement = Vec2::new((key(KeyCode::KeyD) as i8 - key(KeyCode::KeyA) as i8) as f32, (key(KeyCode::KeyW) as i8 - key(KeyCode::KeyS) as i8) as f32);
-    c.look = motion.delta * 0.0022 * settings.sensitivity;
+    let ads_scale = if mouse.pressed(MouseButton::Right) { settings.ads_sensitivity } else { 1.0 };
+    c.look = motion.delta * 0.0022 * settings.sensitivity * ads_scale;
     c.fire = mouse.pressed(MouseButton::Left);
     c.fire_pressed = mouse.just_pressed(MouseButton::Left);
     c.aim = mouse.pressed(MouseButton::Right);
@@ -126,6 +130,7 @@ fn read_devices(
     c.inspect = tap(KeyCode::KeyI);
     c.loadout = tap(KeyCode::KeyL);
     c.scoreboard = key(KeyCode::Tab);
+    c.chat = tap(KeyCode::KeyT);
     c.pause = tap(KeyCode::Escape);
     c.weapon_step = if scroll.delta.y > 0.0 { -1 } else if scroll.delta.y < 0.0 { 1 } else { 0 } + tap(KeyCode::KeyQ) as i32;
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
@@ -158,7 +163,7 @@ fn read_devices(
         }
         let aiming = held(GamepadButton::LeftTrigger2);
         // Squared response for fine aim, slower while aiming down sights.
-        let turn = right * right.length() * 3.4 * settings.sensitivity * if aiming { 0.45 } else { 1.0 } * time.delta_secs();
+        let turn = right * right.length() * 3.4 * settings.sensitivity * if aiming { 0.45 * settings.ads_sensitivity } else { 1.0 } * time.delta_secs();
         c.look += Vec2::new(turn.x, -turn.y);
         c.fire |= held(GamepadButton::RightTrigger2);
         c.fire_pressed |= hit(GamepadButton::RightTrigger2);

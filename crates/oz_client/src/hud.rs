@@ -98,6 +98,9 @@ enum Zone {
 #[derive(Component)]
 struct HudRoot;
 
+#[derive(Component)]
+struct NetStats;
+
 /// Full-screen scope mask, shown while aiming through magnified optics.
 #[derive(Component)]
 struct ScopeOverlay;
@@ -167,7 +170,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Notices>()
             .add_systems(OnEnter(MatchPhase::Active), spawn_hud)
-            .add_systems(Update, (update_text, update_shapes, scope_and_stance).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (update_text, update_shapes, scope_and_stance, net_stats).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -212,6 +215,15 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
             overlay.spawn((Node { flex_grow: 1.0, height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::BLACK)));
         });
     commands.insert_resource(ScopeImages(scopes));
+    commands.spawn((
+        MatchEntity,
+        NetStats,
+        Text::new(""),
+        TextFont { font_size: 12.0, ..default() },
+        TextColor(ui::DIM),
+        Node { position_type: PositionType::Absolute, right: Val::Px(150.0), top: Val::Px(20.0), ..default() },
+        GlobalZIndex(-30),
+    ));
     let full = || at(Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() });
     commands.spawn((MatchEntity, HurtOverlay, full(), BackgroundColor(Color::NONE), GlobalZIndex(-50)));
     commands.spawn((MatchEntity, HudRoot, full(), GlobalZIndex(-40))).with_children(|hud| {
@@ -348,6 +360,7 @@ fn update_text(
     screen: Res<Screen>,
     mut notices: ResMut<Notices>,
     spectate: Res<crate::spectate::Spectate>,
+    (death, prediction, role): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>),
     players: Query<(&Health, &Arsenal, &Player), With<LocalPlayer>>,
     mut texts: Query<(&Num, &mut Text)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
@@ -359,18 +372,25 @@ fn update_text(
         *ttl > 0.0
     });
     if let Ok(mut visibility) = root.single_mut() {
-        set(&mut *visibility, if *screen == Screen::None { Visibility::Inherited } else { Visibility::Hidden });
+        set(&mut *visibility, if matches!(*screen, Screen::None | Screen::Chat) { Visibility::Inherited } else { Visibility::Hidden });
     }
     let Ok((health, arsenal, player)) = players.single() else { return };
     *shown_for = if state.is_added() { 0.0 } else { *shown_for + dt };
     let index = arsenal.current as usize;
     let weapon = content.weapons.get(index).zip(arsenal.weapons.get(index));
+    let pending = if *role == NetRole::Client { prediction.pending } else { 0 };
 
     let (use_key, fire_key, cancel_key, rotate_key) = if controls.gamepad { ("X", "RT", "B", "X") } else { ("E", "LMB", "ESC", "R") };
-    let prompt = if spectate.enabled {
+    let killer = death.killer.and_then(|id| state.roster.iter().find(|r| r.id == id)).map(|r| r.name.clone());
+    let prompt = if !health.alive() {
+        match killer {
+            Some(name) => format!("KILLED BY {name}  -  BACK IN {:.0}", player.respawn.ceil()),
+            None => format!("DOWN  -  BACK IN {:.0}", player.respawn.ceil()),
+        }
+    } else if spectate.enabled {
         String::new()
-    } else if !health.alive() {
-        format!("DOWN  -  BACK IN {:.0}", player.respawn.ceil())
+    } else if player.protect > 0.0 {
+        "SPAWN PROTECTED".to_string()
     } else if let Some(kind) = placing.kind {
         let name = content.structures.get(kind as usize).map_or("STRUCTURE", |s| s.name);
         format!("{name}\n[{fire_key}] BUILD   [{rotate_key}] ROTATE   [{cancel_key}] DONE")
@@ -398,7 +418,7 @@ fn update_text(
     for (kind, mut text) in &mut texts {
         let wanted = match kind {
             Num::Health => format!("{:.0}", health.hp.max(0.0)),
-            Num::Ammo => weapon.map_or(String::new(), |(def, owned)| if def.mag == 0 { String::new() } else { owned.ammo.to_string() }),
+            Num::Ammo => weapon.map_or(String::new(), |(def, owned)| if def.mag == 0 { String::new() } else { owned.ammo.saturating_sub(pending).to_string() }),
             Num::Reserve => weapon.map_or(String::new(), |(def, owned)| if def.mag == 0 { String::new() } else if def.infinite_reserve { "INF".into() } else { owned.reserve.to_string() }),
             Num::Weapon => weapon.map_or(String::new(), |(def, _)| def.name.to_string()),
             Num::Credits => state.stock.credits.to_string(),
@@ -421,6 +441,7 @@ fn update_shapes(
     rules: Res<Rules>,
     view: Res<ViewState>,
     spectate: Res<crate::spectate::Spectate>,
+    (prediction, role): (Res<crate::predict::Prediction>, Res<NetRole>),
     players: Query<(&Health, &Arsenal, &Player, &Transform, &PlayerInput, &Mover), With<LocalPlayer>>,
     enemies: Query<&Transform, With<Enemy>>,
     others: Query<(&Transform, &Player, &Health), Without<LocalPlayer>>,
@@ -495,7 +516,8 @@ fn update_shapes(
     let weapon = content.weapons.get(index).zip(arsenal.weapons.get(index));
     let (mag, ammo, reload) = weapon.map_or((0, 0, 0.0), |(def, owned)| {
         let stats = resolve(def, owned, &content.attachments);
-        (if def.mag == 0 { 0 } else { stats.mag }, owned.ammo, if arsenal.reload > 0.0 { 1.0 - arsenal.reload / stats.reload.max(0.01) } else { 0.0 })
+        let pending = if *role == NetRole::Client { prediction.pending } else { 0 };
+        (if def.mag == 0 { 0 } else { stats.mag }, owned.ammo.saturating_sub(pending), if arsenal.reload > 0.0 { 1.0 - arsenal.reload / stats.reload.max(0.01) } else { 0.0 })
     });
     let pips = mag.min(AMMO_PIPS as u16) as f32;
     let lit_pips = if reload > 0.0 { reload * pips } else if mag > 0 { (ammo as f32 / mag as f32 * pips).ceil() } else { 0.0 };
@@ -596,5 +618,22 @@ fn scope_and_stance(
         set(&mut node.top, Val::Px(y));
         set(&mut node.width, Val::Px(w));
         set(&mut node.height, Val::Px(h));
+    }
+}
+
+/// Frame rate and ping in the corner, when switched on in Settings.
+fn net_stats(time: Res<Time<Real>>, settings: Res<crate::settings::Settings>, role: Res<NetRole>, ping: Res<oz_sim::net::Ping>, mut text: Query<&mut Text, With<NetStats>>, mut fps: Local<f32>) {
+    let Ok(mut text) = text.single_mut() else { return };
+    let dt = time.delta_secs().max(1e-4);
+    *fps += (1.0 / dt - *fps) * 0.05;
+    let wanted = if !settings.net_stats {
+        String::new()
+    } else if *role == NetRole::Client {
+        format!("{:.0} FPS\n{} MS", *fps, ping.0)
+    } else {
+        format!("{:.0} FPS", *fps)
+    };
+    if text.0 != wanted {
+        text.0 = wanted;
     }
 }
