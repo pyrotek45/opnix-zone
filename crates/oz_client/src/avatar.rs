@@ -454,16 +454,23 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
 
         let swing = p.sin();
         let (hip_y, thigh_base, shin_base, lean, cycle) = match pose.stance {
-            stance::CROUCH => (0.58, 1.25, -1.9, -0.2, 0.3),
+            // Kneeling: legs are set per side below.
+            stance::CROUCH => (0.53, 0.0, 0.0, -0.12, 0.25),
             stance::PRONE => (HIP, 0.0, 0.0, 0.0, 0.15),
-            _ => (HIP - (p.cos().abs() * 0.05 * k), 0.0, 0.0, -0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }, 0.75),
+            _ => (HIP - (p.cos().abs() * 0.05 * k), 0.0, 0.0, -0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }, 0.6),
         };
         set(&mut transforms, rig.hips, Vec3::Y * hip_y, Quat::IDENTITY, blend);
         for side in 0..2 {
             let s = if side == 0 { swing } else { -swing };
             let lift = if side == 0 { (p - 1.2).sin() } else { (p - 1.2 + PI).sin() };
+            let (thigh_base, shin_base) = if pose.stance == stance::CROUCH && !pose.dead {
+                // One knee up and forward, the other knee down with the shin flat behind.
+                if side == 0 { (1.45, -1.45) } else { (-0.05, -1.5) }
+            } else {
+                (thigh_base, shin_base)
+            };
             let thigh = thigh_base + s * cycle * k.min(1.2);
-            let shin = shin_base - lift.max(0.0) * 1.1 * k.min(1.2) * if pose.stance == stance::STAND { 1.0 } else { 0.4 };
+            let shin = shin_base - lift.max(0.0) * 0.85 * k.min(1.2) * if pose.stance == stance::STAND { 1.0 } else { 0.3 };
             set(&mut transforms, rig.thighs[side], Vec3::new(if side == 0 { -0.12 } else { 0.12 }, -0.02, 0.0), rot(thigh), blend);
             set(&mut transforms, rig.shins[side], Vec3::new(0.0, -THIGH, 0.0), rot(shin), blend);
         }
