@@ -114,11 +114,10 @@ impl Grid {
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, GridItem)> {
         let mut best: Option<(f32, GridItem)> = None;
         let mut test = |item: &GridItem| {
-            if let Some(d) = ray_sphere(origin, dir, item.pos, item.radius) {
-                if d <= max && best.is_none_or(|(bd, _)| d < bd) {
+            if let Some(d) = ray_sphere(origin, dir, item.pos, item.radius)
+                && d <= max && best.is_none_or(|(bd, _)| d < bd) {
                     best = Some((d, *item));
                 }
-            }
         };
         // Sample the ray every half cell and test a one-cell margin; cells repeat, which is fine.
         let steps = (max / (self.cell * 0.5)).ceil() as usize;
@@ -525,12 +524,11 @@ pub fn resolve_hits(
         }
         let def = &content.enemies[enemy.kind as usize];
         let at = transform.translation + Vec3::Y * def.radius;
-        if hit.arc > 0.0 {
-            if let Some(other) = grid.nearest(at, 7.0, Some(hit.target)) {
+        if hit.arc > 0.0
+            && let Some(other) = grid.nearest(at, 7.0, Some(hit.target)) {
                 chained.push(Hit::plain(other.entity, hit.amount * hit.arc, hit.by));
                 fx.write(FxEvent::Arc { from: at, to: other.pos });
             }
-        }
         let killed = !health.alive();
         if killed {
             state.kills += 1;

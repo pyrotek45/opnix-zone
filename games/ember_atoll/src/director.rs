@@ -50,13 +50,12 @@ pub fn compose_wave(catalog: &Catalog, day: u32, difficulty: f32, players: usize
         budget -= def.threat as f32;
     }
     // Every fifth night a boss leads the assault, arriving once the fight is underway.
-    if day % 5 == 0 {
-        if let Some(boss) = catalog.enemies.iter().position(|e| e.boss) {
+    if day.is_multiple_of(5)
+        && let Some(boss) = catalog.enemies.iter().position(|e| e.boss) {
             for _ in 0..(day / 5).min(4) {
                 wave.insert(wave.len() / 2, boss as u16);
             }
         }
-    }
     wave
 }
 
@@ -112,7 +111,7 @@ fn run_director(
                 state.phase = Phase::Night;
                 state.timer = 0.0;
                 state.enemies_left = siege.queue.len() as u32;
-                let boss = state.day % 5 == 0;
+                let boss = state.day.is_multiple_of(5);
                 fx.write(FxEvent::notice(if boss { format!("NIGHT {} - SOMETHING HUGE IS COMING", state.day) } else { format!("NIGHT {} - THEY RISE FROM THE SEA", state.day) }));
                 fx.write(FxEvent::Sound { sfx: Sfx::Horn, at: None });
             }

@@ -134,11 +134,10 @@ impl Nav {
             if !self.walk[cell] {
                 return false;
             }
-            if let Some(prev) = last_floor {
-                if (self.floor[cell] - prev).abs() > 0.8 {
+            if let Some(prev) = last_floor
+                && (self.floor[cell] - prev).abs() > 0.8 {
                     return false;
                 }
-            }
             last_floor = Some(self.floor[cell]);
         }
         true

@@ -166,11 +166,10 @@ fn resize_target(
     let scale = settings.pixel_size.max(1);
     let (width, height) = ((window.physical_width() / scale).max(16), (window.physical_height() / scale).max(16));
     let current = images.get(&target.0).map(|image| image.size());
-    if current != Some(UVec2::new(width, height)) {
-        if let Some(image) = images.get_mut(&target.0) {
+    if current != Some(UVec2::new(width, height))
+        && let Some(image) = images.get_mut(&target.0) {
             image.resize(Extent3d { width, height, depth_or_array_layers: 1 });
         }
-    }
 }
 
 /// Spawned by `scene` once the sky exists.
@@ -263,7 +262,7 @@ fn follow_player(
     view.land = (view.land - dt * 5.0).max(0.0);
     view.swap = (view.swap - dt * 5.0).max(0.0);
     view.kick = (view.kick - dt * 9.0 * view.kick.max(0.3)).max(0.0);
-    view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).max(0.0).min(2.5);
+    view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).clamp(0.0, 2.5);
     view.sway = (view.sway + controls.look * 0.6).clamp_length_max(0.06) * (-dt * 12.0).exp();
     let sprinting = input.held(buttons::SPRINT) && mover.speed > 6.5;
     view.sprint += (sprinting as u8 as f32 - view.sprint) * (1.0 - (-dt * 8.0).exp());

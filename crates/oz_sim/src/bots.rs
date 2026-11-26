@@ -129,8 +129,8 @@ pub fn drive_bots(
     for (_, bot, me, transform, mut input, health, arsenal, stunned) in &mut players {
         let Some(mut bot) = bot else { continue };
         // Flashed: stumble about blind until it wears off.
-        if let Some(mut stunned) = stunned {
-            if stunned.0 > 0.0 {
+        if let Some(mut stunned) = stunned
+            && stunned.0 > 0.0 {
                 stunned.0 -= dt;
                 input.buttons = 0;
                 input.movement = Vec2::new(bot.strafe * 0.4, -0.3);
@@ -139,7 +139,6 @@ pub fn drive_bots(
                 bot.seen = 0.0;
                 continue;
             }
-        }
         if !health.alive() || state.phase == Phase::Lobby || state.over() {
             input.buttons = 0;
             input.movement = Vec2::ZERO;
@@ -163,7 +162,7 @@ pub fn drive_bots(
                 let distance = chest.distance(from);
                 distance < 85.0
                     && obstruction(&map, &statics, &solids, from, (chest - from) / distance.max(1e-3), distance) >= distance - 0.6
-                    && !crate::combat::smoke_between(&smokes, from, chest)
+                    && !crate::combat::smoke_between(smokes, from, chest)
             };
             let found = fighters
                 .iter()

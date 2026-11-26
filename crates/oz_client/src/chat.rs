@@ -72,11 +72,10 @@ fn type_line(mut keys: EventReader<KeyboardInput>, mut screen: ResMut<Screen>, m
                 log.draft.pop();
             }
             Key::Enter => {
-                if let Ok(player) = players.single() {
-                    if !log.draft.trim().is_empty() {
+                if let Ok(player) = players.single()
+                    && !log.draft.trim().is_empty() {
                         orders.write(CommandEvent { player: player.id, command: PlayerCommand::Chat(log.draft.clone()) });
                     }
-                }
                 log.draft.clear();
                 *screen = Screen::None;
                 return;

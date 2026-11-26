@@ -392,11 +392,10 @@ fn pose_players(time: Res<Time>, mut robots: Query<(&mut Rig, &mut Pose, &Transf
 /// Robots scowl while shooting.
 fn react_to_shots(mut events: EventReader<FxEvent>, mut robots: Query<(&mut Rig, &Player)>) {
     for event in events.read() {
-        if let FxEvent::Shot { by, .. } = event {
-            if let Some((mut rig, _)) = robots.iter_mut().find(|(_, player)| player.id == *by) {
+        if let FxEvent::Shot { by, .. } = event
+            && let Some((mut rig, _)) = robots.iter_mut().find(|(_, player)| player.id == *by) {
                 rig.angry = 1.2;
             }
-        }
     }
 }
 

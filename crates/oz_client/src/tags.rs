@@ -56,7 +56,7 @@ fn place_tags(
             let distance = to.length();
             let friend = !rules.pvp || player.team == me.team;
             let aimed = to.normalize_or_zero().dot(forward) > 0.9985;
-            let visible = || statics.raycast(eye, to / distance.max(1e-3), distance).is_none() && !smoke_between(&smokes, eye, head);
+            let visible = || statics.raycast(eye, to / distance.max(1e-3), distance).is_none() && !smoke_between(smokes, eye, head);
             if friend && distance < TEAM_RANGE || !friend && aimed && distance < ENEMY_RANGE && visible() {
                 let color = if friend { TEAM_COLORS[(player.team as usize).min(1)] } else { Color::srgb(1.0, 0.35, 0.3) };
                 shown.push((head, player.name.clone(), color));
@@ -74,13 +74,12 @@ fn place_tags(
         *visibility = Visibility::Inherited;
         node.left = Val::Percent((ndc.x + 1.0) * 50.0);
         node.top = Val::Percent((1.0 - ndc.y) * 50.0);
-        if let Some(&child) = children.first() {
-            if let Ok((mut text, mut tint)) = texts.get_mut(child) {
+        if let Some(&child) = children.first()
+            && let Ok((mut text, mut tint)) = texts.get_mut(child) {
                 if text.0 != *name {
                     text.0 = name.clone();
                 }
                 tint.0 = *color;
             }
-        }
     }
 }

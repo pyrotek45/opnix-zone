@@ -183,7 +183,7 @@ fn host_and_client_share_one_match() {
     let (mut host, mut client) = (app(), app());
     let rules = frontier_rules(21);
     start(&mut host, net::host_setup(rules.clone(), "HOST", "127.0.0.1:0", false).unwrap());
-    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
     let addr = link.host.local_addr().unwrap().to_string();
 
     let world = client.world_mut();

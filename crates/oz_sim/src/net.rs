@@ -68,6 +68,7 @@ pub struct NetIds {
 }
 
 impl NetIds {
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> NetId {
         self.last += 1;
         NetId(self.last)
@@ -498,12 +499,11 @@ pub fn host_receive(
                     for old_peer in old {
                         link.host.kick(old_peer);
                         link.tokens.remove(&old_peer);
-                        if let Some(id) = link.peers.remove(&old_peer) {
-                            if let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id) {
+                        if let Some(id) = link.peers.remove(&old_peer)
+                            && let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id) {
                                 link.departed.push(Departed::from_player(token, player, arsenal, now));
                                 commands.entity(entity).despawn();
                             }
-                        }
                     }
                 }
                 link.departed.retain(|d| now - d.left_at < REJOIN_WINDOW);
@@ -735,11 +735,10 @@ pub fn client_receive(
                         if let Some(mut player) = player {
                             player.flags = e.flags;
                             player.team = e.aux >> 6;
-                            if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == player.id) {
-                                if player.name != entry.name {
+                            if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == player.id)
+                                && player.name != entry.name {
                                     player.name = entry.name.clone();
                                 }
-                            }
                         }
                         continue;
                     }
@@ -853,6 +852,42 @@ pub fn smooth_remote(time: Res<Time>, role: Res<NetRole>, clock: Res<ServerClock
     }
 }
 
+impl Departed {
+    fn from_player(token: u64, player: &Player, arsenal: &Arsenal, now: f32) -> Self {
+        Self {
+            token,
+            id: player.id,
+            team: player.team,
+            kills: player.kills,
+            deaths: player.deaths,
+            perk: player.perk,
+            gear: player.gear,
+            loadout: player.loadout,
+            arsenal: arsenal.clone(),
+            left_at: now,
+        }
+    }
+
+    /// Puts the remembered score, class and weapons onto a fresh player.
+    fn restore(&self, entity: &mut EntityWorldMut, gear_count: u8) {
+        if let Some(mut player) = entity.get_mut::<Player>() {
+            player.kills = self.kills;
+            player.deaths = self.deaths;
+            player.perk = self.perk;
+            player.gear = self.gear;
+            player.gear_left = gear_count;
+            player.loadout = self.loadout;
+        }
+        let current = self.arsenal.current;
+        if let Some(mut arsenal) = entity.get_mut::<Arsenal>() {
+            *arsenal = Arsenal { cooldown: 0.0, reload: 0.0, burst: 0, trigger: false, ..self.arsenal.clone() };
+        }
+        if let Some(mut input) = entity.get_mut::<PlayerInput>() {
+            input.weapon = current;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -899,42 +934,6 @@ mod tests {
         for yaw in [0.0, 1.0, 3.0, 6.0] {
             let back = unpack_yaw(pack_yaw(Quat::from_rotation_y(yaw)));
             assert!((back - yaw).abs() < TAU / 200.0, "{yaw} -> {back}");
-        }
-    }
-}
-
-impl Departed {
-    fn from_player(token: u64, player: &Player, arsenal: &Arsenal, now: f32) -> Self {
-        Self {
-            token,
-            id: player.id,
-            team: player.team,
-            kills: player.kills,
-            deaths: player.deaths,
-            perk: player.perk,
-            gear: player.gear,
-            loadout: player.loadout,
-            arsenal: arsenal.clone(),
-            left_at: now,
-        }
-    }
-
-    /// Puts the remembered score, class and weapons onto a fresh player.
-    fn restore(&self, entity: &mut EntityWorldMut, gear_count: u8) {
-        if let Some(mut player) = entity.get_mut::<Player>() {
-            player.kills = self.kills;
-            player.deaths = self.deaths;
-            player.perk = self.perk;
-            player.gear = self.gear;
-            player.gear_left = gear_count;
-            player.loadout = self.loadout;
-        }
-        let current = self.arsenal.current;
-        if let Some(mut arsenal) = entity.get_mut::<Arsenal>() {
-            *arsenal = Arsenal { cooldown: 0.0, reload: 0.0, burst: 0, trigger: false, ..self.arsenal.clone() };
-        }
-        if let Some(mut input) = entity.get_mut::<PlayerInput>() {
-            input.weapon = current;
         }
     }
 }

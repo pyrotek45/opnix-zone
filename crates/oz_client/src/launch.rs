@@ -37,9 +37,8 @@ pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res
             Some(Err(error)) => error!("could not host: {error}"),
             None => error!("that mode is not playable"),
         }
-    } else if has("--solo") {
-        if let Some(rules) = rules() {
+    } else if has("--solo")
+        && let Some(rules) = rules() {
             pending.0 = Some(MatchSetup::offline(rules, settings.callsign.clone()));
         }
-    }
 }

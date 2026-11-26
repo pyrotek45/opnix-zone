@@ -65,11 +65,10 @@ fn predict(
 
     // Thrown gear leaves the hand at once; the host's copy stays hidden for us.
     let gear_held = input.held(buttons::GEAR) && *screen == Screen::None;
-    if gear_held && !p.gear_latch && player.gear_left > 0 && health.alive() && state.phase != Phase::Lobby && !state.over() {
-        if let Some((_, shot)) = content.gear.get(player.gear as usize).and_then(|gear| oz_sim::combat::throw(&gear.kind, dir)) {
+    if gear_held && !p.gear_latch && player.gear_left > 0 && health.alive() && state.phase != Phase::Lobby && !state.over()
+        && let Some((_, shot)) = content.gear.get(player.gear as usize).and_then(|gear| oz_sim::combat::throw(&gear.kind, dir)) {
             commands.spawn((MatchEntity, Ghost, Projectile { owner: Some(player.id), ..shot }, Transform::from_translation(eye + dir * 0.7)));
         }
-    }
     p.gear_latch = gear_held;
 
     // The host's counter is the truth; catch up if it ever runs ahead of us.

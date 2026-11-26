@@ -30,11 +30,10 @@ pub fn update_roster(content: Res<Content>, mut state: ResMut<MatchState>, mut p
             // Scavengers pull spare rounds off whoever they drop.
             if matches!(crate::player::perk(&content, &player), Some(oz_core::content::PerkEffect::Scavenger)) {
                 let index = arsenal.current as usize;
-                if let (Some(state), Some(def)) = (arsenal.weapons.get_mut(index), content.weapons.get(index)) {
-                    if !def.infinite_reserve {
+                if let (Some(state), Some(def)) = (arsenal.weapons.get_mut(index), content.weapons.get(index))
+                    && !def.infinite_reserve {
                         state.reserve = state.reserve.saturating_add(def.mag.max(1));
                     }
-                }
             }
         }
     }
@@ -135,12 +134,11 @@ pub fn run_versus(
                 };
                 if let Some(current) = players.iter().find(|(p, ..)| p.id == order.player).map(|(p, ..)| p.team) {
                     let other = 1 - current.min(1);
-                    if humans_on(other, &players) < state.team_size as usize {
-                        if let Some((mut player, _, mut transform, ..)) = players.iter_mut().find(|(p, ..)| p.id == order.player) {
+                    if humans_on(other, &players) < state.team_size as usize
+                        && let Some((mut player, _, mut transform, ..)) = players.iter_mut().find(|(p, ..)| p.id == order.player) {
                             player.team = other;
                             transform.translation = crate::player::spawn_point(&map, player.id, Some(other));
                         }
-                    }
                 }
             }
             LobbyAction::TeamSize(step) if host && state.phase == Phase::Lobby => {

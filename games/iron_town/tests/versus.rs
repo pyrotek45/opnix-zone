@@ -156,7 +156,7 @@ fn a_guest_joins_the_other_team_and_replaces_a_bot() {
         host.update();
     }
     assert_eq!(teams(&mut host), [(1, 1), (0, 2)]);
-    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
     let addr = link.host.local_addr().unwrap().to_string();
 
     let world = client.world_mut();
@@ -183,7 +183,7 @@ fn guests_see_every_player_where_the_host_has_them() {
     let mut rules = deathmatch_rules(77);
     rules.team_size = 3;
     start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
-    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
     let addr = link.host.local_addr().unwrap().to_string();
     let world = client.world_mut();
     net::join(&mut world.commands(), &addr, "GUEST");
@@ -297,7 +297,7 @@ fn a_quick_tap_online_still_fires() {
     let mut rules = deathmatch_rules(31);
     rules.team_size = 1;
     start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
-    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
     let addr = link.host.local_addr().unwrap().to_string();
     let world = client.world_mut();
     net::join(&mut world.commands(), &addr, "GUEST");
@@ -332,7 +332,7 @@ fn a_dropped_guest_reconnects_into_the_same_seat() {
     let mut rules = deathmatch_rules(31);
     rules.team_size = 2;
     start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
-    let NetLink::Host(link) = &*host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
     let addr = link.host.local_addr().unwrap().to_string();
     const TOKEN: u64 = 0xfeed_beef;
 

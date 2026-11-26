@@ -171,7 +171,7 @@ pub fn render(sfx: Sfx) -> Vec<f32> {
             add(Voice { seconds: 0.05, freq: (380.0, 560.0), tone: 0.25, noise: 0.6, bright: 0.7, decay: 9.0, gain: 0.4, ..B }, 0.09);
         }
         Sfx::Growl => {
-            add(Voice { seconds: 0.9, freq: (150.0, 62.0), tone: 0.6, square: true, noise: 0.35, bright: 0.12, decay: 2.2, attack: 0.12, gain: 0.5, ..B }, 0.0);
+            add(Voice { seconds: 0.9, freq: (150.0, 62.0), tone: 0.6, square: true, noise: 0.35, bright: 0.12, decay: 2.2, attack: 0.12, gain: 0.5 }, 0.0);
             add(Voice { seconds: 0.6, freq: (305.0, 118.0), tone: 0.3, square: true, decay: 3.0, attack: 0.2, gain: 0.3, ..B }, 0.1);
         }
         Sfx::Surf | Sfx::NightDrone => return render_loop(sfx),

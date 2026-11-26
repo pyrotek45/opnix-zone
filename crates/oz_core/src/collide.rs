@@ -171,11 +171,10 @@ impl StaticWorld {
             for z in cz.saturating_sub(1)..=(cz + 1).min(self.side - 1) {
                 for x in cx.saturating_sub(1)..=(cx + 1).min(self.side - 1) {
                     for &index in &self.cells[z * self.side + x] {
-                        if let Some((enter, _)) = self.boxes[index as usize].ray(origin, dir, max) {
-                            if best.is_none_or(|(d, _)| enter < d) {
+                        if let Some((enter, _)) = self.boxes[index as usize].ray(origin, dir, max)
+                            && best.is_none_or(|(d, _)| enter < d) {
                                 best = Some((enter, index as usize));
                             }
-                        }
                     }
                 }
             }

@@ -189,8 +189,8 @@ pub fn fire_weapons(
         // Gear: one use per button press.
         let gear_pressed = input.held(buttons::GEAR) && !player.gear_latch;
         player.gear_latch = input.held(buttons::GEAR);
-        if gear_pressed && player.gear_left > 0 {
-            if let Some(gear) = content.gear.get(player.gear as usize) {
+        if gear_pressed && player.gear_left > 0
+            && let Some(gear) = content.gear.get(player.gear as usize) {
                 player.gear_left -= 1;
                 let dir = look * Vec3::NEG_Z;
                 let shot = match gear.kind {
@@ -212,7 +212,6 @@ pub fn fire_weapons(
                     fx.write(FxEvent::Sound { sfx: Sfx::Swap, at: Some(eye) });
                 }
             }
-        }
 
         // Weapon swap (handling makes it quicker).
         if input.weapon != arsenal.current && arsenal.owns(input.weapon as usize) {
@@ -385,8 +384,8 @@ pub fn fire_weapons(
                         splash(&grid, &mut hits, end, stats.splash, stats.damage * 0.5, Some(player.id), None);
                     }
                     // Explosive rounds also catch nearby players.
-                    if stats.splash > 0.0 && rules.pvp {
-                        if let Some(me) = me {
+                    if stats.splash > 0.0 && rules.pvp
+                        && let Some(me) = me {
                             for body in targets.iter().filter(|b| b.team != player.team && Some(b.entity) != body.map(|h| h.2)) {
                                 let distance = body.chest().distance(end_at);
                                 if distance < stats.splash {
@@ -394,7 +393,6 @@ pub fn fire_weapons(
                                 }
                             }
                         }
-                    }
                     fx.write(shot(end_at, false));
                 }
             }

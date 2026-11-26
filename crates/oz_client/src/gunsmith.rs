@@ -247,11 +247,10 @@ fn preview(
         node.width = Val::Percent((b - a).abs() * 100.0);
         color.0 = if b >= a { ui::GOOD } else { ui::WARN };
     }
-    if let Ok(mut text) = blurb.single_mut() {
-        if text.0 != description {
+    if let Ok(mut text) = blurb.single_mut()
+        && text.0 != description {
             text.0 = description;
         }
-    }
 }
 
 /// Rebuilds the screen when a fitted part or the money changes, so FITTED and prices stay true.

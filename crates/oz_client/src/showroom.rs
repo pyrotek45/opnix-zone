@@ -159,11 +159,10 @@ fn resize(settings: Res<Settings>, target: Res<ShowTarget>, windows: Query<&Wind
     // Menus are a little crisper than the game: half the pixel size, at least 2.
     let scale = (settings.pixel_size / 2).max(2);
     let wanted = UVec2::new((window.physical_width() / scale).max(16), (window.physical_height() / scale).max(16));
-    if images.get(&target.0).map(|i| i.size()) != Some(wanted) {
-        if let Some(image) = images.get_mut(&target.0) {
+    if images.get(&target.0).map(|i| i.size()) != Some(wanted)
+        && let Some(image) = images.get_mut(&target.0) {
             image.resize(Extent3d { width: wanted.x, height: wanted.y, depth_or_array_layers: 1 });
         }
-    }
 }
 
 /// Centre and size of a model's parts, for framing.
@@ -318,11 +317,10 @@ fn idle_robots(time: Res<Time<Real>>, mut robots: Query<(&mut Pose, &Idle)>) {
 /// Shows the stage and parks the world camera while it is up.
 fn toggle(stage: Res<Stage>, mut show: Query<&mut Camera, (With<ShowCamera>, Without<WorldCamera>)>, mut world: Query<&mut Camera, With<WorldCamera>>, mut image: Query<&mut Visibility, With<ShowImage>>) {
     let up = *stage != Stage::Hidden;
-    if let Ok(mut camera) = show.single_mut() {
-        if camera.is_active != up {
+    if let Ok(mut camera) = show.single_mut()
+        && camera.is_active != up {
             camera.is_active = up;
         }
-    }
     for mut camera in &mut world {
         if camera.is_active == up {
             camera.is_active = !up;

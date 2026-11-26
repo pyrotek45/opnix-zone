@@ -333,12 +333,11 @@ fn interact(
         if nav.accept || (nav.right && clickable.left.is_some()) {
             acts.write(ActEvent(clickable.act.clone()));
             fired = true;
-        } else if nav.left {
-            if let Some(left) = &clickable.left {
+        } else if nav.left
+            && let Some(left) = &clickable.left {
                 acts.write(ActEvent(left.clone()));
                 fired = true;
             }
-        }
     }
     if nav.back {
         acts.write(ActEvent(Act::Back));
