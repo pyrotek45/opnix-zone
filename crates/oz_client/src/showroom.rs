@@ -217,7 +217,8 @@ fn rebuild(
         }
     };
     let robot = |commands: &mut Commands, at: Vec3, yaw: f32, team: u8, gun: &Baked, pose: Pose, seed: f32| {
-        let root = commands.spawn((Subject, Transform::from_translation(STAGE + at + Vec3::Y * 0.11).with_rotation(Quat::from_rotation_y(yaw)))).id();
+        // Models face -Z; the camera looks from +Z, so turn them round to face it.
+        let root = commands.spawn((Subject, Transform::from_translation(STAGE + at + Vec3::Y * 0.11).with_rotation(Quat::from_rotation_y(yaw + std::f32::consts::PI)))).id();
         let rig = spawn_robot(commands, &art, &parts, root, team, Some(gun));
         commands.entity(root).insert((rig, pose, Idle { seed, base: pose }));
         root
@@ -295,7 +296,7 @@ fn spin(
         transform.rotation = if matches!(*stage, Stage::Gun { .. }) {
             Quat::from_rotation_y(turn.yaw) * Quat::from_rotation_x(0.12 * (turn.yaw * 0.7).sin())
         } else {
-            Quat::from_rotation_y(0.35 + 0.35 * (turn.yaw).sin())
+            Quat::from_rotation_y(std::f32::consts::PI + 0.35 + 0.35 * (turn.yaw).sin())
         };
     }
 }

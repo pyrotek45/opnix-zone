@@ -2,7 +2,7 @@
 
 ```
 crates/
-  oz_core     pure Rust, no Bevy   data + algorithms: worldgen, block models, arsenal, content, synth
+  oz_core     pure Rust, no Bevy   data + algorithms: worldgen, collision, block models, modular arsenal, content, synth
   oz_net      pure Rust, no Bevy   host/client message transport (framed TCP)
   oz_sim      Bevy ECS, headless   the authoritative simulation + replication
   oz_client   Bevy render/UI       everything seen, heard and touched
@@ -57,10 +57,49 @@ Listen-server model: the host owns the simulation and also plays.
 `oz_net` hides the wire. Swapping TCP for UDP, a relay, or a platform socket
 layer does not touch gameplay code.
 
+## Collision and movement
+
+`oz_core::collide::StaticWorld` holds every wall, floor, stair step, crate and
+prop as an axis-aligned box in a 4 m grid. It answers three questions: is a
+body blocked here, what floor is under this point (so stairs and upper
+storeys work), and where does this ray first hit (bullets, line of sight,
+grenades). Player-built structures are separate, dynamic `Solid`s.
+
+Buildings come from `worldgen` as a list of `Block`s - walls cut around doors
+and windows, floor slabs with stairwells, stairs, railings, furniture, roofs
+and decorative trims. The same list drives rendering and collision.
+
+## Bots
+
+`oz_sim::nav` builds a 1 m walkability grid from the map and collision at
+match start, then answers A* queries smoothed into straight legs. Bots
+(`oz_sim::bots`) only ever write `PlayerInput`, exactly like a human: they
+travel by path, engage at ranges that suit their weapon, crouch or go prone
+for long shots, and have reaction time and aim error scaled by difficulty.
+Searches are limited per frame so a full lobby never spikes.
+
+## Versus
+
+`oz_sim::versus` is switched on by `Rules::pvp`. It runs the lobby (ready,
+start countdown, switch team, team size), keeps teams full with bots,
+counts kills toward the score limit, and returns everyone to the lobby for a
+rematch. `MatchState::roster` carries names, teams, ready flags and K/D to
+every machine; it feeds the lobby, the scoreboard and remote players' names.
+
+## Players as robots
+
+Every player and bot is drawn as a jointed robot with a CRT head
+(`oz_client::avatar`). A `Pose` (speed, stance, look pitch, aiming,
+reloading, sprinting, dead) drives a procedural rig: run cycle, crouch,
+prone, aiming up and down, reload tilt, falling over, and the face on the
+screen. Stance, aim and reload state travel in each snapshot's `flags` byte,
+and look pitch in its `pitch` byte, so everyone sees what everyone is doing.
+
 ## Assets from code
 
 * **Models** are `BlockModel`s: lists of painted primitives with optional
   animation tags. `oz_client::art` bakes each into at most four meshes.
+  Guns are assembled from their frame and fitted parts by `arsenal::assemble`.
 * **Maps** come from `oz_core::worldgen` (`Layout::Archipelago`, `Layout::Town`).
   A new generator only has to fill in the `World` struct.
 * **Sounds** come from `oz_core::synth`, rendered to WAV in memory at startup.

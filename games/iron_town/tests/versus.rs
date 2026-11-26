@@ -52,7 +52,13 @@ fn bots_fill_the_teams_and_fight_to_the_score_limit() {
     // The match opens in the lobby: one human on team 0, bots everywhere else.
     assert_eq!(phase(&app), Phase::Lobby);
     assert_eq!(teams(&mut app), [(1, 2), (0, 3)]);
-    assert_eq!(app.world().resource::<MatchState>().roster.len(), 6);
+    let roster = app.world().resource::<MatchState>().roster.clone();
+    assert_eq!(roster.len(), 6);
+    let mut ids: Vec<u8> = roster.iter().map(|r| r.id).collect();
+    ids.dedup();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 6, "every player needs a unique id: {roster:?}");
     // The host can resize the teams from the lobby.
     lobby(&mut app, LobbyAction::TeamSize(1));
     for _ in 0..20 {

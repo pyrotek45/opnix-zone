@@ -11,7 +11,10 @@
 
 ## Known limitations
 
-* **Buildings are solid blocks.** Towns have streets, alleys and cover but no interiors yet.
+* **Bots navigate the ground floor only.** Players use stairs and upper floors;
+  bots path through doors and around furniture but do not climb yet.
+* **Remote players' attachments** are shown with each gun's factory parts on
+  other clients (the host sees bots' real parts). Stats are always correct.
 * **No lag compensation or shot prediction.** The host resolves shots from each
   client's reported aim, and a client sees its own shots after one round trip.
   Fine on LAN and good connections; competitive play over poor links will want both.
@@ -19,8 +22,6 @@
   there is no anti-cheat.
 * **TCP transport, direct connections only.** Internet play needs a forwarded
   port or a mesh VPN; there is no relay, lobby browser or NAT punch-through.
-* **Bots use simple steering,** not path-finding. They handle the town grid
-  but can be slow around complex cover.
 * **Snapshots are full-state.** They are compact, but very large matches will
   want delta compression and interest management.
 * **Mining logistics are abstract.** Drills feed the shared stock directly;

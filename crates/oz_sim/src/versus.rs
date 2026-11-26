@@ -63,10 +63,13 @@ pub fn fill_teams(
     players: Query<(Entity, &Player, Has<Bot>)>,
 ) {
     let wanted = state.team_size.max(1) as usize;
+    // Ids handed out this frame are not in the query yet, so track them too.
+    let mut taken: Vec<u8> = players.iter().map(|(_, player, _)| player.id).collect();
     for team in 0..2u8 {
         let members: Vec<_> = players.iter().filter(|(_, player, _)| player.team == team).collect();
         if members.len() < wanted {
-            if let Some(id) = (FIRST_BOT_ID..=254).find(|id| !players.iter().any(|(_, player, _)| player.id == *id)) {
+            if let Some(id) = (FIRST_BOT_ID..=254).find(|id| !taken.contains(id)) {
+                taken.push(id);
                 spawn_bot(&mut commands, &mut ids, &content, &rules, &map, &mut rng, id, team);
             }
         } else if members.len() > wanted {

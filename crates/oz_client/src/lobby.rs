@@ -145,7 +145,11 @@ pub fn build_lobby(
             .with_children(|top| {
                 ui::label(top, mode, 34.0, ui::TEXT);
                 let n = state.team_size;
-                ui::label(top, format!("{}   |   {n} V {n}   |   FIRST TO {}", rules.recipe.biome.look().title, rules.score_limit), 15.0, ui::ACCENT);
+                let place = match rules.recipe.layout {
+                    oz_core::worldgen::Layout::Town => format!("{} TOWN", rules.recipe.biome.look().title),
+                    _ => rules.recipe.biome.look().title.to_string(),
+                };
+                ui::label(top, format!("{place}   |   {n} V {n}   |   FIRST TO {}", rules.score_limit), 15.0, ui::ACCENT);
             });
         roster_column(root, 0, &state, me.id, false, true);
         roster_column(root, 1, &state, me.id, false, false);
