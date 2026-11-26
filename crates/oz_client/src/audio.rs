@@ -28,6 +28,7 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
     all.extend([
         Sfx::Reload, Sfx::DryFire, Sfx::Hit, Sfx::Kill, Sfx::Explosion, Sfx::EnemyShot, Sfx::EnemyDeath, Sfx::Hurt, Sfx::UiMove, Sfx::UiAccept,
         Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Land, Sfx::Swap, Sfx::Growl, Sfx::Surf, Sfx::NightDrone,
+        Sfx::Headshot, Sfx::Streak, Sfx::Medal, Sfx::Jet, Sfx::Heartbeat, Sfx::Radar,
     ]);
     let clips: HashMap<Sfx, Handle<AudioSource>> = all.into_iter().map(|sfx| (sfx, sources.add(AudioSource { bytes: synth::wav(&synth::render(sfx)).into() }))).collect();
     for sfx in [Sfx::Surf, Sfx::NightDrone] {

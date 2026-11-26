@@ -106,7 +106,7 @@ fn spawn_effects(
     local: Query<&Player, With<LocalPlayer>>,
     particles: Query<(), With<Particle>>,
     cameras: Query<&Transform, With<WorldCamera>>,
-    (role, mut death, statics): (Res<NetRole>, ResMut<DeathInfo>, Res<Statics>),
+    (role, mut death, statics, bodies): (Res<NetRole>, ResMut<DeathInfo>, Res<Statics>, Query<(&Player, &Transform)>),
     mut rng: Local<Option<Rng>>,
 ) {
     let me = local.single().map_or(255, |player| player.id);
@@ -120,9 +120,21 @@ fn spawn_effects(
             FxEvent::Shot { by, local, .. } if *role == NetRole::Client && *by == me && !*local => {
                 // Our own shot, already shown when we predicted it.
             }
-            FxEvent::Killed { victim, by } => {
+            FxEvent::Killed { victim, by, .. } => {
                 if *victim == me {
                     death.killer = Some(*by);
+                }
+                // The robot comes apart: sparks, plates and a puff of smoke.
+                if let Some((_, body)) = bodies.iter().find(|(p, _)| p.id == *victim) {
+                    let chest = body.translation + Vec3::Y * 1.1;
+                    fx.burst(chest, 14, &[Paint::Spark, Paint::Glow, Paint::Steel, Paint::Metal, Paint::Dark], 6.5, 0.12, 0.9);
+                    let size = Vec3::splat(0.25);
+                    fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(chest).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.12, initial: 0.12, size, grow: 3.0 });
+                    for i in 0..3 {
+                        let puff = Vec3::splat(0.35);
+                        let drift = Vec3::new(fx.rng.range(-0.4, 0.4), 1.2, fx.rng.range(-0.4, 0.4));
+                        fx.particle(Shape::Shard, Paint::Dark, Transform::from_translation(chest + Vec3::Y * 0.2 * i as f32).with_scale(puff), Particle { velocity: drift, gravity: 0.0, life: 1.1, initial: 1.1, size: puff, grow: 1.4 });
+                    }
                 }
             }
             FxEvent::Shot { by, sound, from, to, beam, tracer, quiet, .. } => {
@@ -188,6 +200,22 @@ fn spawn_effects(
                     view.blind = view.blind.max(seconds * strength + 0.3);
                     view.shake += 0.6;
                 }
+            }
+            FxEvent::Flyby { from, to } => {
+                // A dark dart of a jet with a hot exhaust, crossing in about two seconds.
+                let span = *to - *from;
+                let velocity = span / 2.0;
+                let rotation = Quat::from_rotation_arc(Vec3::NEG_Z, span.normalize_or_zero());
+                for (offset, scale, paint) in [
+                    (Vec3::ZERO, Vec3::new(1.4, 0.9, 9.0), Paint::Dark),
+                    (Vec3::new(0.0, -0.1, 1.0), Vec3::new(10.0, 0.25, 2.6), Paint::Steel),
+                    (Vec3::new(0.0, 0.0, 4.7), Vec3::new(0.9, 0.9, 0.9), Paint::Glow),
+                ] {
+                    let at = *from + rotation * offset;
+                    fx.particle(Shape::Cube, paint, Transform::from_translation(at).with_rotation(rotation).with_scale(scale), Particle { velocity, gravity: 0.0, life: 2.0, initial: 2.0, size: scale, grow: 0.0 });
+                }
+                sounds.write(PlaySfx { volume: 0.9, ..PlaySfx::new(Sfx::Jet, None) });
+                view.shake += 0.4;
             }
             FxEvent::EnemyDied { at, kind } => {
                 let (gibs, big) = content.enemies.get(*kind as usize).map_or((Paint::Steel, 1.0), |def| (def.gibs, def.radius / 0.6));
@@ -308,6 +336,9 @@ fn tick_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<
             transform.translation += particle.velocity * dt;
             transform.rotate_local_x(dt * 7.0);
             transform.scale = particle.size * (1.0 - age).sqrt();
+        } else if particle.velocity != Vec3::ZERO {
+            // Gliding pieces (jets): keep their size and heading.
+            transform.translation += particle.velocity * dt;
         }
     }
 }

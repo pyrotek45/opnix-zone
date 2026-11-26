@@ -104,8 +104,9 @@ over the shoulder; the camera cuts to whoever is in a firefight.
 | Jump / sprint | Space / Shift | A / click left stick |
 | Crouch / prone | C or Ctrl / Z | tap B / hold B |
 | Hold breath (scoped) | Shift | click left stick |
-| Weapons | 1-9, wheel | Y next, LB previous |
-| Lean left / right | hold Q / E | D-pad left / right (toggle) |
+| Weapons | 1-9, wheel | Y |
+| Take / leave cover | Q | LB |
+| Call in killstreak | X | R3 |
 | Gear | G | RB |
 | Inspect weapon | I | D-pad up |
 | Change class / scoreboard (Iron Town) | L / hold Tab | D-pad down / hold Back |
@@ -119,12 +120,31 @@ pick an action, press the new key. A key already in use swaps places.
 Stations are walk-up terminals: stand next to one, press **Use**, and a window
 opens. Everything in it can be clicked or navigated with a pad.
 
-## Cover and gear (Iron Town)
+## Cover, killstreaks and gear (Iron Town)
 
-Lean around corners like the old tactical shooters: hold **Q** or **E**. Your
-head and shoulders move out (never through a wall), the view tilts, and
-everyone sees your robot lean - and can shoot what sticks out. Bots peek
-corners too. You move at half speed while leaning and cannot sprint.
+**Cover** works like the third-person cover shooters: face a wall or crate
+and press **Q** (LB on a gamepad) to slide into it, back to the wall, with
+the camera over your shoulder. Left / right moves you along it and stops at
+the edge; behind low cover you crouch. **Aim** to pop up over low cover or to
+peek out around a corner in first person, then let go to duck back. Press Q
+again, jump, or walk away from the wall to leave. Whatever you show of
+yourself can be hit. Bots peek out of cover too.
+
+**Killstreaks** - kills without dying earn rewards; press **X** (R3) to call
+one in when you like. Streaks reset when you die, earned rewards wait:
+
+| Kills | Reward | |
+|------:|--------|---|
+| 3 | Recon UAV | every enemy shows on your team's radar for 30 s |
+| 5 | Airstrike | a jet screams over and drops a line of bombs where you are aiming |
+| 7 | Attack drone | hovers above you for 30 s and shoots enemies it can see |
+
+Bots call in theirs as well; enemy call-ins flash a warning.
+
+**Juice:** medal banners that slam onto the screen (double / triple kill,
+headshot, revenge, first blood), a headshot ding, killstreak fanfares, a
+little zoom punch on every kill, robots bursting into sparks and plates when
+they go down, jets with doppler roar, and a heartbeat when you are nearly dead.
 
 Gear, one kind per class:
 

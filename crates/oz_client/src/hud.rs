@@ -360,7 +360,7 @@ fn update_text(
     screen: Res<Screen>,
     mut notices: ResMut<Notices>,
     spectate: Res<crate::spectate::Spectate>,
-    (death, prediction, role, settings): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>, Res<crate::settings::Settings>),
+    (death, prediction, role, settings, cover): (Res<crate::fx::DeathInfo>, Res<crate::predict::Prediction>, Res<NetRole>, Res<crate::settings::Settings>, Res<crate::cover::Cover>),
     players: Query<(&Health, &Arsenal, &Player), With<LocalPlayer>>,
     mut texts: Query<(&Num, &mut Text)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
@@ -400,17 +400,29 @@ fn update_text(
         format!("[{use_key}]  {}", content.stations.get(kind as usize).map_or("STATION", |s| s.name))
     } else if weapon.is_some_and(|(def, owned)| def.mag > 0 && owned.ammo == 0 && arsenal.reload <= 0.0) {
         format!("[{}]  RELOAD", if controls.gamepad { "X".into() } else { key(Action::Reload) })
+    } else if let Some(def) = oz_sim::killstreak::next(player.rewards).filter(|_| rules.pvp) {
+        format!("[{}]  CALL IN {}", if controls.gamepad { "R3".into() } else { key(Action::Killstreak) }, def.name)
+    } else if cover.wall.is_some() && !cover.aiming {
+        let (cover_key, aim_key) = if controls.gamepad { ("LB".to_string(), "LT".to_string()) } else { (key(Action::Cover), key(Action::Aim)) };
+        let what = match cover.wall.map(|w| w.low) {
+            Some(true) => "POP UP",
+            _ if cover.edges.contains(&true) => "PEEK",
+            _ => "AIM",
+        };
+        format!("[{aim_key}] {what}   [{cover_key}] LEAVE COVER")
+    } else if cover.available && cover.wall.is_none() {
+        format!("[{}]  TAKE COVER", if controls.gamepad { "LB".into() } else { key(Action::Cover) })
     } else {
         String::new()
     };
     // Controls are shown while a match is young, then get out of the way.
     let help = if rules.pvp {
         format!(
-            "{} FIRE   {} AIM   {} RELOAD   {}/{} LEAN   {} GEAR   {} CLASS   {} SPRINT   ESC PAUSE",
-            key(Action::Fire), key(Action::Aim), key(Action::Reload), key(Action::LeanLeft), key(Action::LeanRight), key(Action::Gear), key(Action::Loadout), key(Action::Sprint)
+            "{} FIRE   {} AIM   {} RELOAD   {} COVER   {} GEAR   {} CLASS   {} SPRINT   ESC PAUSE",
+            key(Action::Fire), key(Action::Aim), key(Action::Reload), key(Action::Cover), key(Action::Gear), key(Action::Loadout), key(Action::Sprint)
         )
     } else {
-        format!("{} FIRE   {} AIM   {} RELOAD   {} USE   {}/{} LEAN   1-8 WEAPON   {} SPRINT   ESC PAUSE", key(Action::Fire), key(Action::Aim), key(Action::Reload), key(Action::Interact), key(Action::LeanLeft), key(Action::LeanRight), key(Action::Sprint))
+        format!("{} FIRE   {} AIM   {} RELOAD   {} USE   {} COVER   1-8 WEAPON   {} SPRINT   ESC PAUSE", key(Action::Fire), key(Action::Aim), key(Action::Reload), key(Action::Interact), key(Action::Cover), key(Action::Sprint))
     };
     let watching = format!("SPECTATING  {}      [V] BACK TO YOUR PLAYER", spectate.name);
     let hint = if spectate.enabled {
@@ -418,7 +430,7 @@ fn update_text(
     } else if *shown_for > 30.0 {
         ""
     } else if controls.gamepad {
-        "STICKS MOVE / LOOK    RT FIRE    LT AIM    X RELOAD / USE    A JUMP    RB GEAR    D-PAD LEAN    Y / LB WEAPON    START PAUSE"
+        "STICKS MOVE / LOOK    RT FIRE    LT AIM    X RELOAD / USE    A JUMP    LB COVER    RB GEAR    Y WEAPON    START PAUSE"
     } else {
         help.as_str()
     };
@@ -515,8 +527,9 @@ fn update_shapes(
     for (other, player, other_health) in &others {
         if other_health.alive() {
             let friend = player.team == me.team;
-            // Opponents only show when they are close enough to hear.
-            contact(other.translation, if player.team == 0 { TEAL } else { CORAL }, if friend { RADAR_RANGE } else { 16.0 });
+            // Opponents only show when they are close enough to hear, or while your team's UAV is up.
+            let uav = state.uav[(me.team as usize).min(1)] > 0.0;
+            contact(other.translation, if player.team == 0 { TEAL } else { CORAL }, if friend || uav { RADAR_RANGE } else { 16.0 });
         }
     }
     for station in &stations {

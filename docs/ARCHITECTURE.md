@@ -106,10 +106,24 @@ the height change is walkable, so stairs join floors. A* runs over the nodes
 and the result is smoothed into straight legs that never jump floors. Bots
 (`oz_sim::bots`) only ever write `PlayerInput`, exactly like a human: they
 travel by path, engage at ranges that suit their weapon, crouch or go prone
-for long shots, lean out from cover when an enemy is only visible that way,
+for long shots, peek out from cover when an enemy is only visible that way,
 are stunned by flashbangs and blind behind smoke, and have reaction time and
 aim error scaled by difficulty.
 Searches are limited per frame so a full lobby never spikes.
+
+## Cover and killstreaks
+
+`oz_client::cover` is purely client-side: it finds a wall face with a few
+rays, walks the player into it, then shapes the local `PlayerInput` -
+movement along the wall, crouching behind low cover, and the peek offset
+(`lean`) when aiming at an edge. The simulation already replicates stance and
+lean and uses them for hitboxes and lag compensation, so cover needed no
+network changes. The view pulls back over the shoulder while in cover.
+
+`oz_sim::killstreak` counts kills per life, grants rewards at 3 / 5 / 7 and
+runs them on the authority: a team UAV timer in `MatchState` (radar reads
+it), airstrike entities that drop bombs after a delay, and drones that
+replicate as projectiles and fire through the normal damage path.
 
 ## Versus
 

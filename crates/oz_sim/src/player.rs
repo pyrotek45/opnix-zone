@@ -82,7 +82,7 @@ pub mod flags {
 }
 
 /// How far the head moves out when leaning around cover.
-pub const LEAN_REACH: f32 = 0.45;
+pub const LEAN_REACH: f32 = 0.6;
 /// Body roll at full lean, in radians (for presentation).
 pub const LEAN_ROLL: f32 = 0.3;
 
@@ -137,6 +137,12 @@ pub struct Player {
     pub ping: u16,
     /// Seconds of spawn protection left (versus). Firing ends it early.
     pub protect: f32,
+    /// Kills since the last death (versus killstreaks).
+    pub streak: u16,
+    /// Earned, unused killstreak rewards (bits of `killstreak::reward`).
+    pub rewards: u8,
+    /// The hit being applied right now was to the head (for kill credits).
+    pub last_hit_head: bool,
 }
 
 impl Player {
@@ -144,6 +150,7 @@ impl Player {
         Self {
             id, name: name.into(), team, respawn: 0.0, calm: 0.0, life: 0.0, kills: 0, deaths: 0, ready: false, perk: 0, gear: 0, gear_left: 0,
             gear_latch: false, loadout: None, burn: 0.0, burn_time: 0.0, burn_by: None, flags: 0, ping: 0, protect: 0.0,
+            streak: 0, rewards: 0, last_hit_head: false,
         }
     }
 
@@ -207,6 +214,7 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
     if killed {
         victim.deaths += 1;
         victim.burn_time = 0.0;
+        victim.streak = 0;
     }
     if let Some((name, team, id)) = attacker {
         fx.write(FxEvent::HitMarker { player: id, kill: killed });
@@ -214,7 +222,7 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
             state.scores[(team as usize).min(1)] += 1;
             state.credits.push(id);
             fx.write(FxEvent::notice(format!("{name}  >  {}", victim.name)));
-            fx.write(FxEvent::Killed { victim: victim.id, by: id });
+            fx.write(FxEvent::Killed { victim: victim.id, by: id, head: victim.last_hit_head });
         }
     }
     killed

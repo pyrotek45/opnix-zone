@@ -112,8 +112,8 @@ fn hit_from(stats: &Resolved, target: Entity, amount: f32, player: u8) -> Hit {
     Hit { target, amount, by: Some(player), frost: stats.frost, venom, arc: stats.arc, scavenge: stats.scavenge, repair: stats.repair }
 }
 
-/// Damage dealt to a player this frame: (victim, amount, attacker index into bodies, burn).
-type Strike = (Entity, f32, usize, f32);
+/// Damage dealt to a player this frame: (victim, amount, attacker index into bodies, burn, headshot).
+type Strike = (Entity, f32, usize, f32, bool);
 
 #[allow(clippy::too_many_arguments)]
 pub fn fire_weapons(
@@ -359,7 +359,7 @@ pub fn fire_weapons(
                     _ => {
                         if let (Some((d, _, victim)), Some(me)) = (player_hit(dir, reach), me) {
                             end = eye + dir * d;
-                            struck.push((victim, stats.damage, me, 0.0));
+                            struck.push((victim, stats.damage, me, 0.0, false));
                         }
                     }
                 }
@@ -384,7 +384,7 @@ pub fn fire_weapons(
                             splash(&grid, &mut hits, end_at, stats.splash, stats.damage * 0.5, Some(player.id), Some(item.entity));
                         }
                     } else if let (Some((d, head, victim)), Some(me)) = (body, me) {
-                        struck.push((victim, stats.damage * falloff(d) * if head { HEADSHOT } else { 1.0 }, me, stats.burn));
+                        struck.push((victim, stats.damage * falloff(d) * if head { HEADSHOT } else { 1.0 }, me, stats.burn, head));
                     } else if stats.splash > 0.0 && reach < stats.range {
                         splash(&grid, &mut hits, end, stats.splash, stats.damage * 0.5, Some(player.id), None);
                     }
@@ -394,7 +394,7 @@ pub fn fire_weapons(
                             for body in targets.iter().filter(|b| b.team != player.team && Some(b.entity) != body.map(|h| h.2)) {
                                 let distance = body.chest().distance(end_at);
                                 if distance < stats.splash {
-                                    struck.push((body.entity, stats.damage * 0.4 * (1.0 - distance / stats.splash), me, 0.0));
+                                    struck.push((body.entity, stats.damage * 0.4 * (1.0 - distance / stats.splash), me, 0.0, false));
                                 }
                             }
                         }
@@ -412,7 +412,7 @@ pub fn fire_weapons(
         }
     }
 
-    for (victim, damage, attacker, burn) in struck {
+    for (victim, damage, attacker, burn, head) in struck {
         let attacker = &bodies[attacker];
         if let Ok((_, mut player, _, _, _, mut health, _)) = players.get_mut(victim) {
             if burn > 0.0 {
@@ -420,7 +420,9 @@ pub fn fire_weapons(
                 player.burn_time = BURN_SECONDS;
                 player.burn_by = Some(attacker.id);
             }
+            player.last_hit_head = head;
             damage_player(&mut health, &mut player, damage, Some((&attacker.name, attacker.team, attacker.id)), &mut state, &mut fx);
+            player.last_hit_head = false;
         }
     }
 }

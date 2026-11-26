@@ -488,3 +488,56 @@ fn a_friend_joins_with_the_code_from_the_lobby() {
         assert!(started.elapsed() < Duration::from_secs(20), "never joined by code: {:?}", client.world().resource::<net::JoinStatus>());
     }
 }
+
+#[test]
+fn killstreaks_are_earned_and_called_in() {
+    use oz_sim::killstreak::{Airstrike, Drone, reward};
+    let mut app = app();
+    let mut rules = deathmatch_rules(21);
+    rules.team_size = 2;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    // Five kills in a row: UAV at three, airstrike at five.
+    for _ in 0..5 {
+        app.world_mut().resource_mut::<MatchState>().credits.push(0);
+        app.update();
+    }
+    let me = |app: &mut App| app.world_mut().query_filtered::<&Player, With<LocalPlayer>>().single(app.world()).unwrap().clone();
+    assert_eq!(me(&mut app).streak, 5);
+    assert_eq!(me(&mut app).rewards, reward::UAV | reward::AIRSTRIKE);
+
+    let call = |app: &mut App| {
+        app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::UseStreak });
+        app.update();
+    };
+    call(&mut app);
+    assert!(app.world().resource::<MatchState>().uav[0] > 25.0, "the UAV did not go up");
+    call(&mut app);
+    assert_eq!(app.world_mut().query::<&Airstrike>().iter(app.world()).count(), 1);
+    assert_eq!(me(&mut app).rewards, 0);
+    // The bombs fall and the strike is over.
+    for _ in 0..(4.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(app.world_mut().query::<&Airstrike>().iter(app.world()).count(), 0);
+
+    // Two more kills: the drone.
+    for _ in 0..2 {
+        app.world_mut().resource_mut::<MatchState>().credits.push(0);
+        app.update();
+    }
+    call(&mut app);
+    assert_eq!(app.world_mut().query::<&Drone>().iter(app.world()).count(), 1);
+    // Dying resets the streak but not what was earned.
+    {
+        let mut query = app.world_mut().query_filtered::<(&mut Health, &mut Player), With<LocalPlayer>>();
+        let (mut health, mut player) = query.single_mut(app.world_mut()).unwrap();
+        player.rewards = reward::UAV;
+        health.hp = 0.0;
+        player.streak = 0;
+    }
+    assert_eq!(me(&mut app).rewards, reward::UAV);
+}

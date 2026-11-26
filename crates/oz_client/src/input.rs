@@ -10,8 +10,8 @@
 //! | Jump / sprint   | Space / Shift           | A / click left stick        |
 //! | Crouch / prone  | C or Ctrl / Z           | B tap / B hold              |
 //! | Hold breath     | Shift while scoped      | click left stick while scoped |
-//! | Weapons         | 1-9, wheel              | Y next, LB previous         |
-//! | Lean            | hold Q / E              | D-pad left / right (toggle) |
+//! | Weapons         | 1-9, wheel              | Y                           |
+//! | Take cover      | Q (near a wall)         | LB                          |
 //! | Gear            | G                       | RB                          |
 //! | Inspect weapon  | I                       | D-pad up                    |
 //! | Class / scores  | L / hold Tab            | D-pad down / hold Back      |
@@ -71,10 +71,10 @@ pub struct Controls {
     pub scoreboard: bool,
     /// Open text chat.
     pub chat: bool,
-    /// Leaning: -1 left, 1 right (keyboard: held).
-    pub lean: i8,
-    /// Gamepad lean toggles (D-pad left / right) this frame.
-    pub lean_toggle: i8,
+    /// Take or leave cover this frame.
+    pub cover: bool,
+    /// Call in a killstreak reward this frame.
+    pub killstreak: bool,
     pub weapon_step: i32,
     pub weapon_slot: Option<u8>,
     pub pause: bool,
@@ -87,12 +87,16 @@ pub struct Controls {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReadDevices;
 
+/// Label for the system that turns controls into the local `PlayerInput`.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DrivePlayer;
+
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Controls>()
-            .add_systems(Update, (read_devices.in_set(ReadDevices), grab_cursor, drive_player.run_if(in_state(MatchPhase::Active))).chain().in_set(ClientSet::Input));
+            .add_systems(Update, (read_devices.in_set(ReadDevices), grab_cursor, drive_player.in_set(DrivePlayer).run_if(in_state(MatchPhase::Active))).chain().in_set(ClientSet::Input));
     }
 }
 
@@ -141,8 +145,8 @@ fn read_devices(
     c.loadout = hit(Action::Loadout);
     c.scoreboard = down(Action::Scoreboard);
     c.chat = hit(Action::Chat);
-    // Hold to lean, like the old tactical shooters.
-    c.lean = down(Action::LeanRight) as i8 - down(Action::LeanLeft) as i8;
+    c.cover = hit(Action::Cover);
+    c.killstreak = hit(Action::Killstreak);
     c.pause = tap(KeyCode::Escape);
     c.weapon_step = if scroll.delta.y > 0.0 { -1 } else if scroll.delta.y < 0.0 { 1 } else { 0 };
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
@@ -188,11 +192,12 @@ fn read_devices(
         c.sprint |= held(GamepadButton::LeftThumb);
         c.gear |= held(GamepadButton::RightTrigger);
         c.inspect |= hit(GamepadButton::DPadUp);
-        c.lean_toggle += hit(GamepadButton::DPadRight) as i8 - hit(GamepadButton::DPadLeft) as i8;
+        c.cover |= hit(GamepadButton::LeftTrigger);
+        c.killstreak |= hit(GamepadButton::RightThumb);
         c.loadout |= hit(GamepadButton::DPadDown);
         c.scoreboard |= held(GamepadButton::Select);
         c.pause |= hit(GamepadButton::Start);
-        c.weapon_step += hit(GamepadButton::North) as i32 - hit(GamepadButton::LeftTrigger) as i32;
+        c.weapon_step += hit(GamepadButton::North) as i32;
         // B: tap to crouch, hold to go prone.
         if held(GamepadButton::East) {
             *crouch_hold += time.delta_secs();
@@ -245,8 +250,6 @@ struct Body {
     sway_time: f32,
     sway: Vec2,
     breath: f32,
-    /// Gamepad lean, toggled with the D-pad.
-    pad_lean: i8,
 }
 
 /// Turns [`Controls`] into the local player's [`PlayerInput`].
@@ -291,15 +294,8 @@ fn drive_player(
     }
     input.stance = body.stance;
 
-    // Lean: held keys, or a D-pad toggle (press the same side again to stand up straight).
-    if controls.lean_toggle != 0 {
-        body.pad_lean = if body.pad_lean == controls.lean_toggle { 0 } else { controls.lean_toggle };
-    }
-    let sprinting = controls.sprint && controls.movement.y > 0.3 && !controls.aim;
-    if sprinting {
-        body.pad_lean = 0;
-    }
-    input.lean = if sprinting || body.stance == stance::PRONE { 0 } else if controls.lean != 0 { controls.lean } else { body.pad_lean };
+    // Leaning out is cover's job (see `cover`).
+    input.lean = 0;
 
     input.movement = controls.movement;
     let mut look = controls.look;

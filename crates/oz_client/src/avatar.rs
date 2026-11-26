@@ -100,13 +100,26 @@ pub struct Rig {
 #[derive(Component)]
 pub struct PlayerRobot;
 
+/// The local player's own body, seen only in third person.
+#[derive(Component)]
+pub struct OwnRobot;
+
+fn show_own_robot(view: Res<crate::view::ViewState>, mut robot: Query<&mut Visibility, With<OwnRobot>>) {
+    let wanted = if view.third > 0.4 { Visibility::Inherited } else { Visibility::Hidden };
+    for mut visibility in &mut robot {
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
+}
+
 pub struct AvatarPlugin;
 
 impl Plugin for AvatarPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GunCache>().add_systems(Startup, bake_robots).add_systems(
             Update,
-            ((attach_to_players, pose_players, react_to_shots, hold_weapons).run_if(in_state(MatchPhase::Active)), animate_rigs).chain().in_set(ClientSet::Present),
+            ((attach_to_players, pose_players, react_to_shots, hold_weapons, show_own_robot).run_if(in_state(MatchPhase::Active)), animate_rigs).chain().in_set(ClientSet::Present),
         );
     }
 }
@@ -318,15 +331,19 @@ fn attach_to_players(
     parts: Res<RobotParts>,
     mut cache: ResMut<GunCache>,
     content: Res<Content>,
-    added: Query<(Entity, &Player, &Transform), (Added<Player>, Without<LocalPlayer>)>,
+    added: Query<(Entity, &Player, &Transform, Has<LocalPlayer>), Added<Player>>,
 ) {
     if content.is_added() {
         cache.clear();
     }
-    for (entity, player, transform) in &added {
+    for (entity, player, transform, local) in &added {
         let mut rig = spawn_robot(&mut commands, &art, &parts, entity, player.team, None);
         rig.last_pos = transform.translation;
         commands.entity(entity).insert((rig, Pose::default(), PlayerRobot));
+        if local {
+            // Your own robot only shows when the camera is outside your head (cover).
+            commands.entity(entity).insert((OwnRobot, Visibility::Hidden));
+        }
     }
 }
 
@@ -453,8 +470,8 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
 
         // Upper body: lean into the run, aim where the player looks.
         let prone = pose.stance == stance::PRONE && !pose.dead;
-        // Leaning tips the whole upper body sideways from the hips.
-        let roll = Quat::from_rotation_z(-pose.lean * 0.55);
+        // Peeking out of cover tips the upper body sideways from the hips.
+        let roll = Quat::from_rotation_z(-pose.lean * 0.3);
         set(&mut transforms, rig.torso, Vec3::Y * 0.06, roll * rot(lean) * Quat::from_rotation_y(swing * 0.08 * k.min(1.0)), blend);
         let carry = if pose.sprinting && !pose.aiming { -0.75 } else if pose.reloading { -0.45 } else { 0.0 };
         let correction = if prone { FRAC_PI_2 } else { -lean };

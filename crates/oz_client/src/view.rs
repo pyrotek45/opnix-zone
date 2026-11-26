@@ -88,9 +88,12 @@ pub struct ViewState {
     shown: Option<(u8, [u8; SLOT_COUNT])>,
     /// Smoothed eye height (crouching and going prone glide).
     eye: f32,
-    /// Smoothed lean: head offset and roll.
+    /// Smoothed peek offset out of cover.
     lean: Vec3,
-    lean_roll: f32,
+    /// 0 = first person, 1 = over the shoulder (in cover).
+    pub third: f32,
+    /// A quick zoom-in on a kill, decaying from 1.
+    pub punch: f32,
     /// 1 right after a shot, decaying over the weapon's cycle time (bolt / pump / slide animation).
     cycle: f32,
     /// Seconds left of the weapon inspect animation.
@@ -220,7 +223,7 @@ fn follow_player(
     mut view: ResMut<ViewState>,
     players: Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health, &Player), With<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<LocalPlayer>)>,
-    (role, prediction, settings, statics): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>, Res<Statics>),
+    (role, prediction, settings, statics, cover): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>, Res<Statics>, Res<crate::cover::Cover>),
 ) {
     let dt = time.delta_secs().min(0.05);
     let (Ok((player, input, arsenal, mover, health, me)), Ok((mut camera, mut projection))) = (players.single(), cameras.single_mut()) else { return };
@@ -262,6 +265,7 @@ fn follow_player(
     view.land = (view.land - dt * 5.0).max(0.0);
     view.swap = (view.swap - dt * 5.0).max(0.0);
     view.kick = (view.kick - dt * 9.0 * view.kick.max(0.3)).max(0.0);
+    view.punch = (view.punch - dt * 5.0).max(0.0);
     view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).clamp(0.0, 2.5);
     view.sway = (view.sway + controls.look * 0.6).clamp_length_max(0.06) * (-dt * 12.0).exp();
     let sprinting = input.held(buttons::SPRINT) && mover.speed > 6.5;
@@ -302,7 +306,7 @@ fn follow_player(
     if let Projection::Perspective(perspective) = &mut *projection {
         let base = settings.fov;
         let ads_fov = ads_fov * base / BASE_FOV;
-        perspective.fov = (base + (ads_fov - base) * view.ads + 5.0 * view.sprint * (1.0 - view.ads) + view.kick * 0.9).to_radians();
+        perspective.fov = (base + (ads_fov - base) * view.ads + 5.0 * view.sprint * (1.0 - view.ads) + view.kick * 0.9 - view.punch * 4.0).to_radians();
     }
 
     let bob = Vec3::new(0.0, (view.bob * 2.0).sin() * 0.035 * walking * (1.0 - view.ads), 0.0);
@@ -311,18 +315,29 @@ fn follow_player(
         view.eye = wanted_eye;
     }
     view.eye += (wanted_eye - view.eye) * (1.0 - (-dt * 10.0).exp());
-    // Leaning glides the head out from cover and tilts the view.
+    // Peeking out of cover glides the head out past the corner.
     let lean_k = 1.0 - (-dt * 12.0).exp();
     let wanted_lean = if health.alive() { oz_sim::player::lean_offset(&statics, player.translation, input) } else { Vec3::ZERO };
-    let wanted_roll = if wanted_lean == Vec3::ZERO { 0.0 } else { -(input.lean as f32) * oz_sim::player::LEAN_ROLL * (wanted_lean.length() / oz_sim::player::LEAN_REACH).min(1.0) };
-    let (lean, lean_roll) = (view.lean, view.lean_roll);
+    let lean = view.lean;
     view.lean = lean + (wanted_lean - lean) * lean_k;
-    view.lean_roll = lean_roll + (wanted_roll - lean_roll) * lean_k;
-    let (eye, roll) = (view.eye, if health.alive() { view.lean_roll } else { 0.5 });
+    let wanted_third = if cover.third_person() && health.alive() { 1.0 } else { 0.0 };
+    view.third += (wanted_third - view.third) * (1.0 - (-dt * 9.0).exp());
+    let (eye, roll) = (view.eye, if health.alive() { 0.0 } else { 0.5 });
     let t = time.elapsed_secs();
     let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
-    camera.translation = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob + view.lean;
+    let head = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob + view.lean;
     camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x, input.pitch + view.recoil * 0.012 + shake.y, roll + shake.z);
+    // In cover the camera pulls back over the right shoulder, stopping short of walls.
+    let shoulder = camera.rotation * Vec3::new(0.65, 0.35, 2.6) * view.third;
+    let length = shoulder.length();
+    let pulled = if length > 1e-3 {
+        let dir = shoulder / length;
+        let reach = statics.raycast(head, dir, length + 0.3).map_or(length, |(d, _)| (d - 0.3).max(0.0)).min(length);
+        dir * reach
+    } else {
+        Vec3::ZERO
+    };
+    camera.translation = head + pulled;
 }
 
 /// The weapon to show in the hands: the one the player asked for if they own it
@@ -391,7 +406,7 @@ fn viewmodel(
     }
 
     // A magnified scope fills the view: hide the gun behind the overlay.
-    *visibility = if health.alive() && view.scoped < 0.5 && !spectate.enabled { Visibility::Inherited } else { Visibility::Hidden };
+    *visibility = if health.alive() && view.scoped < 0.5 && !spectate.enabled && view.third < 0.4 { Visibility::Inherited } else { Visibility::Hidden };
     let t = time.elapsed_secs();
     let walking = (mover.speed / 5.4).min(1.6) * (1.0 - view.ads * 0.94);
 

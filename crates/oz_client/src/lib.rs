@@ -22,6 +22,7 @@
 pub mod actors;
 pub mod art;
 pub mod chat;
+pub mod cover;
 pub mod avatar;
 pub mod bindings;
 #[cfg(feature = "audio")]
@@ -30,6 +31,7 @@ pub mod fx;
 pub mod gunsmith;
 pub mod hud;
 pub mod input;
+pub mod juice;
 pub mod launch;
 pub mod loadout;
 pub mod lobby;
@@ -86,6 +88,7 @@ impl Plugin for ClientPlugin {
             input::InputPlugin,
             bindings::BindingsPlugin,
             reconnect::ReconnectPlugin,
+            cover::CoverPlugin,
             art::ArtPlugin,
             view::ViewPlugin,
             scene::ScenePlugin,
@@ -97,7 +100,7 @@ impl Plugin for ClientPlugin {
             hud::HudPlugin,
             loadout::LoadoutPlugin,
         ))
-        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin,
+        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin,
         ));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);

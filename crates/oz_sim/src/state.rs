@@ -91,6 +91,8 @@ pub struct MatchState {
     pub team_size: u8,
     /// Seconds until the lobby launches the match; 0 = not counting down.
     pub countdown: f32,
+    /// Seconds of recon UAV left per team: everyone on the other team shows on radar.
+    pub uav: [f32; 2],
     /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
     #[serde(skip)]
     pub credits: Vec<u8>,
@@ -145,6 +147,8 @@ pub enum PlayerCommand {
     Lobby(LobbyAction),
     /// A line of text chat.
     Chat(String),
+    /// Versus: call in the oldest earned killstreak reward.
+    UseStreak,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,7 +174,13 @@ pub enum FxEvent {
     /// `local` marks a shot the client predicted itself; the host never sets it.
     Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool, tracer: Paint, quiet: bool, local: bool },
     /// `victim` was taken down by `by` (a player id).
-    Killed { victim: u8, by: u8 },
+    Killed { victim: u8, by: u8, head: bool },
+    /// `player` reached a killstreak and earned `reward` (see `killstreak::reward`).
+    Streak { player: u8, reward: u8 },
+    /// Someone on `team` called in `reward`.
+    StreakUsed { name: String, team: u8, reward: u8 },
+    /// A jet screams over the map (airstrike).
+    Flyby { from: Vec3, to: Vec3 },
     /// A smoke cloud appeared (clients build their own cloud from this).
     Smoke { at: Vec3, radius: f32, seconds: f32 },
     /// A flashbang went off; each machine blinds its own player if they saw it.

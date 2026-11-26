@@ -228,6 +228,9 @@ pub struct Private {
     pub respawn: f32,
     pub team: u8,
     pub gear_left: u8,
+    /// Killstreak progress and earned rewards.
+    pub streak: u16,
+    pub rewards: u8,
     /// Set while dead so the client lands on the respawn point.
     pub teleport: Option<Vec3>,
 }
@@ -731,7 +734,7 @@ pub fn host_send(
     state: Res<MatchState>,
     players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput)>,
     enemies: Query<(&NetId, &Enemy, &Transform, &Health)>,
-    (shots, mines): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>),
+    (shots, mines, drones): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>, Query<(&NetId, &crate::killstreak::Drone, &Transform)>),
     structures: Query<(&NetId, &Structure, &Transform, &Health)>,
     ores: Query<(&NetId, &OreNode, &Transform)>,
     changed: Query<(), Or<(Added<Structure>, Added<OreNode>)>>,
@@ -781,6 +784,9 @@ pub fn host_send(
         // aux = owner + 1, so clients can hide copies of projectiles they already predicted.
         entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: shot.owner.map_or(0, |o| o.saturating_add(1)), flags: 0 });
     }
+    for (id, _, transform) in &drones {
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Drone as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: 0, flags: 0 });
+    }
     // Mines travel as projectiles that never move.
     for (id, _, transform) in &mines {
         entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Mine as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: 255, aux: 0, flags: 0 });
@@ -801,7 +807,7 @@ pub fn host_send(
         if let Some((_, player, transform, health, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == id) {
             // Just-spawned players are also pinned so they start at their base.
             let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4).then_some(transform.translation);
-            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, teleport }));
+            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, streak: player.streak, rewards: player.rewards, teleport }));
         }
     }    // Out now rather than on next frame's poll.
     link.host.flush();
@@ -922,6 +928,8 @@ pub fn client_receive(
                     player.respawn = private.respawn;
                     player.team = private.team;
                     player.gear_left = private.gear_left;
+                    player.streak = private.streak;
+                    player.rewards = private.rewards;
                     // While dead the host owns our position, so we wake up at the spawn point.
                     if let Some(at) = private.teleport {
                         transform.translation = at;

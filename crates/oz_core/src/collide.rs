@@ -161,6 +161,11 @@ impl StaticWorld {
         hit
     }
 
+    /// A box by index (as returned by [`StaticWorld::raycast`]).
+    pub fn aabb(&self, index: usize) -> Option<&Aabb> {
+        self.boxes.get(index)
+    }
+
     /// First box along a ray: (distance, box index).
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, usize)> {
         let mut best: Option<(f32, usize)> = None;

@@ -26,6 +26,7 @@
 pub mod bots;
 pub mod combat;
 pub mod enemy;
+pub mod killstreak;
 pub mod lagcomp;
 pub mod nav;
 pub mod net;
@@ -102,7 +103,7 @@ impl Plugin for SimPlugin {
             .configure_sets(Update, (SimSet::Orders, SimSet::Logic, SimSet::Resolve).run_if(in_state(Active)).run_if(authority))
             .add_systems(Update, (net::poll_joining, session::start_pending_match).chain().before(SimSet::Receive))
             .add_systems(Update, (net::host_receive, net::client_receive).in_set(SimSet::Receive).run_if(in_state(Active)))
-            .add_systems(Update, orders::process_commands.in_set(SimSet::Orders))
+            .add_systems(Update, (orders::process_commands, killstreak::use_streaks).chain().in_set(SimSet::Orders))
             .add_systems(Update, (versus::run_versus, versus::fill_teams).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
             .add_systems(
                 Update,
@@ -118,6 +119,8 @@ impl Plugin for SimPlugin {
                     structures::run_structures,
                     combat::fly_projectiles,
                     combat::run_mines,
+                    killstreak::run_streaks,
+                    killstreak::bots_call_in,
                 )
                     .chain()
                     .in_set(SimSet::Logic),

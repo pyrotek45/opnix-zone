@@ -141,15 +141,17 @@ pub enum ShotLook {
     Canister = 5,
     /// A placed proximity mine.
     Mine = 6,
+    /// A killstreak attack drone.
+    Drone = 7,
 }
 
 impl ShotLook {
     pub fn from_index(i: u8) -> Self {
-        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine][(i as usize).min(6)]
+        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine, ShotLook::Drone][(i as usize).min(7)]
     }
 
     pub fn paint(self) -> Paint {
-        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red][self as usize]
+        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red, Paint::Dark][self as usize]
     }
 
     /// Size of the projectile's mesh.
@@ -159,6 +161,7 @@ impl ShotLook {
             ShotLook::Knife => [0.04, 0.05, 0.32],
             ShotLook::Canister => [0.1, 0.1, 0.2],
             ShotLook::Mine => [0.22, 0.06, 0.22],
+            ShotLook::Drone => [0.7, 0.16, 0.7],
             _ => [0.16, 0.16, 0.34],
         }
     }

@@ -236,6 +236,8 @@ pub fn process_commands(
             }
             // Mode actions belong to the mode's director, which reads the same events.
             PlayerCommand::Mode(_) => continue,
+            // Handled by `killstreak::use_streaks`.
+            PlayerCommand::UseStreak => continue,
         };
         fx.write(FxEvent::Cue { to: id, sfx: Sfx::Buy });
         if let Some(text) = done {

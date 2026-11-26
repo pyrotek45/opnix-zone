@@ -37,6 +37,18 @@ pub enum Sfx {
     Swap,
     /// A distant machine call in the dark.
     Growl,
+    /// Headshot kill: a bright metallic ding.
+    Headshot,
+    /// Killstreak earned: a rising fanfare.
+    Streak,
+    /// Medal popup (double kill, revenge...): a short chime.
+    Medal,
+    /// A jet screaming overhead (airstrike).
+    Jet,
+    /// Low health.
+    Heartbeat,
+    /// Recon drone / UAV online.
+    Radar,
     /// Loops.
     Surf,
     NightDrone,
@@ -122,6 +134,36 @@ pub fn render(sfx: Sfx) -> Vec<f32> {
         Sfx::Kill => {
             add(Voice { seconds: 0.08, freq: (880.0, 880.0), square: true, decay: 5.0, gain: 0.3, ..B }, 0.0);
             add(Voice { seconds: 0.14, freq: (1320.0, 1320.0), square: true, decay: 5.0, gain: 0.3, ..B }, 0.07);
+        }
+        Sfx::Headshot => {
+            add(Voice { seconds: 0.35, freq: (2350.0, 2300.0), tone: 0.6, decay: 7.0, gain: 0.35, ..B }, 0.0);
+            add(Voice { seconds: 0.35, freq: (3525.0, 3500.0), tone: 0.3, decay: 8.0, gain: 0.25, ..B }, 0.0);
+            add(Voice { seconds: 0.05, freq: (900.0, 600.0), tone: 0.2, noise: 0.6, bright: 0.9, decay: 10.0, gain: 0.3, ..B }, 0.0);
+        }
+        Sfx::Streak => {
+            for (i, f) in [392.0, 523.0, 659.0, 784.0, 1046.0].into_iter().enumerate() {
+                add(Voice { seconds: 0.22, freq: (f, f), square: true, decay: 3.0, gain: 0.22, ..B }, i as f32 * 0.07);
+            }
+            add(Voice { seconds: 0.7, freq: (1046.0, 1046.0), square: true, decay: 2.0, attack: 0.02, gain: 0.2, ..B }, 0.35);
+            add(Voice { seconds: 0.7, freq: (523.0, 523.0), decay: 2.0, attack: 0.02, gain: 0.25, ..B }, 0.35);
+        }
+        Sfx::Medal => {
+            add(Voice { seconds: 0.12, freq: (988.0, 988.0), square: true, decay: 4.0, gain: 0.22, ..B }, 0.0);
+            add(Voice { seconds: 0.25, freq: (1480.0, 1480.0), square: true, decay: 4.0, gain: 0.22, ..B }, 0.08);
+        }
+        Sfx::Jet => {
+            // Doppler: a roar that climbs, peaks overhead and falls away.
+            add(Voice { seconds: 2.4, freq: (900.0, 220.0), tone: 0.15, noise: 1.0, bright: 0.35, decay: 0.6, attack: 0.9, gain: 0.7, ..B }, 0.0);
+            add(Voice { seconds: 2.0, freq: (2400.0, 500.0), tone: 0.12, noise: 0.4, bright: 0.8, decay: 0.8, attack: 0.8, gain: 0.3, ..B }, 0.15);
+        }
+        Sfx::Heartbeat => {
+            add(Voice { seconds: 0.14, freq: (70.0, 45.0), decay: 6.0, gain: 0.7, ..B }, 0.0);
+            add(Voice { seconds: 0.16, freq: (62.0, 40.0), decay: 6.0, gain: 0.55, ..B }, 0.2);
+        }
+        Sfx::Radar => {
+            for i in 0..3 {
+                add(Voice { seconds: 0.18, freq: (1200.0, 1600.0), tone: 0.6, decay: 4.0, gain: 0.22, ..B }, i as f32 * 0.22);
+            }
         }
         Sfx::Explosion => {
             add(Voice { seconds: 0.9, freq: (110.0, 28.0), noise: 1.3, bright: 0.12, decay: 4.5, gain: 1.0, ..B }, 0.0);
@@ -278,7 +320,7 @@ mod tests {
     fn every_sound_renders_audibly() {
         let mut all: Vec<Sfx> = (0..9).map(Sfx::Shot).collect();
         all.extend([Sfx::Reload, Sfx::DryFire, Sfx::Hit, Sfx::Kill, Sfx::Explosion, Sfx::EnemyShot, Sfx::EnemyDeath, Sfx::Hurt, Sfx::UiMove,
-            Sfx::UiAccept, Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Land, Sfx::Swap, Sfx::Growl, Sfx::Surf, Sfx::NightDrone]);
+            Sfx::UiAccept, Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Land, Sfx::Swap, Sfx::Growl, Sfx::Surf, Sfx::NightDrone, Sfx::Headshot, Sfx::Streak, Sfx::Medal, Sfx::Jet, Sfx::Heartbeat, Sfx::Radar]);
         for sfx in all {
             let samples = render(sfx);
             let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));

@@ -279,11 +279,11 @@ pub fn blast_scale(content: &Content, player: &Player) -> f32 {
 
 /// Damages players caught in a blast (versus), with falloff and Flak Jacket.
 #[allow(clippy::too_many_arguments)]
-pub fn blast_players(
+pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
     content: &Content,
     state: &mut MatchState,
     fx: &mut EventWriter<FxEvent>,
-    players: &mut Query<(&Transform, &mut Health, &mut Player), (Without<Projectile>, Without<Structure>)>,
+    players: &mut Query<(&Transform, &mut Health, &mut Player), F>,
     at: Vec3,
     radius: f32,
     damage: f32,

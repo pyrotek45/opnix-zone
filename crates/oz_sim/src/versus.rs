@@ -23,10 +23,24 @@ pub fn versus(rules: Option<Res<Rules>>) -> bool {
 }
 
 /// Authority: rebuilds the roster and hands out kill credits. Runs in every mode.
-pub fn update_roster(content: Res<Content>, mut state: ResMut<MatchState>, mut players: Query<(&mut Player, &Health, &PlayerInput, &mut Arsenal, Has<Bot>)>) {
+pub fn update_roster(
+    content: Res<Content>,
+    rules: Option<Res<Rules>>,
+    mut state: ResMut<MatchState>,
+    mut players: Query<(&mut Player, &Health, &PlayerInput, &mut Arsenal, Has<Bot>)>,
+    mut fx: EventWriter<FxEvent>,
+) {
+    let pvp = rules.is_some_and(|r| r.pvp);
     for id in std::mem::take(&mut state.credits) {
         if let Some((mut player, _, _, mut arsenal, _)) = players.iter_mut().find(|(p, ..)| p.id == id) {
             player.kills += 1;
+            if pvp {
+                player.streak += 1;
+                if let Some(def) = crate::killstreak::STREAKS.iter().find(|s| s.kills == player.streak) {
+                    player.rewards |= def.bit;
+                    fx.write(FxEvent::Streak { player: id, reward: def.bit });
+                }
+            }
             // Scavengers pull spare rounds off whoever they drop.
             if matches!(crate::player::perk(&content, &player), Some(oz_core::content::PerkEffect::Scavenger)) {
                 let index = arsenal.current as usize;

@@ -93,14 +93,14 @@ const KEYS: &[(KeyCode, &str)] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Forward, Back, Left, Right, Fire, Aim, Reload, Interact, Jump, Sprint, Crouch, Prone,
-    LeanLeft, LeanRight, Gear, Inspect, Loadout, Scoreboard, Chat,
+    Cover, Gear, Inspect, Loadout, Scoreboard, Chat, Killstreak,
 }
 
 impl Action {
     pub const ALL: [Action; 19] = [
         Action::Forward, Action::Back, Action::Left, Action::Right, Action::Fire, Action::Aim, Action::Reload, Action::Interact,
-        Action::Jump, Action::Sprint, Action::Crouch, Action::Prone, Action::LeanLeft, Action::LeanRight, Action::Gear,
-        Action::Inspect, Action::Loadout, Action::Scoreboard, Action::Chat,
+        Action::Jump, Action::Sprint, Action::Crouch, Action::Prone, Action::Cover, Action::Gear,
+        Action::Inspect, Action::Loadout, Action::Scoreboard, Action::Chat, Action::Killstreak,
     ];
 
     /// Shown on the controls screen.
@@ -109,7 +109,7 @@ impl Action {
             Action::Forward => "MOVE FORWARD", Action::Back => "MOVE BACK", Action::Left => "MOVE LEFT", Action::Right => "MOVE RIGHT",
             Action::Fire => "FIRE", Action::Aim => "AIM", Action::Reload => "RELOAD", Action::Interact => "USE",
             Action::Jump => "JUMP", Action::Sprint => "SPRINT / BREATH", Action::Crouch => "CROUCH", Action::Prone => "PRONE",
-            Action::LeanLeft => "LEAN LEFT", Action::LeanRight => "LEAN RIGHT", Action::Gear => "THROW GEAR", Action::Inspect => "INSPECT WEAPON",
+            Action::Cover => "TAKE COVER", Action::Killstreak => "KILLSTREAK", Action::Gear => "THROW GEAR", Action::Inspect => "INSPECT WEAPON",
             Action::Loadout => "CHANGE CLASS", Action::Scoreboard => "SCOREBOARD", Action::Chat => "CHAT",
         }
     }
@@ -120,7 +120,7 @@ impl Action {
             Action::Forward => "forward", Action::Back => "back", Action::Left => "left", Action::Right => "right",
             Action::Fire => "fire", Action::Aim => "aim", Action::Reload => "reload", Action::Interact => "use",
             Action::Jump => "jump", Action::Sprint => "sprint", Action::Crouch => "crouch", Action::Prone => "prone",
-            Action::LeanLeft => "lean_left", Action::LeanRight => "lean_right", Action::Gear => "gear", Action::Inspect => "inspect",
+            Action::Cover => "cover", Action::Killstreak => "killstreak", Action::Gear => "gear", Action::Inspect => "inspect",
             Action::Loadout => "loadout", Action::Scoreboard => "scoreboard", Action::Chat => "chat",
         }
     }
@@ -131,8 +131,8 @@ impl Action {
             Action::Forward => Bind::Key(K::KeyW), Action::Back => Bind::Key(K::KeyS), Action::Left => Bind::Key(K::KeyA), Action::Right => Bind::Key(K::KeyD),
             Action::Fire => Bind::Mouse(MouseButton::Left), Action::Aim => Bind::Mouse(MouseButton::Right), Action::Reload => Bind::Key(K::KeyR),
             Action::Interact => Bind::Key(K::KeyF), Action::Jump => Bind::Key(K::Space), Action::Sprint => Bind::Key(K::ShiftLeft),
-            Action::Crouch => Bind::Key(K::KeyC), Action::Prone => Bind::Key(K::KeyZ), Action::LeanLeft => Bind::Key(K::KeyQ),
-            Action::LeanRight => Bind::Key(K::KeyE), Action::Gear => Bind::Key(K::KeyG), Action::Inspect => Bind::Key(K::KeyI),
+            Action::Crouch => Bind::Key(K::KeyC), Action::Prone => Bind::Key(K::KeyZ), Action::Cover => Bind::Key(K::KeyQ),
+            Action::Killstreak => Bind::Key(K::KeyX), Action::Gear => Bind::Key(K::KeyG), Action::Inspect => Bind::Key(K::KeyI),
             Action::Loadout => Bind::Key(K::KeyL), Action::Scoreboard => Bind::Key(K::Tab), Action::Chat => Bind::Key(K::KeyT),
         }
     }
