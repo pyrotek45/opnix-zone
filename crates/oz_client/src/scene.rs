@@ -235,21 +235,28 @@ fn day_night(
     mut suns: Query<&mut DirectionalLight, With<Sun>>,
     mut cameras: Query<(&mut Skybox, &mut DistanceFog), With<WorldCamera>>,
     mut lamps: Query<&mut SpotLight, With<Flashlight>>,
-    mut last: Local<f32>,
+    mut last: Local<(f32, Option<oz_core::worldgen::Weather>, bool)>,
+    night_vision: Res<crate::optics::NightVision>,
 ) {
+    let last = &mut *last;
+    let nv_changed = last.2 != night_vision.on;
+    last.2 = night_vision.on;
+    let last = (&mut last.0, &mut last.1);
     let day = state.daylight.clamp(0.0, 1.0);
     // Weather: grey skies dim the sun and lift the ambient; fog closes in.
-    let weather = rules.recipe.weather;
+    let weather = state.weather;
+    let _ = &rules;
     let (sun_scale, fog_scale) = match weather {
         oz_core::worldgen::Weather::Clear => (1.0, 1.0),
         oz_core::worldgen::Weather::Overcast => (0.3, 0.75),
         oz_core::worldgen::Weather::Rain => (0.12, 0.5),
         oz_core::worldgen::Weather::Fog => (0.35, 0.28),
     };
-    if (day - *last).abs() < 0.002 && !settings.is_changed() && !sky.is_added() {
+    if (day - *last.0).abs() < 0.002 && *last.1 == Some(state.weather) && !nv_changed && !settings.is_changed() && !sky.is_added() {
         return;
     }
-    *last = day;
+    *last.0 = day;
+    *last.1 = Some(state.weather);
     let mix = |night: Vec3, noon: Vec3| night.lerp(noon, day);
 
     if let Ok(mut sun) = suns.single_mut() {
@@ -261,6 +268,11 @@ fn day_night(
     let ambient_color = mix(Vec3::new(0.35, 0.45, 0.85), if sun_scale < 1.0 { Vec3::new(0.72, 0.76, 0.82) } else { Vec3::new(0.71, 0.82, 1.0) });
     ambient.color = Color::srgb(ambient_color.x, ambient_color.y, ambient_color.z);
     ambient.brightness = (110.0 + 310.0 * day) * (0.75 + sun_scale * 0.25);
+    if night_vision.on {
+        // The visor amplifies every scrap of light, and greens it.
+        ambient.color = Color::srgb(0.5, 1.0, 0.55);
+        ambient.brightness = (ambient.brightness * 6.0).max(1400.0);
+    }
 
     if let Ok((mut skybox, mut fog)) = cameras.single_mut() {
         // Cross-fade through black: dim the day sky, swap, brighten the night sky.

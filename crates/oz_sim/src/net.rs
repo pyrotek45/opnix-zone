@@ -235,6 +235,8 @@ pub struct Private {
     pub rewards: u8,
     /// Limbs shot off.
     pub lost: u8,
+    /// The perk in effect (client effects like thermal need it).
+    pub perk: u8,
     /// Set while dead so the client lands on the respawn point.
     pub teleport: Option<Vec3>,
 }
@@ -811,7 +813,7 @@ pub fn host_send(
         if let Some((_, player, transform, health, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == id) {
             // Just-spawned players are also pinned so they start at their base.
             let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4).then_some(transform.translation);
-            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, streak: player.streak, rewards: player.rewards, lost: player.lost, teleport }));
+            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, streak: player.streak, rewards: player.rewards, lost: player.lost, perk: player.perk, teleport }));
         }
     }    // Out now rather than on next frame's poll.
     link.host.flush();
@@ -936,6 +938,7 @@ pub fn client_receive(
                     player.streak = private.streak;
                     player.rewards = private.rewards;
                     player.lost = private.lost;
+                    player.perk = private.perk;
                     // While dead the host owns our position, so we wake up at the spawn point.
                     if let Some(at) = private.teleport {
                         transform.translation = at;

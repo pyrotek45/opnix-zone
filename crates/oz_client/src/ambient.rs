@@ -29,6 +29,8 @@ struct Flag {
 #[derive(Component)]
 struct Cloud {
     speed: f32,
+    /// Only shown under grey skies.
+    heavy: bool,
 }
 
 #[derive(Component)]
@@ -71,22 +73,20 @@ fn dress_world(mut commands: Commands, map: Res<Map>, rules: Res<Rules>, art: Re
             });
     }
 
-    // Clouds: big flat blocks high up, drifting with the wind.
-    let overcast = matches!(rules.recipe.weather, Weather::Overcast | Weather::Rain);
-    let count = if overcast { 34 } else { 16 };
-    for _ in 0..count {
+    // Clouds: big flat blocks high up, drifting with the wind. Fair-weather ones always,
+    // a heavy grey deck that rolls in when the weather turns.
+    for i in 0..44 {
+        let heavy = i >= 16;
         let at = Vec3::new(rng.range(-220.0, 220.0), rng.range(70.0, 95.0), rng.range(-220.0, 220.0));
         let size = Vec3::new(rng.range(18.0, 45.0), rng.range(3.0, 7.0), rng.range(12.0, 30.0));
-        let paint = if overcast { if rng.chance(0.5) { Paint::Iron } else { Paint::Steel } } else if rng.chance(0.6) { Paint::White } else { Paint::Bone };
-        commands.spawn((MatchEntity, Cloud { speed: rng.range(1.5, 3.5) }, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(at).with_scale(size), NotShadowCaster));
+        let paint = if heavy { if rng.chance(0.5) { Paint::Iron } else { Paint::Steel } } else if rng.chance(0.6) { Paint::White } else { Paint::Bone };
+        commands.spawn((MatchEntity, Cloud { speed: rng.range(1.5, 3.5), heavy }, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(at).with_scale(size), NotShadowCaster, Visibility::Hidden));
     }
 
-    // Rain: a cloud of streaks that follows the camera around.
-    if rules.recipe.weather == Weather::Rain {
-        for _ in 0..RAIN_DROPS {
-            let at = Vec3::new(rng.range(-18.0, 18.0), rng.range(0.0, 22.0), rng.range(-18.0, 18.0));
-            commands.spawn((MatchEntity, RainDrop, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(Paint::Bone)), Transform::from_translation(at).with_scale(Vec3::new(0.03, 0.7, 0.03)), NotShadowCaster));
-        }
+    // Rain: a cloud of streaks that follows the camera around (hidden until it rains).
+    for _ in 0..RAIN_DROPS {
+        let at = Vec3::new(rng.range(-18.0, 18.0), rng.range(0.0, 22.0), rng.range(-18.0, 18.0));
+        commands.spawn((MatchEntity, RainDrop, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(Paint::Bone)), Transform::from_translation(at).with_scale(Vec3::new(0.03, 0.7, 0.03)), NotShadowCaster, Visibility::Hidden));
     }
 }
 
@@ -112,7 +112,7 @@ fn fountain(time: Res<Time>, map: Res<Map>, art: Res<Art>, mut commands: Command
         let angle = (*seed >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
         let out = 0.6 + ((*seed >> 4) & 0xff) as f32 / 255.0 * 0.8;
         let velocity = Vec3::new(angle.cos() * out, 3.4, angle.sin() * out);
-        let paint = if *seed % 3 == 0 { Paint::White } else { Paint::Aether };
+        let paint = if (*seed).is_multiple_of(3) { Paint::White } else { Paint::Aether };
         commands.spawn((MatchEntity, Droplet { velocity, life: 1.6 }, Mesh3d(art.primitive(Shape::Shard)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(top).with_scale(Vec3::splat(0.07)), NotShadowCaster));
         alive += 1;
     }
@@ -128,9 +128,14 @@ fn flags(time: Res<Time>, mut flags: Query<(&mut Transform, &Flag)>) {
     }
 }
 
-fn clouds(time: Res<Time>, mut clouds: Query<(&mut Transform, &Cloud)>) {
+fn clouds(time: Res<Time>, state: Res<MatchState>, mut clouds: Query<(&mut Transform, &Cloud, &mut Visibility)>) {
     let dt = time.delta_secs();
-    for (mut transform, cloud) in &mut clouds {
+    let grey = matches!(state.weather, Weather::Overcast | Weather::Rain);
+    for (mut transform, cloud, mut visibility) in &mut clouds {
+        let wanted = if !cloud.heavy || grey { Visibility::Inherited } else { Visibility::Hidden };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
         transform.translation.x += cloud.speed * dt;
         if transform.translation.x > 230.0 {
             transform.translation.x -= 460.0;
@@ -139,11 +144,19 @@ fn clouds(time: Res<Time>, mut clouds: Query<(&mut Transform, &Cloud)>) {
 }
 
 /// Rain streaks fall around the camera and wrap back to the top.
-fn rain(time: Res<Time>, camera: Query<&Transform, (With<WorldCamera>, Without<RainDrop>)>, mut drops: Query<&mut Transform, With<RainDrop>>) {
+fn rain(time: Res<Time>, state: Res<MatchState>, camera: Query<&Transform, (With<WorldCamera>, Without<RainDrop>)>, mut drops: Query<(&mut Transform, &mut Visibility), With<RainDrop>>) {
     let Ok(camera) = camera.single() else { return };
     let dt = time.delta_secs().min(0.05);
     let wind = Vec3::new(1.5, -19.0, 0.6);
-    for mut transform in &mut drops {
+    let raining = state.weather == Weather::Rain;
+    for (mut transform, mut visibility) in &mut drops {
+        let wanted = if raining { Visibility::Inherited } else { Visibility::Hidden };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+        if !raining {
+            continue;
+        }
         transform.translation += wind * dt;
         // Keep every drop inside a box around the camera.
         let local = transform.translation - camera.translation;

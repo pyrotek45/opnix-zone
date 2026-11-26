@@ -188,6 +188,10 @@ pub enum PerkEffect {
     Handling(f32),
     /// Hip-fire spread multiplier.
     Hipfire(f32),
+    /// Enemies glow hot while you aim, through smoke and darkness.
+    Thermal,
+    /// A night-vision visor you can switch on.
+    NightVision,
 }
 
 #[derive(Clone, Debug)]

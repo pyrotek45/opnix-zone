@@ -236,8 +236,9 @@ fn ambience(
     mut levels: Local<HashMap<Sfx, f32>>,
 ) {
     let playing = *phase.get() == MatchPhase::Active;
-    let day = state.filter(|_| playing).map_or(1.0, |state| state.daylight);
-    let weather = rules.filter(|_| playing).map_or(Weather::Clear, |r| r.recipe.weather);
+    let day = state.as_ref().filter(|_| playing).map_or(1.0, |state| state.daylight);
+    let weather = if playing { state.as_ref().map_or(Weather::Clear, |s| s.weather) } else { Weather::Clear };
+    let _ = &rules;
     let inside = listener.single().ok().zip(statics.as_deref()).is_some_and(|(t, s)| indoors(s, t.translation - Vec3::Y * 1.5));
     let deafened = view.map_or(0.0, |v| v.blind.min(1.0));
     let roof = if inside { 0.35 } else { 1.0 };
@@ -263,8 +264,8 @@ fn ambience(
 }
 
 /// Thunder rolls now and then while it rains.
-fn thunder(time: Res<Time>, rules: Option<Res<Rules>>, phase: Res<State<MatchPhase>>, mut wait: Local<f32>, mut sounds: EventWriter<PlaySfx>, mut seed: Local<u32>) {
-    if *phase.get() != MatchPhase::Active || rules.is_none_or(|r| r.recipe.weather != Weather::Rain) {
+fn thunder(time: Res<Time>, state: Option<Res<MatchState>>, phase: Res<State<MatchPhase>>, mut wait: Local<f32>, mut sounds: EventWriter<PlaySfx>, mut seed: Local<u32>) {
+    if *phase.get() != MatchPhase::Active || state.is_none_or(|s| s.weather != Weather::Rain) {
         return;
     }
     *wait -= time.delta_secs();

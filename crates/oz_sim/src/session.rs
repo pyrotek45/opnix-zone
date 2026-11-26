@@ -185,6 +185,7 @@ pub fn start_pending_match(
         objective_max: rules.objective_hp,
         stock: rules.start_stock,
         upgrades: vec![0; catalog.upgrades.len()],
+        weather: rules.recipe.weather,
         ..default()
     });
     commands.insert_resource(Grid::new(rules.recipe.half_extent));

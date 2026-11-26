@@ -93,6 +93,14 @@ pub struct MatchState {
     pub countdown: f32,
     /// Seconds of recon UAV left per team: everyone on the other team shows on radar.
     pub uav: [f32; 2],
+    /// The weather right now (it can change mid-match).
+    pub weather: oz_core::worldgen::Weather,
+    /// Versus lobby settings. Time: 0 day, 1 dusk, 2 night, 3 day/night cycle.
+    pub time_mode: u8,
+    /// Weather: 0 the map's own, 1-4 a fixed `Weather`, 5 random fronts rolling through.
+    pub weather_mode: u8,
+    /// Seconds into the day/night cycle.
+    pub clock: f32,
     /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
     #[serde(skip)]
     pub credits: Vec<u8>,
@@ -159,6 +167,10 @@ pub enum LobbyAction {
     SwitchTeam,
     /// Host only: change players per team.
     TeamSize(i8),
+    /// Host only: step the time of day setting.
+    TimeOfDay(i8),
+    /// Host only: step the weather setting.
+    Weather(i8),
 }
 
 #[derive(Event, Clone, Debug)]

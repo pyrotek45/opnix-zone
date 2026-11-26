@@ -75,6 +75,8 @@ pub struct Controls {
     pub cover: bool,
     /// Call in a killstreak reward this frame.
     pub killstreak: bool,
+    /// Toggle night vision this frame.
+    pub night_vision: bool,
     pub weapon_step: i32,
     pub weapon_slot: Option<u8>,
     pub pause: bool,
@@ -147,6 +149,7 @@ fn read_devices(
     c.chat = hit(Action::Chat);
     c.cover = hit(Action::Cover);
     c.killstreak = hit(Action::Killstreak);
+    c.night_vision = hit(Action::NightVision);
     c.pause = tap(KeyCode::Escape);
     c.weapon_step = if scroll.delta.y > 0.0 { -1 } else if scroll.delta.y < 0.0 { 1 } else { 0 };
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
@@ -194,6 +197,7 @@ fn read_devices(
         c.inspect |= hit(GamepadButton::DPadUp);
         c.cover |= hit(GamepadButton::LeftTrigger);
         c.killstreak |= hit(GamepadButton::RightThumb);
+        c.night_vision |= hit(GamepadButton::DPadLeft);
         c.loadout |= hit(GamepadButton::DPadDown);
         c.scoreboard |= held(GamepadButton::Select);
         c.pause |= hit(GamepadButton::Start);

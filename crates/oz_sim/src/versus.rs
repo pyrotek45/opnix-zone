@@ -17,6 +17,10 @@ use oz_core::synth::Sfx;
 const COUNTDOWN: f32 = 5.0;
 const POST_MATCH: f32 = 9.0;
 pub const MAX_TEAM: u8 = 6;
+/// A full day and night, in seconds.
+const DAY_CYCLE: f32 = 480.0;
+pub const TIME_MODES: [&str; 4] = ["DAY", "DUSK", "NIGHT", "DAY / NIGHT CYCLE"];
+pub const WEATHER_MODES: [&str; 6] = ["MAP'S OWN", "CLEAR", "OVERCAST", "RAIN", "FOG", "RANDOM FRONTS"];
 
 pub fn versus(rules: Option<Res<Rules>>) -> bool {
     rules.is_some_and(|rules| rules.pvp)
@@ -128,7 +132,14 @@ pub fn run_versus(
     mut fx: EventWriter<FxEvent>,
 ) {
     let dt = sim_dt(&time);
-    state.daylight = 1.0;
+    // Time of day: fixed, or a cycle that runs through the match.
+    state.clock += dt;
+    state.daylight = match state.time_mode {
+        0 => 1.0,
+        1 => 0.45,
+        2 => 0.0,
+        _ => (0.5 + 0.6 * (state.clock / DAY_CYCLE * std::f32::consts::TAU).cos()).clamp(0.0, 1.0),
+    };
     for order in orders.read() {
         let PlayerCommand::Lobby(action) = order.command else { continue };
         let host = order.player == 0;
@@ -155,6 +166,17 @@ pub fn run_versus(
                         }
                 }
             }
+            LobbyAction::TimeOfDay(step) if host && state.phase == Phase::Lobby => {
+                state.time_mode = (state.time_mode as i32 + step as i32).rem_euclid(TIME_MODES.len() as i32) as u8;
+                state.clock = 0.0;
+            }
+            LobbyAction::Weather(step) if host && state.phase == Phase::Lobby => {
+                state.weather_mode = (state.weather_mode as i32 + step as i32).rem_euclid(WEATHER_MODES.len() as i32) as u8;
+                state.weather = match state.weather_mode {
+                    0 | 5 => rules.recipe.weather,
+                    n => oz_core::worldgen::Weather::ALL[(n - 1) as usize],
+                };
+            }
             LobbyAction::TeamSize(step) if host && state.phase == Phase::Lobby => {
                 let size = (state.team_size as i32 + step as i32).clamp(1, MAX_TEAM as i32) as u8;
                 state.team_size = size;
@@ -176,6 +198,8 @@ pub fn run_versus(
                 state.phase = Phase::Live;
                 state.scores = [0, 0];
                 state.kills = 0;
+                state.clock = 0.0;
+                state.timer = 60.0;
                 for (mut player, mut health, mut transform, mut arsenal, mut input, _) in &mut players {
                     player.kills = 0;
                     player.deaths = 0;
@@ -187,6 +211,25 @@ pub fn run_versus(
             }
         }
         Phase::Live => {
+            // Random fronts: every couple of minutes the weather may turn.
+            if state.weather_mode == 5 {
+                state.timer -= dt;
+                if state.timer <= 0.0 {
+                    let seed = (state.clock * 1000.0) as u64 ^ state.scores[0] as u64 * 31 ^ state.scores[1] as u64 * 97;
+                    let next = oz_core::worldgen::Weather::ALL[(seed % 4) as usize];
+                    state.timer = 70.0 + (seed % 80) as f32;
+                    if next != state.weather {
+                        state.weather = next;
+                        let line = match next {
+                            oz_core::worldgen::Weather::Clear => "THE SKY IS CLEARING",
+                            oz_core::worldgen::Weather::Overcast => "CLOUDS ROLLING IN",
+                            oz_core::worldgen::Weather::Rain => "RAIN IS COMING DOWN",
+                            oz_core::worldgen::Weather::Fog => "FOG IS SETTLING IN",
+                        };
+                        fx.write(FxEvent::notice(line));
+                    }
+                }
+            }
             for team in 0..2 {
                 if rules.score_limit > 0 && state.scores[team] >= rules.score_limit {
                     state.phase = Phase::Won;

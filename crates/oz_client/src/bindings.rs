@@ -93,14 +93,14 @@ const KEYS: &[(KeyCode, &str)] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Forward, Back, Left, Right, Fire, Aim, Reload, Interact, Jump, Sprint, Crouch, Prone,
-    Cover, Gear, Inspect, Loadout, Scoreboard, Chat, Killstreak,
+    Cover, Gear, Inspect, Loadout, Scoreboard, Chat, Killstreak, NightVision,
 }
 
 impl Action {
-    pub const ALL: [Action; 19] = [
+    pub const ALL: [Action; 20] = [
         Action::Forward, Action::Back, Action::Left, Action::Right, Action::Fire, Action::Aim, Action::Reload, Action::Interact,
         Action::Jump, Action::Sprint, Action::Crouch, Action::Prone, Action::Cover, Action::Gear,
-        Action::Inspect, Action::Loadout, Action::Scoreboard, Action::Chat, Action::Killstreak,
+        Action::Inspect, Action::Loadout, Action::Scoreboard, Action::Chat, Action::Killstreak, Action::NightVision,
     ];
 
     /// Shown on the controls screen.
@@ -109,7 +109,7 @@ impl Action {
             Action::Forward => "MOVE FORWARD", Action::Back => "MOVE BACK", Action::Left => "MOVE LEFT", Action::Right => "MOVE RIGHT",
             Action::Fire => "FIRE", Action::Aim => "AIM", Action::Reload => "RELOAD", Action::Interact => "USE",
             Action::Jump => "JUMP", Action::Sprint => "SPRINT / BREATH", Action::Crouch => "CROUCH", Action::Prone => "PRONE",
-            Action::Cover => "TAKE COVER", Action::Killstreak => "KILLSTREAK", Action::Gear => "THROW GEAR", Action::Inspect => "INSPECT WEAPON",
+            Action::Cover => "TAKE COVER", Action::Killstreak => "KILLSTREAK", Action::NightVision => "NIGHT VISION", Action::Gear => "THROW GEAR", Action::Inspect => "INSPECT WEAPON",
             Action::Loadout => "CHANGE CLASS", Action::Scoreboard => "SCOREBOARD", Action::Chat => "CHAT",
         }
     }
@@ -120,7 +120,7 @@ impl Action {
             Action::Forward => "forward", Action::Back => "back", Action::Left => "left", Action::Right => "right",
             Action::Fire => "fire", Action::Aim => "aim", Action::Reload => "reload", Action::Interact => "use",
             Action::Jump => "jump", Action::Sprint => "sprint", Action::Crouch => "crouch", Action::Prone => "prone",
-            Action::Cover => "cover", Action::Killstreak => "killstreak", Action::Gear => "gear", Action::Inspect => "inspect",
+            Action::Cover => "cover", Action::Killstreak => "killstreak", Action::NightVision => "night_vision", Action::Gear => "gear", Action::Inspect => "inspect",
             Action::Loadout => "loadout", Action::Scoreboard => "scoreboard", Action::Chat => "chat",
         }
     }
@@ -132,7 +132,7 @@ impl Action {
             Action::Fire => Bind::Mouse(MouseButton::Left), Action::Aim => Bind::Mouse(MouseButton::Right), Action::Reload => Bind::Key(K::KeyR),
             Action::Interact => Bind::Key(K::KeyF), Action::Jump => Bind::Key(K::Space), Action::Sprint => Bind::Key(K::ShiftLeft),
             Action::Crouch => Bind::Key(K::KeyC), Action::Prone => Bind::Key(K::KeyZ), Action::Cover => Bind::Key(K::KeyQ),
-            Action::Killstreak => Bind::Key(K::KeyX), Action::Gear => Bind::Key(K::KeyG), Action::Inspect => Bind::Key(K::KeyI),
+            Action::Killstreak => Bind::Key(K::KeyX), Action::NightVision => Bind::Key(K::KeyN), Action::Gear => Bind::Key(K::KeyG), Action::Inspect => Bind::Key(K::KeyI),
             Action::Loadout => Bind::Key(K::KeyL), Action::Scoreboard => Bind::Key(K::Tab), Action::Chat => Bind::Key(K::KeyT),
         }
     }

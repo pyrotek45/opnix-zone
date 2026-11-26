@@ -85,8 +85,9 @@ pub enum Layout {
 }
 
 /// Sky and air for a map; purely visual.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Weather {
+    #[default]
     Clear,
     Overcast,
     Rain,

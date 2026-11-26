@@ -57,7 +57,7 @@ fn lobby_actions(mut events: EventReader<ActEvent>, screen: Res<Screen>, players
 }
 
 /// Rebuild the lobby whenever anything on it changes.
-fn refresh_lobby(screen: Res<Screen>, state: Res<MatchState>, link: Res<NetLink>, mut dirty: ResMut<UiDirty>, mut last: Local<Option<(Vec<RosterEntry>, u8, i32, Phase, String)>>) {
+fn refresh_lobby(screen: Res<Screen>, state: Res<MatchState>, link: Res<NetLink>, mut dirty: ResMut<UiDirty>, mut last: Local<Option<(Vec<RosterEntry>, u8, i32, Phase, String, (u8, u8))>>) {
     if *screen != Screen::Lobby {
         *last = None;
         return;
@@ -68,7 +68,7 @@ fn refresh_lobby(screen: Res<Screen>, state: Res<MatchState>, link: Res<NetLink>
     };
     // Ping changes constantly; leave it out so the lobby does not rebuild every frame.
     let roster: Vec<RosterEntry> = state.roster.iter().map(|r| RosterEntry { ping: 0, weapon: 0, parts: Default::default(), ..r.clone() }).collect();
-    let signature = (roster, state.team_size, state.countdown.ceil() as i32, state.phase, router);
+    let signature = (roster, state.team_size, state.countdown.ceil() as i32, state.phase, router, (state.time_mode, state.weather_mode));
     if last.as_ref() != Some(&signature) {
         if last.is_some() {
             dirty.0 = true;
@@ -212,6 +212,17 @@ pub fn build_lobby(
                 }
                 ui::sized_button(row, order, "LEAVE", Act::Leave, None, Val::Px(110.0));
             });
+            // Match settings: the host steps them, everyone sees them.
+            let time = oz_sim::versus::TIME_MODES[(state.time_mode as usize).min(3)];
+            let weather = oz_sim::versus::WEATHER_MODES[(state.weather_mode as usize).min(5)];
+            if host {
+                bottom.spawn(ui::row(8.0)).with_children(|row| {
+                    ui::sized_button(row, order, format!("TIME  <  {time}  >"), Act::Lobby(LobbyAction::TimeOfDay(1)), Some(Act::Lobby(LobbyAction::TimeOfDay(-1))), Val::Px(330.0));
+                    ui::sized_button(row, order, format!("WEATHER  <  {weather}  >"), Act::Lobby(LobbyAction::Weather(1)), Some(Act::Lobby(LobbyAction::Weather(-1))), Val::Px(330.0));
+                });
+            } else {
+                ui::label(bottom, format!("TIME: {time}      WEATHER: {weather}"), 14.0, ui::ACCENT);
+            }
             if let NetLink::Host(host) = &*link {
                 ui::label(bottom, hosting_info(host), 13.0, ui::ACCENT);
             }

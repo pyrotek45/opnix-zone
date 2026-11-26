@@ -162,7 +162,14 @@ Gear, one kind per class:
 
 Perks: Lightweight, Plate Carrier, Fast Hands, Deadeye, Scavenger (kills refill
 a magazine), Ghost (never on radar), Flak Jacket (less explosive damage),
-Quick Draw (faster aiming and swaps) and Steady Hands (tighter hip fire).
+Quick Draw (faster aiming and swaps), Steady Hands (tighter hip fire),
+Thermal Optics (enemies glow hot while you aim, even through smoke) and Night
+Vision (a green visor for night maps, toggled with **N** / D-pad left).
+
+**Match settings** (host, in the lobby): time of day - day, dusk, night or a
+full day/night cycle - and weather - the map's own, clear, overcast, rain, fog
+or random fronts that roll through mid-match. Robots carry flashlights at
+night.
 
 The create-a-class screen shows each weapon's fire mode, calibre, damage,
 rate of fire, magazine, reload time and stat bars with its fitted parts.
