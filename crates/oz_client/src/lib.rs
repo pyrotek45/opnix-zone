@@ -47,6 +47,7 @@ pub mod stations;
 pub mod tags;
 pub mod ui;
 pub mod view;
+pub mod wreck;
 
 use bevy::{prelude::*, window::PresentMode};
 
@@ -100,7 +101,7 @@ impl Plugin for ClientPlugin {
             hud::HudPlugin,
             loadout::LoadoutPlugin,
         ))
-        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin,
+        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin, wreck::WreckPlugin,
         ));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);

@@ -147,8 +147,78 @@ pub struct Player {
     pub streak: u16,
     /// Earned, unused killstreak rewards (bits of `killstreak::reward`).
     pub rewards: u8,
-    /// The hit being applied right now was to the head (for kill credits).
-    pub last_hit_head: bool,
+    /// Which part the hit being applied right now struck (see [`part`]), for kill credits.
+    pub last_hit: u8,
+    /// Health left in each limb: left arm, right arm, left leg, right leg.
+    pub limb_hp: [f32; 4],
+    /// Limbs shot off this life (see [`limb`]).
+    pub lost: u8,
+}
+
+/// Where a hit landed.
+pub mod part {
+    pub const HEAD: u8 = 0;
+    pub const TORSO: u8 = 1;
+    pub const LEFT_ARM: u8 = 2;
+    pub const RIGHT_ARM: u8 = 3;
+    pub const LEFT_LEG: u8 = 4;
+    pub const RIGHT_LEG: u8 = 5;
+    /// Not a body part: an explosion.
+    pub const BLAST: u8 = 6;
+
+    /// Damage multiplier for a hit on this part.
+    pub fn multiplier(part: u8) -> f32 {
+        match part {
+            HEAD => 2.0,
+            LEFT_ARM | RIGHT_ARM => 0.7,
+            LEFT_LEG | RIGHT_LEG => 0.75,
+            _ => 1.0,
+        }
+    }
+}
+
+/// Bits of [`Player::lost`].
+pub mod limb {
+    pub const LEFT_ARM: u8 = 1;
+    pub const RIGHT_ARM: u8 = 2;
+    pub const LEFT_LEG: u8 = 4;
+    pub const RIGHT_LEG: u8 = 8;
+    pub const ARMS: u8 = LEFT_ARM | RIGHT_ARM;
+    pub const LEGS: u8 = LEFT_LEG | RIGHT_LEG;
+
+    /// The limb bit for a [`super::part`], if it is a limb.
+    pub fn of_part(part: u8) -> Option<u8> {
+        (super::part::LEFT_ARM..=super::part::RIGHT_LEG).contains(&part).then(|| 1 << (part - super::part::LEFT_ARM))
+    }
+
+    /// Spread multiplier from missing arms.
+    pub fn aim_penalty(lost: u8) -> f32 {
+        [1.0, 1.7, 2.6][(lost & ARMS).count_ones() as usize]
+    }
+
+    /// Movement multiplier from missing legs.
+    pub fn speed_penalty(lost: u8) -> f32 {
+        [1.0, 0.62, 0.38][(lost & LEGS).count_ones() as usize]
+    }
+}
+
+/// How much a limb can take before it comes off.
+pub const LIMB_HP: f32 = 45.0;
+
+/// Applies damage to a limb; returns true if it just came off.
+pub fn wound_limb(player: &mut Player, part: u8, amount: f32, by: u8, fx: &mut EventWriter<FxEvent>) -> bool {
+    let Some(bit) = limb::of_part(part) else { return false };
+    let slot = (part - part::LEFT_ARM) as usize;
+    if player.lost & bit != 0 {
+        return false;
+    }
+    player.limb_hp[slot] -= amount;
+    if player.limb_hp[slot] > 0.0 {
+        return false;
+    }
+    player.lost |= bit;
+    fx.write(FxEvent::LimbLost { player: player.id, limb: bit, by });
+    true
 }
 
 impl Player {
@@ -156,7 +226,7 @@ impl Player {
         Self {
             id, name: name.into(), team, respawn: 0.0, calm: 0.0, life: 0.0, kills: 0, deaths: 0, ready: false, perk: 0, gear: 0, gear_left: 0,
             gear_latch: false, loadout: None, burn: 0.0, burn_time: 0.0, burn_by: None, flags: 0, ping: 0, protect: 0.0,
-            streak: 0, rewards: 0, last_hit_head: false,
+            streak: 0, rewards: 0, last_hit: part::TORSO, limb_hp: [LIMB_HP; 4], lost: 0,
         }
     }
 
@@ -223,12 +293,12 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
         victim.streak = 0;
     }
     if let Some((name, team, id)) = attacker {
-        fx.write(FxEvent::HitMarker { player: id, kill: killed });
+        fx.write(FxEvent::HitMarker { player: id, kill: killed, head: victim.last_hit == part::HEAD });
         if killed && id != victim.id {
             state.scores[(team as usize).min(1)] += 1;
             state.credits.push(id);
             fx.write(FxEvent::notice(format!("{name}  >  {}", victim.name)));
-            fx.write(FxEvent::Killed { victim: victim.id, by: id, head: victim.last_hit_head });
+            fx.write(FxEvent::Killed { victim: victim.id, by: id, head: victim.last_hit == part::HEAD, blast: victim.last_hit == part::BLAST });
         }
     }
     killed
@@ -378,7 +448,8 @@ pub fn move_players(
         let wish = input.movement.clamp_length_max(1.0);
         let standing = input.stance == stance::STAND;
         let leaning = input.lean != 0;
-        let sprinting = standing && !leaning && input.held(buttons::SPRINT) && wish.y > 0.3 && !input.held(buttons::AIM);
+        let limping = player.lost & limb::LEGS != 0;
+        let sprinting = standing && !leaning && !limping && input.held(buttons::SPRINT) && wish.y > 0.3 && !input.held(buttons::AIM);
         let perk_speed = match perk(&content, player) {
             Some(PerkEffect::Speed(multiplier)) => multiplier,
             _ => 1.0,
@@ -389,7 +460,7 @@ pub fn move_players(
             .zip(arsenal.state())
             .map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).mobility);
         let gait = if sprinting { SPRINT_SPEED } else if input.held(buttons::AIM) { WALK_SPEED * 0.6 } else { WALK_SPEED };
-        let speed = gait * perk_speed * weapon_speed * stance::speed(input.stance) * if leaning { 0.5 } else { 1.0 };
+        let speed = gait * perk_speed * weapon_speed * stance::speed(input.stance) * if leaning { 0.5 } else { 1.0 } * limb::speed_penalty(player.lost);
         let step = Quat::from_rotation_y(input.yaw) * Vec3::new(wish.x, 0.0, -wish.y) * speed * dt;
         let height = stance::height(input.stance);
 
@@ -518,6 +589,9 @@ pub fn respawn(content: &Catalog, map: &GameMap, rules: &Rules, state: &MatchSta
     player.respawn = 0.0;
     player.life = 0.0;
     player.burn_time = 0.0;
+    // A fresh chassis.
+    player.limb_hp = [LIMB_HP; 4];
+    player.lost = 0;
     if let Some(loadout) = player.loadout.take() {
         apply_loadout(content, player, arsenal, loadout);
     } else if rules.pvp {

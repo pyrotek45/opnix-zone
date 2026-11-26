@@ -541,3 +541,43 @@ fn killstreaks_are_earned_and_called_in() {
     }
     assert_eq!(me(&mut app).rewards, reward::UAV);
 }
+
+#[test]
+fn limbs_come_off_hurt_and_grow_back() {
+    use oz_sim::player::{limb, part};
+    let mut app = app();
+    let mut rules = deathmatch_rules(4);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    let walk = |app: &mut App| {
+        let at = app.world_mut().query_filtered::<&Transform, With<LocalPlayer>>().single(app.world()).unwrap().translation;
+        app.world_mut().query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().movement = Vec2::Y;
+        for _ in 0..30 {
+            app.update();
+        }
+        app.world_mut().query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().movement = Vec2::ZERO;
+        app.world_mut().query_filtered::<&Transform, With<LocalPlayer>>().single(app.world()).unwrap().translation.xz().distance(at.xz())
+    };
+    let whole = walk(&mut app);
+    // Shoot the left leg off.
+    app.world_mut().query_filtered::<&mut Player, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().lost |= limb::LEFT_LEG;
+    assert_eq!(limb::of_part(part::LEFT_LEG), Some(limb::LEFT_LEG));
+    assert!(limb::aim_penalty(limb::RIGHT_ARM) > 1.5);
+    let limping = walk(&mut app);
+    assert!(limping < whole * 0.75, "one leg {limping} m vs two legs {whole} m");
+    // Dying and respawning restores the chassis.
+    {
+        let mut query = app.world_mut().query_filtered::<(&mut Health, &mut Player), With<LocalPlayer>>();
+        let (mut health, _) = query.single_mut(app.world_mut()).unwrap();
+        health.hp = 0.0;
+    }
+    for _ in 0..(8.0 / FRAME) as usize {
+        app.update();
+    }
+    let player = app.world_mut().query_filtered::<&Player, With<LocalPlayer>>().single(app.world()).unwrap().clone();
+    assert_eq!(player.lost, 0);
+}

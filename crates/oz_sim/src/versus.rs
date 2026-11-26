@@ -225,3 +225,4 @@ mod tests {
         assert_eq!(team_for_newcomer([(0, false), (1, true), (1, true)].into_iter()), 1);
     }
 }
+

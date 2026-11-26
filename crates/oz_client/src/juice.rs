@@ -113,7 +113,7 @@ fn medals(
     let name_of = |id: u8| state.roster.iter().find(|r| r.id == id).map_or("SOMEONE".to_string(), |r| r.name.clone());
     for event in events.read() {
         match event {
-            FxEvent::Killed { victim, by, head } => {
+            FxEvent::Killed { victim, by, head, .. } => {
                 let first = !memory.first_blood;
                 memory.first_blood = true;
                 if *by != me.id || *victim == me.id {
@@ -149,6 +149,17 @@ fn medals(
                 } else {
                     banners.push("", subtitle, ui::TEXT);
                 }
+            }
+            FxEvent::LimbLost { player, limb, .. } if *player == me.id => {
+                use oz_sim::player::limb as l;
+                let (what, effect) = match *limb {
+                    l::LEFT_ARM => ("LEFT ARM", "AIM UNSTEADY"),
+                    l::RIGHT_ARM => ("RIGHT ARM", "AIM UNSTEADY"),
+                    l::LEFT_LEG => ("LEFT LEG", "MOVING SLOWER"),
+                    _ => ("RIGHT LEG", "MOVING SLOWER"),
+                };
+                banners.push(format!("{what} DESTROYED"), effect, Color::srgb(1.0, 0.45, 0.3));
+                sounds.write(PlaySfx::new(Sfx::Alarm, None));
             }
             FxEvent::Streak { player, reward } if *player == me.id => {
                 let def = killstreak::STREAKS.iter().find(|s| s.bit == *reward);

@@ -174,7 +174,8 @@ pub enum FxEvent {
     /// `local` marks a shot the client predicted itself; the host never sets it.
     Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool, tracer: Paint, quiet: bool, local: bool },
     /// `victim` was taken down by `by` (a player id).
-    Killed { victim: u8, by: u8, head: bool },
+    /// `head`: finished with a headshot. `blast`: finished by an explosion.
+    Killed { victim: u8, by: u8, head: bool, blast: bool },
     /// `player` reached a killstreak and earned `reward` (see `killstreak::reward`).
     Streak { player: u8, reward: u8 },
     /// Someone on `team` called in `reward`.
@@ -192,7 +193,10 @@ pub enum FxEvent {
     StructureLost { at: Vec3 },
     Arc { from: Vec3, to: Vec3 },
     Mined { at: Vec3, ore: u8 },
-    HitMarker { player: u8, kill: bool },
+    /// `head`: the hit was a headshot (the marker says so).
+    HitMarker { player: u8, kill: bool, head: bool },
+    /// A robot lost a limb (see `player::limb`); `by` shot it off.
+    LimbLost { player: u8, limb: u8, by: u8 },
     Hurt { player: u8 },
     Sound { sfx: Sfx, at: Option<Vec3> },
     /// A UI sound for one player only.

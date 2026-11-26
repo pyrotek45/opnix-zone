@@ -45,7 +45,7 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 /// How long the host remembers someone who dropped, so they can reconnect into the same seat.
 pub const REJOIN_WINDOW: f32 = 600.0;
 /// How far behind the host's clock clients play back remote entities.
@@ -191,7 +191,7 @@ mod kind {
     }
 }
 
-/// 17 bytes on the wire.
+/// 18 bytes on the wire.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct EntState {
     pub id: u32,
@@ -208,6 +208,8 @@ pub struct EntState {
     pub aux: u8,
     /// Players: presentation flags (stance, aiming, reloading...).
     pub flags: u8,
+    /// Players: limbs shot off (`player::limb` bits).
+    pub limbs: u8,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -231,6 +233,8 @@ pub struct Private {
     /// Killstreak progress and earned rewards.
     pub streak: u16,
     pub rewards: u8,
+    /// Limbs shot off.
+    pub lost: u8,
     /// Set while dead so the client lands on the respawn point.
     pub teleport: Option<Vec3>,
 }
@@ -775,29 +779,29 @@ pub fn host_send(
     let mut entities = Vec::with_capacity(players.iter().len() + enemies.iter().len() + shots.iter().len());
     for (id, player, transform, health, arsenal, input) in &players {
         let pitch = pack_pitch(input.pitch);
-        entities.push(EntState { id: id.0, kind: kind::PLAYER, sub: player.id, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch, hp: fraction(health), aux: (arsenal.current & 0x3f) | (player.team << 6), flags: player.flags });
+        entities.push(EntState { id: id.0, kind: kind::PLAYER, sub: player.id, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch, hp: fraction(health), aux: (arsenal.current & 0x3f) | (player.team << 6), flags: player.flags, limbs: player.lost });
     }
     for (id, enemy, transform, health) in &enemies {
-        entities.push(EntState { id: id.0, kind: kind::ENEMY, sub: enemy.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: enemy.attacks, flags: 0 });
+        entities.push(EntState { id: id.0, kind: kind::ENEMY, sub: enemy.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: enemy.attacks, flags: 0, limbs: 0 });
     }
     for (id, shot, transform) in &shots {
         // aux = owner + 1, so clients can hide copies of projectiles they already predicted.
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: shot.owner.map_or(0, |o| o.saturating_add(1)), flags: 0 });
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: shot.owner.map_or(0, |o| o.saturating_add(1)), flags: 0, limbs: 0 });
     }
     for (id, _, transform) in &drones {
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Drone as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: 0, flags: 0 });
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Drone as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: 0, flags: 0, limbs: 0 });
     }
     // Mines travel as projectiles that never move.
     for (id, _, transform) in &mines {
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Mine as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: 255, aux: 0, flags: 0 });
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Mine as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: 255, aux: 0, flags: 0, limbs: 0 });
     }
     if full {
         for (id, structure, transform, health) in &structures {
-            entities.push(EntState { id: id.0, kind: kind::STRUCTURE, sub: structure.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: structure.shots, flags: 0 });
+            entities.push(EntState { id: id.0, kind: kind::STRUCTURE, sub: structure.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: structure.shots, flags: 0, limbs: 0 });
         }
         for (id, node, transform) in &ores {
             let left = ((node.amount / node.max.max(1.0)) * 255.0).ceil() as u8;
-            entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0 });
+            entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0, limbs: 0 });
         }
     }
     link.host.broadcast_latest(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), full, state: state.clone(), entities }));
@@ -807,7 +811,7 @@ pub fn host_send(
         if let Some((_, player, transform, health, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == id) {
             // Just-spawned players are also pinned so they start at their base.
             let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4).then_some(transform.translation);
-            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, streak: player.streak, rewards: player.rewards, teleport }));
+            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, streak: player.streak, rewards: player.rewards, lost: player.lost, teleport }));
         }
     }    // Out now rather than on next frame's poll.
     link.host.flush();
@@ -876,6 +880,7 @@ pub fn client_receive(
                         }
                         if let Some(mut player) = player {
                             player.flags = e.flags;
+                            player.lost = e.limbs;
                             player.team = e.aux >> 6;
                             if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == player.id)
                                 && player.name != entry.name {
@@ -930,6 +935,7 @@ pub fn client_receive(
                     player.gear_left = private.gear_left;
                     player.streak = private.streak;
                     player.rewards = private.rewards;
+                    player.lost = private.lost;
                     // While dead the host owns our position, so we wake up at the spawn point.
                     if let Some(at) = private.teleport {
                         transform.translation = at;
@@ -1056,8 +1062,8 @@ mod tests {
 
     #[test]
     fn entity_state_is_compact() {
-        let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7 };
-        assert_eq!(bincode::serialize(&state).unwrap().len(), 17);
+        let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7, limbs: 9 };
+        assert_eq!(bincode::serialize(&state).unwrap().len(), 18);
     }
 
     #[test]

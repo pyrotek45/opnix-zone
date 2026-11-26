@@ -21,7 +21,6 @@ use oz_core::{
 
 const SWAP_TIME: f32 = 0.3;
 const BEAM_RANGE: f32 = 7.5;
-const HEADSHOT: f32 = 1.6;
 /// Thickest wall a piercing round can punch through, and what it keeps.
 const PIERCE_DEPTH: f32 = 0.65;
 const PIERCE_KEEP: f32 = 0.6;
@@ -43,26 +42,41 @@ struct Body {
     yaw: f32,
     /// Head offset from leaning.
     lean: Vec3,
+    /// Limbs already shot off (cannot be hit again).
+    lost: u8,
     name: String,
 }
 
 impl Body {
-    /// Hit spheres (centre, radius, is_head) for the current stance.
-    fn spheres(&self) -> [(Vec3, f32, bool); 3] {
+    /// Hit spheres (centre, radius, part) for the current stance: head, torso, two arms, two legs.
+    fn spheres(&self) -> [(Vec3, f32, u8); 6] {
+        use crate::player::part;
         let up = |y: f32| self.feet + Vec3::Y * y;
-        match self.stance {
-            stance::PRONE => {
-                let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
-                [(up(0.32) + forward * 0.62, 0.24, true), (up(0.26) + forward * 0.05, 0.36, false), (up(0.2) - forward * 0.6, 0.32, false)]
-            }
-            stance::CROUCH => [(up(1.08) + self.lean, 0.24, true), (up(0.72) + self.lean * 0.5, 0.42, false), (up(0.3), 0.36, false)],
-            _ => [(up(1.62) + self.lean, 0.24, true), (up(1.05) + self.lean * 0.55, 0.45, false), (up(0.45), 0.38, false)],
-        }
+        let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
+        let right = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
+        let (head, torso, arms, legs, torso_r) = match self.stance {
+            stance::PRONE => (up(0.32) + forward * 0.62, up(0.26) + forward * 0.05, up(0.24) + forward * 0.45, up(0.18) - forward * 0.6, 0.34),
+            stance::CROUCH => (up(1.08) + self.lean, up(0.72) + self.lean * 0.5, up(0.82) + self.lean * 0.5 - forward * 0.05, up(0.3), 0.38),
+            _ => (up(1.62) + self.lean, up(1.05) + self.lean * 0.55, up(1.18) + self.lean * 0.55, up(0.45), 0.36),
+        };
+        let arm_x = if self.stance == stance::PRONE { 0.28 } else { 0.36 };
+        [
+            (head, 0.24, part::HEAD),
+            (torso, torso_r, part::TORSO),
+            (arms - right * arm_x, 0.15, part::LEFT_ARM),
+            (arms + right * arm_x, 0.15, part::RIGHT_ARM),
+            (legs - right * 0.13, 0.19, part::LEFT_LEG),
+            (legs + right * 0.13, 0.19, part::RIGHT_LEG),
+        ]
     }
 
-    /// Distance along the ray to this body, and whether it was a headshot.
-    fn hit(&self, origin: Vec3, dir: Vec3) -> Option<(f32, bool)> {
-        self.spheres().into_iter().filter_map(|(center, radius, head)| ray_sphere(origin, dir, center, radius).map(|d| (d, head))).min_by(|a, b| a.0.total_cmp(&b.0))
+    /// Distance along the ray to this body, and which part it hit.
+    fn hit(&self, origin: Vec3, dir: Vec3) -> Option<(f32, u8)> {
+        self.spheres()
+            .into_iter()
+            .filter(|(_, _, p)| crate::player::limb::of_part(*p).is_none_or(|bit| self.lost & bit == 0))
+            .filter_map(|(center, radius, part)| ray_sphere(origin, dir, center, radius).map(|d| (d, part)))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
     fn chest(&self) -> Vec3 {
@@ -112,8 +126,8 @@ fn hit_from(stats: &Resolved, target: Entity, amount: f32, player: u8) -> Hit {
     Hit { target, amount, by: Some(player), frost: stats.frost, venom, arc: stats.arc, scavenge: stats.scavenge, repair: stats.repair }
 }
 
-/// Damage dealt to a player this frame: (victim, amount, attacker index into bodies, burn, headshot).
-type Strike = (Entity, f32, usize, f32, bool);
+/// Damage dealt to a player this frame: (victim, amount before the part multiplier, attacker index into bodies, burn, part hit).
+type Strike = (Entity, f32, usize, f32, u8);
 
 #[allow(clippy::too_many_arguments)]
 pub fn fire_weapons(
@@ -147,6 +161,7 @@ pub fn fire_weapons(
                 stance: input.stance,
                 yaw: input.yaw,
                 lean: crate::player::lean_offset(&statics, transform.translation, input),
+                lost: player.lost,
                 name: player.name.clone(),
             })
             .collect()
@@ -242,6 +257,11 @@ pub fn fire_weapons(
             Some(PerkEffect::Spread(multiplier)) => stats.spread *= multiplier,
             _ => {}
         }
+        // Missing an arm: wild aim and slow, one-handed reloads.
+        stats.spread *= crate::player::limb::aim_penalty(player.lost);
+        if player.lost & crate::player::limb::ARMS != 0 {
+            stats.reload *= 1.5;
+        }
         let uses_ammo = def.mag > 0;
         let fire_held = input.held(buttons::FIRE);
         let pulled = fire_held && !arsenal.trigger;
@@ -317,7 +337,7 @@ pub fn fire_weapons(
             targets
                 .iter()
                 .filter(|body| body.team != player.team)
-                .filter_map(|body| body.hit(eye, dir).filter(|(d, _)| *d <= reach).map(|(d, head)| (d, head, body.entity)))
+                .filter_map(|body| body.hit(eye, dir).filter(|(d, _)| *d <= reach).map(|(d, part)| (d, part, body.entity)))
                 .min_by(|a, b| a.0.total_cmp(&b.0))
         };
 
@@ -359,7 +379,7 @@ pub fn fire_weapons(
                     _ => {
                         if let (Some((d, _, victim)), Some(me)) = (player_hit(dir, reach), me) {
                             end = eye + dir * d;
-                            struck.push((victim, stats.damage, me, 0.0, false));
+                            struck.push((victim, stats.damage, me, 0.0, crate::player::part::TORSO));
                         }
                     }
                 }
@@ -384,7 +404,7 @@ pub fn fire_weapons(
                             splash(&grid, &mut hits, end_at, stats.splash, stats.damage * 0.5, Some(player.id), Some(item.entity));
                         }
                     } else if let (Some((d, head, victim)), Some(me)) = (body, me) {
-                        struck.push((victim, stats.damage * falloff(d) * if head { HEADSHOT } else { 1.0 }, me, stats.burn, head));
+                        struck.push((victim, stats.damage * falloff(d), me, stats.burn, head));
                     } else if stats.splash > 0.0 && reach < stats.range {
                         splash(&grid, &mut hits, end, stats.splash, stats.damage * 0.5, Some(player.id), None);
                     }
@@ -394,7 +414,7 @@ pub fn fire_weapons(
                             for body in targets.iter().filter(|b| b.team != player.team && Some(b.entity) != body.map(|h| h.2)) {
                                 let distance = body.chest().distance(end_at);
                                 if distance < stats.splash {
-                                    struck.push((body.entity, stats.damage * 0.4 * (1.0 - distance / stats.splash), me, 0.0, false));
+                                    struck.push((body.entity, stats.damage * 0.4 * (1.0 - distance / stats.splash), me, 0.0, crate::player::part::BLAST));
                                 }
                             }
                         }
@@ -412,7 +432,7 @@ pub fn fire_weapons(
         }
     }
 
-    for (victim, damage, attacker, burn, head) in struck {
+    for (victim, damage, attacker, burn, part) in struck {
         let attacker = &bodies[attacker];
         if let Ok((_, mut player, _, _, _, mut health, _)) = players.get_mut(victim) {
             if burn > 0.0 {
@@ -420,9 +440,12 @@ pub fn fire_weapons(
                 player.burn_time = BURN_SECONDS;
                 player.burn_by = Some(attacker.id);
             }
-            player.last_hit_head = head;
-            damage_player(&mut health, &mut player, damage, Some((&attacker.name, attacker.team, attacker.id)), &mut state, &mut fx);
-            player.last_hit_head = false;
+            // Limbs soak their share and can come off; the robot takes the rest scaled by where it was hit.
+            crate::player::wound_limb(&mut player, part, damage, attacker.id, &mut fx);
+            player.last_hit = part;
+            let amount = damage * crate::player::part::multiplier(part);
+            damage_player(&mut health, &mut player, amount, Some((&attacker.name, attacker.team, attacker.id)), &mut state, &mut fx);
+            player.last_hit = crate::player::part::TORSO;
         }
     }
 }

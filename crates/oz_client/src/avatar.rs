@@ -41,19 +41,20 @@ pub fn team_paint(team: u8) -> Paint {
 }
 
 /// Everything a robot looks like, for one team colour.
-struct RobotMeshes {
-    hips: Baked,
-    thigh: Baked,
-    shin: Baked,
-    torso: Baked,
-    head: Baked,
-    arms: Baked,
-    faces: Vec<Baked>,
+pub(crate) struct RobotMeshes {
+    pub(crate) hips: Baked,
+    pub(crate) thigh: Baked,
+    pub(crate) shin: Baked,
+    pub(crate) torso: Baked,
+    pub(crate) head: Baked,
+    /// Left and right arm, separately so either can be shot off.
+    pub(crate) arms: [Baked; 2],
+    pub(crate) faces: Vec<Baked>,
 }
 
 #[derive(Resource)]
 pub struct RobotParts {
-    teams: Vec<RobotMeshes>,
+    pub(crate) teams: Vec<RobotMeshes>,
 }
 
 /// What a robot should be doing. Filled from gameplay for players, or set directly in the showroom.
@@ -76,41 +77,47 @@ pub struct Pose {
 /// Joint handles and animation state for one robot.
 #[derive(Component)]
 pub struct Rig {
-    body: Entity,
-    hips: Entity,
-    thighs: [Entity; 2],
-    shins: [Entity; 2],
-    torso: Entity,
-    head: Entity,
-    aim: Entity,
-    gun: Entity,
-    faces: [Entity; face::COUNT],
-    phase: f32,
-    dead_for: f32,
-    blink: f32,
+    pub(crate) body: Entity,
+    pub(crate) hips: Entity,
+    pub(crate) thighs: [Entity; 2],
+    pub(crate) shins: [Entity; 2],
+    pub(crate) torso: Entity,
+    pub(crate) head: Entity,
+    pub(crate) aim: Entity,
+    pub(crate) arms: [Entity; 2],
+    pub(crate) gun: Entity,
+    pub(crate) team: u8,
+    /// Parts not drawn: limbs shot off, or blown away on death (see `HIDE_*`).
+    pub hidden: u8,
+    pub(crate) faces: [Entity; face::COUNT],
+    pub(crate) phase: f32,
+    pub(crate) dead_for: f32,
+    pub(crate) blink: f32,
     pub angry: f32,
     pub hurt: f32,
-    last_hp: f32,
-    last_pos: Vec3,
+    pub(crate) last_hp: f32,
+    pub(crate) last_pos: Vec3,
     /// The weapon (index, parts) currently in its hands.
-    held: Option<(u8, [u8; SLOT_COUNT])>,
+    pub(crate) held: Option<(u8, [u8; SLOT_COUNT])>,
     /// Smoothed stance weights (0..1) and how much it is moving: everything blends.
-    crouch: f32,
-    prone: f32,
-    moving: f32,
+    pub(crate) crouch: f32,
+    pub(crate) prone: f32,
+    pub(crate) moving: f32,
     /// Hip height on a spring, so dropping and popping up have a little weight to them.
-    hip: Spring,
+    pub(crate) hip: Spring,
     /// Gun recoil on a spring: each shot kicks it, it settles with a slight bounce.
-    kick: Spring,
+    pub(crate) kick: Spring,
     /// Seconds into the current reload; the magazine slap kicks once.
-    reload_t: f32,
-    slapped: bool,
-    reload: f32,
+    pub(crate) reload_t: f32,
+    pub(crate) slapped: bool,
+    pub(crate) reload: f32,
+    /// Which way it falls when it dies (robot-local, x right / z back) and how hard.
+    pub(crate) fall: Vec3,
 }
 
 /// A damped spring for procedural motion.
 #[derive(Clone, Copy, Default)]
-struct Spring {
+pub(crate) struct Spring {
     value: f32,
     velocity: f32,
 }
@@ -150,11 +157,15 @@ fn show_own_robot(view: Res<crate::view::ViewState>, mut robot: Query<&mut Visib
 
 pub struct AvatarPlugin;
 
+/// Label for the system that poses every robot.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AnimateRigs;
+
 impl Plugin for AvatarPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GunCache>().add_systems(Startup, bake_robots).add_systems(
             Update,
-            ((attach_to_players, pose_players, react_to_shots, hold_weapons, show_own_robot).run_if(in_state(MatchPhase::Active)), animate_rigs).chain().in_set(ClientSet::Present),
+            ((attach_to_players, pose_players, react_to_shots, hold_weapons, show_own_robot).run_if(in_state(MatchPhase::Active)), animate_rigs.in_set(AnimateRigs)).chain().in_set(ClientSet::Present),
         );
     }
 }
@@ -273,18 +284,17 @@ fn torso_model(team: Paint, light: Paint) -> BlockModel {
         .cube(light, [0.0, 0.24, 0.252], [0.2, 0.035, 0.006])
 }
 
-fn arms_model(team: Paint, light: Paint) -> BlockModel {
-    let (r_sh, r_el, r_hand) = ([0.27, 0.02, 0.0], [0.25, -0.2, -0.1], [GRIP.x, GRIP.y, GRIP.z + 0.03]);
-    let (l_sh, l_el, l_hand) = ([-0.27, 0.02, 0.0], [-0.2, -0.17, -0.3], [0.06, -0.08, -0.66]);
+fn arm_model(team: Paint, light: Paint, right: bool) -> BlockModel {
+    let (shoulder, elbow, hand) = if right {
+        ([0.27, 0.02, 0.0], [0.25, -0.2, -0.1], [GRIP.x, GRIP.y, GRIP.z + 0.03])
+    } else {
+        ([-0.27, 0.02, 0.0], [-0.2, -0.17, -0.3], [0.06, -0.08, -0.66])
+    };
     BlockModel::new()
-        .segment(team, r_sh, r_el, 0.1)
-        .segment(Paint::Dark, r_el, r_hand, 0.085)
-        .shard(light, r_el, [0.07, 0.07, 0.07])
-        .cube(Paint::Dark, r_hand, [0.09, 0.09, 0.09])
-        .segment(team, l_sh, l_el, 0.1)
-        .segment(Paint::Dark, l_el, l_hand, 0.085)
-        .shard(light, l_el, [0.07, 0.07, 0.07])
-        .cube(Paint::Dark, l_hand, [0.09, 0.09, 0.09])
+        .segment(team, shoulder, elbow, 0.1)
+        .segment(Paint::Dark, elbow, hand, 0.085)
+        .shard(light, elbow, [0.07, 0.07, 0.07])
+        .cube(Paint::Dark, hand, [0.09, 0.09, 0.09])
 }
 
 fn thigh_model(team: Paint) -> BlockModel {
@@ -309,7 +319,7 @@ fn bake_robots(mut commands: Commands, art: Res<Art>, mut meshes: ResMut<Assets<
                 shin: art.bake(&shin_model(light), &mut meshes),
                 torso: art.bake(&torso_model(paint, light), &mut meshes),
                 head: art.bake(&head_model(paint, light), &mut meshes),
-                arms: art.bake(&arms_model(paint, light), &mut meshes),
+                arms: [art.bake(&arm_model(paint, light, false), &mut meshes), art.bake(&arm_model(paint, light, true), &mut meshes)],
                 faces: (0..face::COUNT).map(|f| art.bake(&face_model(f), &mut meshes)).collect(),
             }
         })
@@ -360,12 +370,13 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
         commands.entity(entity).insert(if f == face::SMILE { Visibility::Inherited } else { Visibility::Hidden });
         entity
     });
-    let aim = joint(commands, art, torso, Vec3::Y * SHOULDER, Some(&m.arms));
+    let aim = joint(commands, art, torso, Vec3::Y * SHOULDER, None);
+    let arms = [joint(commands, art, aim, Vec3::ZERO, Some(&m.arms[0])), joint(commands, art, aim, Vec3::ZERO, Some(&m.arms[1]))];
     let gun_root = joint(commands, art, aim, GRIP, gun);
     Rig {
-        body, hips, thighs, shins, torso, head, aim, gun: gun_root, faces, phase: 0.0, dead_for: 0.0, blink: 2.0, angry: 0.0, hurt: 0.0,
+        body, hips, thighs, shins, torso, head, aim, arms, gun: gun_root, faces, team, hidden: 0, phase: 0.0, dead_for: 0.0, blink: 2.0, angry: 0.0, hurt: 0.0,
         last_hp: 0.0, last_pos: Vec3::NAN, held: None, crouch: 0.0, prone: 0.0, moving: 0.0,
-        hip: Spring { value: HIP, velocity: 0.0 }, kick: Spring::default(), reload_t: 0.0, slapped: false, reload: 0.0,
+        hip: Spring { value: HIP, velocity: 0.0 }, kick: Spring::default(), reload_t: 0.0, slapped: false, reload: 0.0, fall: Vec3::Z,
     }
 }
 
@@ -522,8 +533,13 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
 
         // Whole body: prone lies forward, dead falls backward.
         let (body_at, body_rot) = if pose.dead {
-            let fall = ease(rig.dead_for / 0.45);
-            (Vec3::new(0.0, 0.18 * fall, 0.25 * fall), rot(FRAC_PI_2 * fall))
+            // Topple the way the killing blow pushed: fast, a small bounce on landing, then still.
+            let t = rig.dead_for;
+            let fall = ease(t / 0.4) + (t * 18.0).sin() * 0.08 * (-(t - 0.4).max(0.0) * 8.0).exp() * (t > 0.4) as u8 as f32;
+            let dir = Vec3::new(rig.fall.x, 0.0, rig.fall.z).normalize_or(Vec3::Z);
+            let axis = Vec3::Y.cross(dir).normalize_or(Vec3::X);
+            let slump = Vec3::new(0.0, 0.18, 0.0) + dir * 0.35;
+            (slump * fall, Quat::from_axis_angle(axis, FRAC_PI_2 * fall))
         } else {
             (Vec3::new(0.0, 0.2, 1.08) * pr, Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr))
         };

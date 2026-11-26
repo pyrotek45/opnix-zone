@@ -232,10 +232,20 @@ fn spawn_effects(
                 fx.burst(*at, 3, &[paint, Paint::Spark], 2.5, 0.09, 0.5);
                 sounds.write(PlaySfx::new(Sfx::OreGet, Some(*at)));
             }
-            FxEvent::HitMarker { player, kill } if *player == me => {
-                view.hit = 0.14;
+            FxEvent::HitMarker { player, kill, head } if *player == me => {
+                view.hit = if *head { 0.22 } else { 0.14 };
                 view.kill = *kill;
+                view.head_hit = *head;
                 sounds.write(PlaySfx::new(if *kill { Sfx::Kill } else { Sfx::Hit }, None));
+                if *head && !*kill {
+                    sounds.write(PlaySfx { volume: 0.5, ..PlaySfx::new(Sfx::Headshot, None) });
+                }
+            }
+            FxEvent::LimbLost { by, .. } if *by == me => {
+                // A limb came off: the marker flares and a crunchy tick plays.
+                view.hit = 0.25;
+                view.limb_hit = 0.35;
+                sounds.write(PlaySfx::new(Sfx::Medal, None));
             }
             FxEvent::Hurt { player } if *player == me => {
                 view.hurt = 1.0;

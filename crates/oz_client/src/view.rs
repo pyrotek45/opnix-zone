@@ -94,6 +94,10 @@ pub struct ViewState {
     pub third: f32,
     /// A quick zoom-in on a kill, decaying from 1.
     pub punch: f32,
+    /// The last hit marker was a headshot.
+    pub head_hit: bool,
+    /// Seconds left of the "limb off" marker flare.
+    pub limb_hit: f32,
     /// 1 right after a shot, decaying over the weapon's cycle time (bolt / pump / slide animation).
     cycle: f32,
     /// Seconds left of the weapon inspect animation.
@@ -268,6 +272,7 @@ fn follow_player(
     view.swap = (view.swap - dt * 5.0).max(0.0);
     view.kick = (view.kick - dt * 9.0 * view.kick.max(0.3)).max(0.0);
     view.punch = (view.punch - dt * 5.0).max(0.0);
+    view.limb_hit = (view.limb_hit - dt).max(0.0);
     view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).clamp(0.0, 2.5);
     view.sway = (view.sway + controls.look * 0.6).clamp_length_max(0.06) * (-dt * 12.0).exp();
     let sprinting = input.held(buttons::SPRINT) && mover.speed > 6.5;

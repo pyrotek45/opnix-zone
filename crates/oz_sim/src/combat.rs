@@ -296,7 +296,14 @@ pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
         let distance = (target.translation + Vec3::Y).distance(at);
         if player.team != team && Some(player.id) != skip && distance < radius {
             let amount = damage * (1.0 - 0.7 * distance / radius) * blast_scale(content, &player);
+            player.last_hit = crate::player::part::BLAST;
+            // A big blast tears a leg off anyone it does not kill outright.
+            if amount > 60.0 {
+                let leg = if player.id % 2 == 0 { crate::player::part::LEFT_LEG } else { crate::player::part::RIGHT_LEG };
+                crate::player::wound_limb(&mut player, leg, 999.0, owner, fx);
+            }
             damage_player(&mut health, &mut player, amount, Some((&name, team, owner)), state, fx);
+            player.last_hit = crate::player::part::TORSO;
         }
     }
 }
@@ -542,7 +549,7 @@ pub fn resolve_hits(
             commands.entity(hit.target).despawn();
         }
         if let Some(player) = hit.by {
-            fx.write(FxEvent::HitMarker { player, kill: killed });
+            fx.write(FxEvent::HitMarker { player, kill: killed, head: false });
         }
     };
     for hit in events.read() {
