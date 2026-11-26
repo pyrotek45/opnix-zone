@@ -330,6 +330,24 @@ mod tests {
     }
 
     #[test]
+    fn bots_can_cross_the_fixed_maps() {
+        use oz_core::worldgen::{Layout, Weather};
+        for layout in [Layout::Crossroads, Layout::Dockyard] {
+            let map = GameMap::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear));
+            let mut statics = StaticWorld::new(map.recipe.half_extent);
+            for aabb in map.solids() {
+                statics.add(aabb);
+            }
+            let nav = Nav::build(&map, &statics);
+            let mut scratch = NavScratch::default();
+            let ground = |p: Vec2| Vec3::new(p.x, map.height(p.x, p.y), p.y);
+            let (a, b) = (ground(map.team_spawns[0][2]), ground(map.team_spawns[1][2]));
+            let path = nav.path(&mut scratch, a, b).unwrap_or_else(|| panic!("{layout:?}: the bases are not connected"));
+            assert!(path.last().unwrap().xz().distance(b.xz()) < 1.5);
+        }
+    }
+
+    #[test]
     fn stairs_lead_to_the_upper_floors() {
         let map = GameMap::generate(WorldRecipe::town(9, Biome::IronShoals));
         let mut statics = StaticWorld::new(map.recipe.half_extent);

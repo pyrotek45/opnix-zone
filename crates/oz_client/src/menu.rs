@@ -24,6 +24,8 @@ pub struct MenuState {
     pub biome: usize,
     /// 0 = the map's own weather, then each `Weather` in turn.
     pub weather: usize,
+    /// Versus: index into `Layout::VERSUS` (random town or a fixed map).
+    pub layout: usize,
     pub threat: usize,
     pub team_size: u8,
     editing: Option<Field>,
@@ -39,7 +41,7 @@ struct Search(oz_net::lan::Finder);
 
 impl Default for MenuState {
     fn default() -> Self {
-        Self { mode: 0, biome: 0, weather: 0, threat: 1, team_size: 2, editing: None, status: String::new(), found: Vec::new(), searching: false }
+        Self { mode: 0, biome: 0, weather: 0, layout: 0, threat: 1, team_size: 2, editing: None, status: String::new(), found: Vec::new(), searching: false }
     }
 }
 
@@ -93,6 +95,10 @@ fn make_rules(modes: &Modes, menu: &MenuState) -> Option<Rules> {
     let mut rules = (mode.rules)(seed());
     rules.mode = menu.mode as u8;
     rules.recipe.biome = Biome::ALL[menu.biome % Biome::ALL.len()];
+    let layout = oz_core::worldgen::Layout::VERSUS[menu.layout % oz_core::worldgen::Layout::VERSUS.len()];
+    if rules.recipe.layout.is_town() && layout != oz_core::worldgen::Layout::Town {
+        rules.recipe = oz_core::worldgen::WorldRecipe::preset(layout, rules.recipe.biome, rules.recipe.weather);
+    }
     if menu.weather > 0 {
         rules.recipe.weather = oz_core::worldgen::Weather::ALL[(menu.weather - 1) % oz_core::worldgen::Weather::ALL.len()];
     }
@@ -208,6 +214,7 @@ fn menu_actions(
             Act::Mode(step) => menu.mode = cycle(menu.mode, *step, modes.0.len()),
             Act::Biome(step) => menu.biome = cycle(menu.biome, *step, Biome::ALL.len()),
             Act::Weather(step) => menu.weather = cycle(menu.weather, *step, oz_core::worldgen::Weather::ALL.len() + 1),
+            Act::Layout(step) => menu.layout = cycle(menu.layout, *step, oz_core::worldgen::Layout::VERSUS.len()),
             Act::Difficulty(step) => menu.threat = cycle(menu.threat, *step, THREATS.len()),
             Act::TeamSize(step) => menu.team_size = cycle(menu.team_size as usize - 1, *step, 4) as u8 + 1,
             Act::Solo | Act::Host => {
@@ -332,6 +339,8 @@ fn build_menu(
                     ui::stepper(panel, order, format!("WEATHER  <  {weather}  >"), Act::Weather(-1), Act::Weather(1));
                     let versus = mode.playable && (mode.rules)(0).pvp;
                     if versus {
+                        let layout = oz_core::worldgen::Layout::VERSUS[menu.layout % 3];
+                        ui::stepper(panel, order, format!("LAYOUT   <  {}  >", layout.title()), Act::Layout(-1), Act::Layout(1));
                         let n = menu.team_size;
                         ui::stepper(panel, order, format!("TEAMS    <  {n} V {n}  >"), Act::TeamSize(-1), Act::TeamSize(1));
                         ui::label(panel, "BOTS FILL EVERY SLOT A HUMAN DOES NOT TAKE", 14.0, ui::DIM);

@@ -179,6 +179,16 @@ full day/night cycle - and weather - the map's own, clear, overcast, rain, fog
 or random fronts that roll through mid-match. Robots carry flashlights at
 night.
 
+**Maps:** pick a **LAYOUT** in the main menu (or `--map crossroads` /
+`--map dockyard`). *Random Town* is freshly generated every match; the fixed
+maps are the same every time so you can learn them:
+
+* **Crossroads** - two main streets crossing at a fountain plaza, with
+  three-lane flanks through back alleys and courtyards and a three-storey
+  tower overlooking mid.
+* **Dockyard** - a big open-ended warehouse in the middle, stacked shipping
+  container lanes either side and two-storey offices at each base.
+
 The create-a-class screen shows each weapon's fire mode, calibre, damage,
 rate of fire, magazine, reload time and stat bars with its fitted parts.
 Fourteen weapons: pistol, revolver, SMG, PDW, shotgun, auto shotgun,

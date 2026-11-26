@@ -90,6 +90,8 @@ pub enum Act {
     Biome(i32),
     /// Weather choice (0 = the map's own).
     Weather(i32),
+    /// Versus map layout choice.
+    Layout(i32),
     Difficulty(i32),
     TeamSize(i32),
     Set(Setting, i32),

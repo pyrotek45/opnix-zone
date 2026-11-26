@@ -172,6 +172,7 @@ pub fn build_lobby(
                 let n = state.team_size;
                 let place = match rules.recipe.layout {
                     oz_core::worldgen::Layout::Town => format!("{} TOWN", rules.recipe.biome.look().title),
+                    layout @ (oz_core::worldgen::Layout::Crossroads | oz_core::worldgen::Layout::Dockyard) => layout.title().to_string(),
                     _ => rules.recipe.biome.look().title.to_string(),
                 };
                 ui::label(top, format!("{place}   |   {n} V {n}   |   FIRST TO {}", rules.score_limit), 15.0, ui::ACCENT);

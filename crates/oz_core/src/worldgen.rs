@@ -81,7 +81,33 @@ pub enum Layout {
     /// A home island ringed by ore-rich islets joined by sandbars.
     Archipelago,
     /// A compact island town: a street grid of solid buildings and cover, with two team bases.
+    /// Different every seed.
     Town,
+    /// Fixed map: three lanes between the bases - a tight alley, the main street through
+    /// the fountain plaza, and a long market lane watched by a three-storey tower.
+    Crossroads,
+    /// Fixed map: a container yard - corridors of stacked shipping containers, a big
+    /// warehouse in the middle, offices on the flanks.
+    Dockyard,
+}
+
+impl Layout {
+    /// Built as a town (flat ground, streets, team bases).
+    pub fn is_town(self) -> bool {
+        !matches!(self, Layout::Archipelago)
+    }
+
+    /// Versus map choices: the random town, then the fixed maps.
+    pub const VERSUS: [Layout; 3] = [Layout::Town, Layout::Crossroads, Layout::Dockyard];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Layout::Archipelago => "ARCHIPELAGO",
+            Layout::Town => "RANDOM TOWN",
+            Layout::Crossroads => "CROSSROADS",
+            Layout::Dockyard => "DOCKYARD",
+        }
+    }
 }
 
 /// Sky and air for a map; purely visual.
@@ -134,6 +160,16 @@ impl WorldRecipe {
 
     pub fn town(seed: u64, biome: Biome) -> Self {
         Self { seed, biome, half_extent: 96.0, cell: 2.0, main_radius: 68.0, islets: 0, layout: Layout::Town, weather: Weather::from_seed(seed) }
+    }
+
+    /// A fixed map: the same streets every time (its own seed), in any biome and weather.
+    pub fn preset(layout: Layout, biome: Biome, weather: Weather) -> Self {
+        let seed = match layout {
+            Layout::Crossroads => 0xC055_2045,
+            Layout::Dockyard => 0xD0C5_1D0C,
+            _ => 7,
+        };
+        Self { layout, weather, ..Self::town(seed, biome) }
     }
 }
 
@@ -377,7 +413,7 @@ impl World {
                 world.pads = (0..6).map(|i| Vec2::from_angle(TAU * (i as f32 + 0.5) / 6.0) * 10.0).collect();
                 world.scatter(&mut rng.fork());
             }
-            Layout::Town => world.build_town(&mut rng.fork()),
+            Layout::Town | Layout::Crossroads | Layout::Dockyard => world.build_town(&mut rng.fork()),
         }
         world
     }
@@ -392,7 +428,7 @@ impl World {
             let (r, theta) = (d.length(), d.y.atan2(d.x));
             let edge = island.radius * (1.0 + 0.085 * (theta * 3.0 + island.phase[0]).sin() + 0.05 * (theta * 5.0 + island.phase[1]).cos());
             let shore = ((edge - r) / island.falloff).clamp(-1.0, 1.0);
-            if self.recipe.layout == Layout::Town {
+            if self.recipe.layout.is_town() {
                 // Towns sit on a nearly flat plateau so streets read as streets.
                 best = best.max(shore * (1.35 + 0.12 * noise::value(seed ^ 0x70, x * 0.09, z * 0.09)) - 0.15);
                 continue;
@@ -516,6 +552,18 @@ impl World {
     /// A street grid of enterable buildings, cover in the lanes, and a base on each side.
     fn build_town(&mut self, rng: &mut Rng) {
         const LOT: f32 = 21.0;
+        match self.recipe.layout {
+            Layout::Crossroads => self.crossroads(rng),
+            Layout::Dockyard => self.dockyard(rng),
+            _ => self.random_lots(rng, LOT),
+        }
+        self.finish_town(rng);
+    }
+
+    /// The random town: a 5 x 5 grid of lots around an open plaza.
+    fn random_lots(&mut self, rng: &mut Rng, lot: f32) {
+        const LOT: f32 = 21.0;
+        let _ = lot;
         for gx in -2i32..=2 {
             for gz in -2i32..=2 {
                 if (gx, gz) == (0, 0) {
@@ -541,6 +589,82 @@ impl World {
             }
         }
 
+    }
+
+    /// Fixed map: three lanes. North alley (z = 24): two rows of tight two-storey houses.
+    /// Main street (z = 0): the plaza and fountain, parked cars. South market (z = -26): open,
+    /// low walls, overwatched by a three-storey tower. Cross streets at x = -31, 0, 31.
+    fn crossroads(&mut self, rng: &mut Rng) {
+        let blocks = [-42.0, -15.5, 15.5, 42.0];
+        for (i, x) in blocks.into_iter().enumerate() {
+            let inner = i == 1 || i == 2;
+            // Between main street and the alley, and on the alley's far side.
+            self.building(rng, Vec2::new(x, 10.5), Vec2::new(if inner { 7.5 } else { 6.0 }, 4.2), 2);
+            self.building(rng, Vec2::new(x, 32.0), Vec2::new(6.0, 4.0), if inner { 2 } else { 1 });
+            // Between main street and the market.
+            self.building(rng, Vec2::new(x, -11.0), Vec2::new(if inner { 7.0 } else { 6.0 }, 3.6), 1);
+        }
+        // The tower over the market, and quieter blocks at the back.
+        self.building(rng, Vec2::new(0.0, -38.0), Vec2::new(6.2, 5.6), 3);
+        for x in [-40.0, -20.0, 20.0, 40.0] {
+            self.building(rng, Vec2::new(x, -44.0), Vec2::new(5.5, 4.5), if x.abs() < 30.0 { 2 } else { 1 });
+            self.building(rng, Vec2::new(x, 47.0), Vec2::new(5.5, 4.0), 1);
+        }
+        // Market stalls: low courtyard walls along the south lane.
+        for x in [-36.0, -12.0, 12.0, 36.0] {
+            self.courtyard(rng, Vec2::new(x, -26.0));
+        }
+    }
+
+    /// Fixed map: a container yard around a warehouse, with offices on the flanks.
+    fn dockyard(&mut self, rng: &mut Rng) {
+        // The warehouse: a big single hall in the middle.
+        self.building(rng, Vec2::new(0.0, 0.0), Vec2::new(11.0, 8.0), 1);
+        // Offices for overwatch.
+        for (x, z) in [(-34.0, 22.0), (34.0, -22.0), (-34.0, -24.0), (34.0, 24.0)] {
+            self.building(rng, Vec2::new(x, z), Vec2::new(6.0, 5.0), 2);
+        }
+        // Containers: rows that make corridors, some stacked two high.
+        let colours = [Paint::Rust, Paint::Teal, Paint::Coral, Paint::Gold, Paint::Steel, Paint::Blue];
+        let container = |world: &mut World, at: Vec2, along_x: bool, high: bool, rng: &mut Rng| {
+            let half = if along_x { Vec3::new(3.05, 1.3, 1.22) } else { Vec3::new(1.22, 1.3, 3.05) };
+            let g = world.height(at.x, at.y);
+            for level in 0..if high { 2 } else { 1 } {
+                let paint = *rng.pick(&colours).unwrap_or(&Paint::Rust);
+                let c = Vec3::new(at.x, g + half.y + level as f32 * 2.6, at.y);
+                world.solid(Aabb::new(c, half), paint);
+                // Corrugation ribs and a door end.
+                let rib = if along_x { Vec3::new(0.04, half.y * 0.95, half.z + 0.03) } else { Vec3::new(half.x + 0.03, half.y * 0.95, 0.04) };
+                for k in -3..=3 {
+                    let offset = if along_x { Vec3::X * k as f32 * 0.85 } else { Vec3::Z * k as f32 * 0.85 };
+                    world.decor(Aabb::new(c + offset, rib), Paint::Dark);
+                }
+            }
+        };
+        for (x, z0, z1) in [(-18.0, -40.0, -14.0), (-18.0, 14.0, 40.0), (18.0, -40.0, -14.0), (18.0, 14.0, 40.0)] {
+            let mut z = z0;
+            while z < z1 {
+                let high = rng.chance(0.4);
+                container(self, Vec2::new(x, z), false, high, rng);
+                z += 6.6 + if rng.chance(0.3) { 3.0 } else { 0.0 };
+            }
+        }
+        for (x0, x1, z) in [(-46.0, -24.0, -34.0), (-46.0, -24.0, 36.0), (24.0, 46.0, -34.0), (24.0, 46.0, 36.0), (-12.0, 12.0, 26.0), (-12.0, 12.0, -26.0)] {
+            let mut x = x0;
+            while x < x1 {
+                let high = rng.chance(0.3);
+                container(self, Vec2::new(x, z), true, high, rng);
+                x += 6.6 + if rng.chance(0.35) { 3.2 } else { 0.0 };
+            }
+        }
+        // Loose single containers for cover in the open.
+        for (x, z, along) in [(-30.0, 6.0, false), (30.0, -6.0, false), (-8.0, 14.0, true), (8.0, -14.0, true)] {
+            container(self, Vec2::new(x, z), along, false, rng);
+        }
+    }
+
+    /// Everything a town needs whatever its layout: cover, the square, clutter, greenery, bases.
+    fn finish_town(&mut self, rng: &mut Rng) {
         // Cover in the streets and the plaza.
         for i in 0..80 {
             let p = Vec2::new(rng.range(-60.0, 60.0), rng.range(-58.0, 58.0));
@@ -563,7 +687,9 @@ impl World {
             let yaw = if matches!(kind, PropKind::Rock) { rng.range(0.0, TAU) } else { 0.0 };
             self.props.push(Prop { kind, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw, scale });
         }
-        self.plaza(rng);
+        if self.recipe.layout != Layout::Dockyard {
+            self.plaza(rng);
+        }
         self.street_clutter(rng);
         self.greenery(rng);
         let look = self.recipe.biome.look();
@@ -1137,6 +1263,24 @@ mod tests {
         assert!(w.fountain.is_some());
         assert!(w.walkable(0.0, 6.0) && solids.iter().all(|b| !b.touches(0.0, 6.0, 1.0)), "the plaza must be open");
         assert!(!w.doors.is_empty() && !w.windows.is_empty() && !w.grass.is_empty());
+    }
+
+    #[test]
+    fn fixed_maps_are_fixed_and_playable() {
+        for layout in [Layout::Crossroads, Layout::Dockyard] {
+            let a = World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear));
+            let b = World::generate(WorldRecipe::preset(layout, Biome::EmberAtoll, Weather::Rain));
+            // The same streets whatever the biome or weather.
+            assert_eq!(a.blocks.len(), b.blocks.len(), "{layout:?} changed with the biome");
+            let solids: Vec<Aabb> = a.solids().collect();
+            assert!(a.blocks.len() > 400, "{layout:?} is nearly empty");
+            for team in 0..2 {
+                for spawn in &a.team_spawns[team] {
+                    assert!(a.walkable(spawn.x, spawn.y), "{layout:?} spawn {spawn:?} is not on land");
+                    assert!(solids.iter().all(|s| !s.touches(spawn.x, spawn.y, 0.4)), "{layout:?} spawn {spawn:?} is inside something");
+                }
+            }
+        }
     }
 
     #[test]
