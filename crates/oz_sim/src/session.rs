@@ -77,14 +77,22 @@ pub fn new_arsenal(catalog: &Catalog, rules: &Rules) -> Arsenal {
 /// The components every player entity has, on every machine.
 pub fn player_bundle(catalog: &Catalog, rules: &Rules, map: &GameMap, id: u8, name: String) -> impl Bundle {
     let arsenal = new_arsenal(catalog, rules);
+    // Versus teams alternate by id, which keeps humans balanced as they join.
+    let team = if rules.pvp { id % 2 } else { 0 };
+    let mut player = Player::new(id, name, team);
+    player.gear_left = catalog.gear.first().map_or(0, |gear| gear.count);
+    // Start out facing the middle of the map rather than the sea.
+    let spawn = spawn_point(map, id, rules.pvp.then_some(team));
+    let to_center = map.core - spawn.xz();
+    let yaw = f32::atan2(-to_center.x, -to_center.y);
     (
         MatchEntity,
-        Player { id, name, respawn: 0.0, calm: 0.0 },
-        PlayerInput { weapon: arsenal.current, ..default() },
+        player,
+        PlayerInput { weapon: arsenal.current, yaw, ..default() },
         arsenal,
         Health::full(100.0),
         Mover::default(),
-        Transform::from_translation(spawn_point(map, id)),
+        Transform::from_translation(spawn).with_rotation(Quat::from_rotation_y(yaw)),
     )
 }
 

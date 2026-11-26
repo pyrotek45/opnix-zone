@@ -2371,6 +2371,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "iron_town"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "oz_client",
+ "oz_core",
+ "oz_sim",
+]
+
+[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

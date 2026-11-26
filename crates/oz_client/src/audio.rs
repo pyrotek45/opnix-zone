@@ -27,7 +27,7 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
     let mut all: Vec<Sfx> = (0..8).map(Sfx::Shot).collect();
     all.extend([
         Sfx::Reload, Sfx::DryFire, Sfx::Hit, Sfx::Kill, Sfx::Explosion, Sfx::EnemyShot, Sfx::EnemyDeath, Sfx::Hurt, Sfx::UiMove, Sfx::UiAccept,
-        Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Surf, Sfx::NightDrone,
+        Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Land, Sfx::Swap, Sfx::Growl, Sfx::Surf, Sfx::NightDrone,
     ]);
     let clips: HashMap<Sfx, Handle<AudioSource>> = all.into_iter().map(|sfx| (sfx, sources.add(AudioSource { bytes: synth::wav(&synth::render(sfx)).into() }))).collect();
     for sfx in [Sfx::Surf, Sfx::NightDrone] {
@@ -43,6 +43,7 @@ fn play(
     time: Res<Time<Real>>,
     settings: Res<Settings>,
     listener: Query<&Transform, With<WorldCamera>>,
+    mut seed: Local<u32>,
 ) {
     let now = time.elapsed_secs();
     let ears = listener.single().ok().map(|t| t.translation);
@@ -58,7 +59,12 @@ fn play(
         }
         let Some(clip) = bank.clips.get(&event.sfx).cloned() else { continue };
         bank.last.insert(event.sfx, now);
-        commands.spawn((AudioPlayer::new(clip), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain))));
+        // A little random pitch stops repeated sounds from feeling machine-stamped.
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let wobble = (*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+        let musical = matches!(event.sfx, Sfx::UiMove | Sfx::UiAccept | Sfx::UiDeny | Sfx::Buy | Sfx::Dawn | Sfx::Horn | Sfx::Kill);
+        let speed = if musical { 1.0 } else { 1.0 + wobble * 0.16 };
+        commands.spawn((AudioPlayer::new(clip), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain)).with_speed(speed)));
     }
 }
 

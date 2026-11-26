@@ -31,6 +31,8 @@ pub enum Screen {
     None,
     Pause,
     Station { kind: u16, page: usize },
+    /// Versus class editor.
+    Loadout,
     GameOver,
 }
 
@@ -66,6 +68,7 @@ pub enum Act {
     Mode(i32),
     Biome(i32),
     Difficulty(i32),
+    TeamSize(i32),
     Set(Setting, i32),
     Edit(Field),
     Quit,
@@ -75,6 +78,9 @@ pub enum Act {
     Place(u16),
     Page(usize),
     Weapon(i32),
+    // Loadout: which field (0 primary, 1 secondary, 2 perk, 3 gear) and the step.
+    Class(u8, i32),
+    Deploy,
 }
 
 #[derive(Event, Clone, Debug)]

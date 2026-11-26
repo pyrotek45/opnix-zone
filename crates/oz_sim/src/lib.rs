@@ -8,6 +8,7 @@
 //!
 //! Games compose a shooter out of these parts:
 //!
+//! * [`bots`] - AI players that drive the very same controller as humans.
 //! * [`player`] - input, first-person movement, health and respawn.
 //! * [`weapons`] - data-driven firing: hitscan, projectiles, beams, mods.
 //! * [`combat`] - hits, splash, projectiles and the spatial grid.
@@ -19,6 +20,7 @@
 //!
 //! A game mode is "a catalog + rules + a director plugin" (see `games/ember_atoll`).
 
+pub mod bots;
 pub mod combat;
 pub mod enemy;
 pub mod net;
@@ -35,7 +37,8 @@ pub mod prelude {
     pub use crate::combat::{Grid, Hit, Projectile, Solid};
     pub use crate::enemy::{Enemy, spawn_enemy};
     pub use crate::net::{NetId, NetLink};
-    pub use crate::player::{Arsenal, EYE, Health, LocalPlayer, Mover, Player, PlayerInput, buttons};
+    pub use crate::bots::Bot;
+    pub use crate::player::{Arsenal, EYE, Health, Loadout, LocalPlayer, Mover, Player, PlayerInput, buttons};
     pub use crate::session::{Content, Map, MatchEntity, MatchSetup, ModeDef, Modes, PendingMatch, Station, end_match};
     pub use crate::state::{CommandEvent, FxEvent, MatchPhase, MatchState, NetRole, Phase, PlayerCommand, Rules, SimRng};
     pub use crate::structures::{OreNode, Structure};
@@ -94,6 +97,7 @@ impl Plugin for SimPlugin {
                 (
                     combat::rebuild_grid,
                     player::vitals,
+                    bots::drive_bots,
                     weapons::fire_weapons,
                     enemy::think,
                     enemy::act,
@@ -104,7 +108,7 @@ impl Plugin for SimPlugin {
                     .in_set(SimSet::Logic),
             )
             .add_systems(Update, combat::resolve_hits.in_set(SimSet::Resolve))
-            .add_systems(Update, (player::move_local_player, net::smooth_remote).after(SimSet::Receive).before(SimSet::Orders).run_if(in_state(Active)))
+            .add_systems(Update, (player::move_players, net::smooth_remote).after(SimSet::Receive).before(SimSet::Orders).run_if(in_state(Active)))
             .add_systems(Update, (net::host_send, net::client_send).in_set(SimSet::Send).run_if(in_state(Active)))
             .add_systems(OnExit(Active), session::cleanup_match);
     }

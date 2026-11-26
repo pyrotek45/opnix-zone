@@ -75,6 +75,15 @@ impl Biome {
     }
 }
 
+/// Which generator builds the map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Layout {
+    /// A home island ringed by ore-rich islets joined by sandbars.
+    Archipelago,
+    /// A compact island town: a street grid of solid buildings and cover, with two team bases.
+    Town,
+}
+
 /// Everything needed to rebuild a map. This is what travels over the network.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorldRecipe {
@@ -86,11 +95,16 @@ pub struct WorldRecipe {
     pub cell: f32,
     pub main_radius: f32,
     pub islets: usize,
+    pub layout: Layout,
 }
 
 impl WorldRecipe {
     pub fn archipelago(seed: u64, biome: Biome) -> Self {
-        Self { seed, biome, half_extent: 160.0, cell: 2.0, main_radius: 46.0, islets: 5 }
+        Self { seed, biome, half_extent: 160.0, cell: 2.0, main_radius: 46.0, islets: 5, layout: Layout::Archipelago }
+    }
+
+    pub fn town(seed: u64, biome: Biome) -> Self {
+        Self { seed, biome, half_extent: 96.0, cell: 2.0, main_radius: 68.0, islets: 0, layout: Layout::Town }
     }
 }
 
@@ -109,6 +123,8 @@ pub enum PropKind {
     Ruin,
     Pylon,
     Crate,
+    /// A solid building; its size comes from `Prop::half`.
+    Building,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -118,6 +134,8 @@ pub struct Prop {
     pub pos: Vec3,
     pub yaw: f32,
     pub scale: f32,
+    /// Explicit collision half-extents for [`PropKind::Building`].
+    pub half: Vec3,
 }
 
 impl Prop {
@@ -130,6 +148,7 @@ impl Prop {
             PropKind::Ruin => Some(Vec3::new(1.6 * s, 0.9 * s, 0.35 * s)),
             PropKind::Pylon => Some(Vec3::new(0.7, 1.9 * s, 0.7)),
             PropKind::Crate => Some(Vec3::new(0.62, 0.55, 0.62)),
+            PropKind::Building => Some(self.half),
         }
     }
 }
@@ -162,6 +181,8 @@ pub struct World {
     pub spawn: Vec2,
     /// Flat spots around the core for stations and other mode furniture.
     pub pads: Vec<Vec2>,
+    /// Spawn points per team for versus modes (empty on co-op maps).
+    pub team_spawns: [Vec<Vec2>; 2],
     side: usize,
     heights: Vec<f32>,
 }
@@ -187,7 +208,7 @@ impl World {
         let side = (2.0 * recipe.half_extent / recipe.cell).round() as usize + 1;
         let mut world = World {
             recipe, water: WATER_LEVEL, islands, props: Vec::new(), deposits: Vec::new(), landings: Vec::new(),
-            core: Vec2::ZERO, spawn: Vec2::new(0.0, 6.0), pads: Vec::new(), side, heights: Vec::new(),
+            core: Vec2::ZERO, spawn: Vec2::new(0.0, 6.0), pads: Vec::new(), team_spawns: [Vec::new(), Vec::new()], side, heights: Vec::new(),
         };
         world.heights = (0..side * side)
             .map(|i| {
@@ -196,8 +217,13 @@ impl World {
             })
             .collect();
 
-        world.pads = (0..6).map(|i| Vec2::from_angle(TAU * (i as f32 + 0.5) / 6.0) * 10.0).collect();
-        world.scatter(&mut rng.fork());
+        match recipe.layout {
+            Layout::Archipelago => {
+                world.pads = (0..6).map(|i| Vec2::from_angle(TAU * (i as f32 + 0.5) / 6.0) * 10.0).collect();
+                world.scatter(&mut rng.fork());
+            }
+            Layout::Town => world.build_town(&mut rng.fork()),
+        }
         world
     }
 
@@ -211,6 +237,11 @@ impl World {
             let (r, theta) = (d.length(), d.y.atan2(d.x));
             let edge = island.radius * (1.0 + 0.085 * (theta * 3.0 + island.phase[0]).sin() + 0.05 * (theta * 5.0 + island.phase[1]).cos());
             let shore = ((edge - r) / island.falloff).clamp(-1.0, 1.0);
+            if self.recipe.layout == Layout::Town {
+                // Towns sit on a nearly flat plateau so streets read as streets.
+                best = best.max(shore * (1.35 + 0.12 * noise::value(seed ^ 0x70, x * 0.09, z * 0.09)) - 0.15);
+                continue;
+            }
             let mut relief = 0.55 * noise::fbm(seed ^ 0x51ab, x * 0.07, z * 0.07, 3) + 0.25 * noise::value(seed ^ 0x77, x * 0.21, z * 0.21);
             if index == 0 {
                 // One landmark hill, and a flat plateau for the base.
@@ -300,7 +331,7 @@ impl World {
                 if y < min_height || !clear_of_base(p) || crowded || (p.x.abs() < 4.0 && p.y > 0.0 && p.y < 30.0) {
                     continue;
                 }
-                world.props.push(Prop { kind, pos: Vec3::new(p.x, y, p.y), yaw: rng.range(0.0, TAU), scale: rng.range(scale.0, scale.1) });
+                world.props.push(Prop { kind, pos: Vec3::new(p.x, y, p.y), yaw: rng.range(0.0, TAU), scale: rng.range(scale.0, scale.1), half: Vec3::ZERO });
             }
         };
         place(self, rng, PropKind::Palm, look.palms, 0.36, (2.8, 5.1));
@@ -318,6 +349,53 @@ impl World {
             }
             self.landings.push(dir * (r + 3.0));
         }
+    }
+
+    /// A street grid of buildings with cover in the lanes and a base on each side.
+    fn build_town(&mut self, rng: &mut Rng) {
+        const BLOCK: f32 = 21.0;
+        let look = self.recipe.biome.look();
+        for gx in -2i32..=2 {
+            for gz in -2i32..=2 {
+                let center = Vec2::new(gx as f32 * BLOCK, gz as f32 * BLOCK);
+                if (gx, gz) == (0, 0) {
+                    continue; // The plaza stays open.
+                }
+                // Some lots hold two smaller buildings, which opens alleys through the block.
+                let split = rng.chance(0.35);
+                for part in 0..if split { 2 } else { 1 } {
+                    let half = Vec3::new(rng.range(3.6, 6.4), rng.range(1.7, 3.6), if split { rng.range(2.2, 2.9) } else { rng.range(3.6, 6.4) });
+                    let offset = if split { Vec2::new(rng.range(-0.8, 0.8), if part == 0 { -3.6 } else { 3.6 }) } else { Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0)) };
+                    let p = center + offset;
+                    self.props.push(Prop { kind: PropKind::Building, pos: Vec3::new(p.x, self.height(p.x, p.y) - 0.3, p.y), yaw: 0.0, scale: rng.range(0.0, 1.0), half });
+                }
+            }
+        }
+        // Cover in the streets and the plaza.
+        let blocked = |world: &World, p: Vec2, margin: f32| world.props.iter().any(|prop| {
+            let half = prop.solid_half().unwrap_or(Vec3::ZERO);
+            (prop.pos.x - p.x).abs() < half.x + margin && (prop.pos.z - p.y).abs() < half.z + margin
+        });
+        for i in 0..70 {
+            let p = Vec2::new(rng.range(-60.0, 60.0), rng.range(-58.0, 58.0));
+            if blocked(self, p, 1.4) || p.x.abs() > 52.0 {
+                continue;
+            }
+            let kind = match i % 5 { 0 | 1 => PropKind::Crate, 2 => PropKind::Ruin, 3 => PropKind::Rock, _ => PropKind::Pylon };
+            let scale = match kind { PropKind::Ruin => rng.range(0.6, 0.8), PropKind::Rock => rng.range(0.8, 1.3), PropKind::Pylon => rng.range(0.7, 1.0), _ => 1.0 };
+            self.props.push(Prop { kind, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: rng.range(0.0, TAU), scale, half: Vec3::ZERO });
+        }
+        for _ in 0..look.palms / 3 {
+            let p = Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(56.0, 64.0);
+            if !blocked(self, p, 1.0) && p.x.abs() < 50.0 {
+                self.props.push(Prop { kind: PropKind::Palm, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: 0.0, scale: rng.range(2.8, 5.0), half: Vec3::ZERO });
+            }
+        }
+        for team in 0..2 {
+            let x = if team == 0 { -58.0 } else { 58.0 };
+            self.team_spawns[team] = (0..6).map(|i| Vec2::new(x + (i % 2) as f32 * 2.5 * if team == 0 { 1.0 } else { -1.0 }, -12.5 + i as f32 * 5.0)).collect();
+        }
+        self.spawn = self.team_spawns[0][2];
     }
 
     fn place_deposit(&mut self, rng: &mut Rng, island: Island, band: (f32, f32), ore: Ore) {
@@ -477,6 +555,25 @@ mod tests {
         for l in &w.landings {
             assert!(w.height(l.x, l.y) < w.water, "landing {l:?} is on land");
         }
+    }
+
+    #[test]
+    fn town_has_buildings_and_clear_team_bases() {
+        let w = World::generate(WorldRecipe::town(9, Biome::IronShoals));
+        let buildings: Vec<_> = w.props.iter().filter(|p| p.kind == PropKind::Building).collect();
+        assert!(buildings.len() >= 24, "only {} buildings", buildings.len());
+        for team in 0..2 {
+            assert_eq!(w.team_spawns[team].len(), 6);
+            for spawn in &w.team_spawns[team] {
+                assert!(w.walkable(spawn.x, spawn.y), "spawn {spawn:?} is not on land");
+                for prop in &w.props {
+                    let half = prop.solid_half().unwrap();
+                    let inside = (prop.pos.x - spawn.x).abs() < half.x + 0.4 && (prop.pos.z - spawn.y).abs() < half.z + 0.4;
+                    assert!(!inside, "spawn {spawn:?} is inside a {:?}", prop.kind);
+                }
+            }
+        }
+        assert!(w.walkable(0.0, 0.0), "the plaza must be open");
     }
 
     #[test]

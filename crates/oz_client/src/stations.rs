@@ -219,6 +219,7 @@ fn refresh_when_stale(
     let Ok(arsenal) = players.single() else { return };
     // Ammo counts change every shot but never matter to the shop, so blank them.
     let weapons = arsenal.weapons.iter().map(|w| oz_core::arsenal::WeaponState { ammo: 0, ..*w }).collect();
+    let weapons: Vec<_> = weapons;
     let signature = (state.stock, state.upgrades.clone(), state.phase, (state.objective_hp / 10.0) as i32, weapons);
     if last.as_ref() != Some(&signature) {
         if last.is_some() {

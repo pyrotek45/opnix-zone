@@ -1,0 +1,15 @@
+[package]
+name = "iron_town"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["audio"]
+audio = ["oz_client/audio"]
+
+[dependencies]
+oz_core.workspace = true
+oz_sim.workspace = true
+oz_client.workspace = true
+bevy.workspace = true

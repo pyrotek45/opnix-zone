@@ -52,6 +52,9 @@ struct MuzzleFlash;
 #[derive(Component)]
 pub struct Flashlight;
 
+#[derive(Component)]
+struct MuzzleLight;
+
 #[derive(Resource)]
 pub struct WorldTarget(pub Handle<Image>);
 
@@ -65,6 +68,18 @@ pub struct ViewState {
     pub hurt: f32,
     pub hit: f32,
     pub kill: bool,
+    /// Camera shake energy; explosions, hits and recoil add to it.
+    pub shake: f32,
+    /// Weapon lag behind the look direction.
+    sway: Vec2,
+    land: f32,
+    swap: f32,
+    sprint: f32,
+    kick: f32,
+    was_grounded: bool,
+    fall_speed: f32,
+    step: i32,
+    last_weapon: Option<u8>,
     last_shots: u32,
     /// (weapon, equipped parts) currently shown in the hands.
     shown: Option<(u8, [u8; 5])>,
@@ -157,6 +172,7 @@ pub fn spawn_camera(mut commands: Commands, target: Res<WorldTarget>, sky: Res<S
                 NotShadowCaster,
                 NotShadowReceiver,
             ));
+            camera.spawn((MuzzleLight, PointLight { color: Color::srgb(1.0, 0.72, 0.3), intensity: 0.0, range: 9.0, shadows_enabled: false, ..default() }, Transform::from_xyz(0.2, -0.05, -1.0)));
             // Helmet lamp: fades in at night so the dark stays moody but playable.
             camera.spawn((
                 Flashlight,
@@ -170,6 +186,9 @@ pub fn spawn_camera(mut commands: Commands, target: Res<WorldTarget>, sky: Res<S
 fn follow_player(
     time: Res<Time>,
     content: Res<Content>,
+    controls: Res<crate::input::Controls>,
+    mut sounds: EventWriter<crate::fx::PlaySfx>,
+    mut lights: Query<&mut PointLight, With<MuzzleLight>>,
     mut view: ResMut<ViewState>,
     players: Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health), With<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<LocalPlayer>)>,
@@ -184,7 +203,33 @@ fn follow_player(
         if let Some(def) = content.weapons.get(index) {
             view.recoil = (view.recoil + def.recoil).min(2.5);
             view.flash = 0.05;
+            view.shake += def.recoil * 0.1;
+            view.kick = (view.kick + def.recoil * 0.9).min(2.5);
         }
+    }
+    if view.last_weapon != Some(arsenal.current) {
+        if view.last_weapon.is_some() {
+            view.swap = 1.0;
+            sounds.write(crate::fx::PlaySfx { sfx: Sfx::Swap, at: None });
+        }
+        view.last_weapon = Some(arsenal.current);
+    }
+    // Landing: dip the camera and thump in proportion to the fall.
+    if mover.grounded && !view.was_grounded && view.fall_speed < -4.5 {
+        view.land = (-view.fall_speed / 9.0).min(1.3);
+        sounds.write(crate::fx::PlaySfx { sfx: Sfx::Land, at: None });
+    }
+    view.was_grounded = mover.grounded;
+    view.fall_speed = mover.vertical;
+    view.land = (view.land - dt * 5.0).max(0.0);
+    view.swap = (view.swap - dt * 5.0).max(0.0);
+    view.kick = (view.kick - dt * 9.0 * view.kick.max(0.3)).max(0.0);
+    view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).max(0.0).min(2.5);
+    view.sway = (view.sway + controls.look * 0.6).clamp_length_max(0.06) * (-dt * 12.0).exp();
+    let sprinting = input.held(buttons::SPRINT) && mover.speed > 6.5;
+    view.sprint += (sprinting as u8 as f32 - view.sprint) * (1.0 - (-dt * 8.0).exp());
+    if let Ok(mut light) = lights.single_mut() {
+        light.intensity = if view.flash > 0.0 { 90_000.0 } else { 0.0 };
     }
     view.recoil = (view.recoil - dt * 6.0 * view.recoil.max(0.4)).max(0.0);
     view.flash = (view.flash - dt).max(0.0);
@@ -192,19 +237,29 @@ fn follow_player(
     view.hit = (view.hit - dt).max(0.0);
     let walking = (mover.speed / 5.4).min(1.6) * mover.grounded as u8 as f32;
     view.bob += dt * 9.5 * walking;
+    // One footstep per half bob cycle.
+    let step = (view.bob / std::f32::consts::PI) as i32;
+    if step != view.step {
+        view.step = step;
+        if walking > 0.3 && health.alive() {
+            sounds.write(crate::fx::PlaySfx { sfx: Sfx::Step, at: None });
+        }
+    }
 
     let aiming = input.held(buttons::AIM) && arsenal.reload <= 0.0 && health.alive();
     view.ads += (aiming as u8 as f32 - view.ads) * (1.0 - (-dt * 16.0).exp());
 
     let ads_fov = content.weapons.get(index).zip(arsenal.weapons.get(index)).map_or(BASE_FOV, |(def, state)| resolve(def, state, &content.attachments).ads_fov);
     if let Projection::Perspective(perspective) = &mut *projection {
-        perspective.fov = (BASE_FOV + (ads_fov - BASE_FOV) * view.ads).to_radians();
+        perspective.fov = (BASE_FOV + (ads_fov - BASE_FOV) * view.ads + 5.0 * view.sprint * (1.0 - view.ads) + view.kick * 0.9).to_radians();
     }
 
     let bob = Vec3::new(0.0, (view.bob * 2.0).sin() * 0.035 * walking * (1.0 - view.ads), 0.0);
     let (eye, roll) = if health.alive() { (EYE, 0.0) } else { (0.45, 0.5) };
-    camera.translation = player.translation + Vec3::Y * eye + bob;
-    camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw, input.pitch + view.recoil * 0.012, roll);
+    let t = time.elapsed_secs();
+    let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
+    camera.translation = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob;
+    camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x, input.pitch + view.recoil * 0.012 + shake.y, roll + shake.z);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -255,8 +310,8 @@ fn viewmodel(
     // Line the sights (or the optic) up with the centre of the screen.
     let ads_pos = Vec3::new(0.0, -0.19 * GUN_SCALE, -0.40);
     transform.translation = GUN_POS.lerp(ads_pos, view.ads)
-        + Vec3::new(view.bob.sin() * 0.018 * walking, (view.bob * 2.0).sin() * 0.016 * walking - reload * 0.2 + (t * 1.3).sin() * 0.003, view.recoil * 0.05);
-    transform.rotation = Quat::from_rotation_x(view.recoil * 0.07 - reload * 0.65) * Quat::from_rotation_z(reload * 0.26);
+        + Vec3::new(view.bob.sin() * 0.018 * walking + view.sway.x * 0.5, (view.bob * 2.0).sin() * 0.016 * walking - reload * 0.2 - view.swap * 0.22 - view.land * 0.05 - view.sway.y * 0.5 + (t * 1.3).sin() * 0.003, view.recoil * 0.05);
+    transform.rotation = Quat::from_rotation_x(view.recoil * 0.07 - reload * 0.65 - view.swap * 0.5) * Quat::from_rotation_z(reload * 0.26 + view.sway.x * 1.6);
 
     if let Ok((mut flash_transform, mut flash_visibility)) = flash.single_mut() {
         let lit = view.flash > 0.0 && health.alive() && def.mag > 0;

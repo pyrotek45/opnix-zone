@@ -23,15 +23,20 @@ pub struct MenuState {
     pub mode: usize,
     pub biome: usize,
     pub threat: usize,
+    pub team_size: u8,
     editing: Option<Field>,
     status: String,
 }
 
 impl Default for MenuState {
     fn default() -> Self {
-        Self { mode: 0, biome: 0, threat: 1, editing: None, status: String::new() }
+        Self { mode: 0, biome: 0, threat: 1, team_size: 2, editing: None, status: String::new() }
     }
 }
+
+/// Label for the system that resets the screen when a match starts.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EnterMatch;
 
 /// Label for the menu's input systems; station input runs before them.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -43,12 +48,12 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MenuState>()
             .init_resource::<JoinStatus>()
-            .add_systems(OnEnter(MatchPhase::Active), |mut screen: ResMut<Screen>| *screen = Screen::None)
+            .add_systems(OnEnter(MatchPhase::Active), (|mut screen: ResMut<Screen>| *screen = Screen::None).in_set(EnterMatch))
             .add_systems(OnExit(MatchPhase::Active), |mut screen: ResMut<Screen>| *screen = Screen::Main)
             .add_systems(Update, (type_text, toggle_pause, menu_actions, watch_match, apply_settings).chain().in_set(MenuActions).in_set(ClientSet::Input).after(crate::input::ReadDevices))
             .add_systems(
                 Update,
-                (ui::clear_screen, build_menu, crate::stations::build_station, ui::finish_rebuild).chain().in_set(ClientSet::Present),
+                (ui::clear_screen, build_menu, crate::stations::build_station, crate::loadout::build_loadout, ui::finish_rebuild).chain().in_set(ClientSet::Present),
             );
     }
 }
@@ -62,6 +67,9 @@ fn make_rules(modes: &Modes, menu: &MenuState) -> Option<Rules> {
     let mut rules = (mode.rules)(seed());
     rules.mode = menu.mode as u8;
     rules.recipe.biome = Biome::ALL[menu.biome % Biome::ALL.len()];
+    if rules.pvp {
+        rules.team_size = menu.team_size;
+    }
     rules.difficulty *= THREATS[menu.threat % THREATS.len()].1;
     Some(rules)
 }
@@ -109,7 +117,7 @@ fn watch_match(
     mut shown: Local<bool>,
 ) {
     let active = *phase.get() == MatchPhase::Active;
-    let lost = active && state.is_some_and(|state| state.phase == Phase::Lost);
+    let lost = active && state.is_some_and(|state| state.over());
     if lost && !*shown && *screen == Screen::None {
         *screen = Screen::GameOver;
     }
@@ -149,11 +157,13 @@ fn menu_actions(
                 Screen::Join => *screen = Screen::Main,
                 Screen::Settings => *screen = if in_match { Screen::Pause } else { Screen::Main },
                 Screen::Pause => *screen = Screen::None,
+                Screen::GameOver => *screen = Screen::None,
                 _ => {}
             },
             Act::Mode(step) => menu.mode = cycle(menu.mode, *step, modes.0.len()),
             Act::Biome(step) => menu.biome = cycle(menu.biome, *step, Biome::ALL.len()),
             Act::Difficulty(step) => menu.threat = cycle(menu.threat, *step, THREATS.len()),
+            Act::TeamSize(step) => menu.team_size = cycle(menu.team_size as usize - 1, *step, 4) as u8 + 1,
             Act::Solo | Act::Host => {
                 let Some(rules) = make_rules(&modes, &menu) else {
                     menu.status = "THAT MODE IS PLANNED BUT NOT PLAYABLE YET".into();
@@ -251,7 +261,13 @@ fn build_menu(
                     ui::label(panel, mode.blurb, 14.0, if mode.playable { ui::DIM } else { ui::WARN });
                     ui::stepper(panel, order, format!("MAP      <  {}  >", Biome::ALL[menu.biome].look().title), Act::Biome(-1), Act::Biome(1));
                     ui::label(panel, Biome::ALL[menu.biome].look().blurb, 14.0, ui::DIM);
-                    ui::stepper(panel, order, format!("THREAT   <  {}  >", THREATS[menu.threat].0), Act::Difficulty(-1), Act::Difficulty(1));
+                    let versus = mode.playable && (mode.rules)(0).pvp;
+                    if versus {
+                        let n = menu.team_size;
+                        ui::stepper(panel, order, format!("TEAMS    <  {n} V {n}  >"), Act::TeamSize(-1), Act::TeamSize(1));
+                        ui::label(panel, "BOTS FILL EVERY SLOT A HUMAN DOES NOT TAKE", 14.0, ui::DIM);
+                    }
+                    ui::stepper(panel, order, format!("{}   <  {}  >", if versus { "BOTS  " } else { "THREAT" }, THREATS[menu.threat].0), Act::Difficulty(-1), Act::Difficulty(1));
                     ui::button(panel, order, "SETTINGS", Act::Go(Screen::Settings));
                     ui::button(panel, order, "QUIT", Act::Quit);
                     if !menu.status.is_empty() {
@@ -320,9 +336,17 @@ fn build_menu(
             });
         }
         Screen::GameOver => {
-            let summary = state.map_or(String::new(), |state| format!("REACHED NIGHT {}   |   {} KILLS", state.day, state.kills));
+            let (headline, tint, summary) = match state.as_deref() {
+                Some(state) if state.phase == Phase::Won => (
+                    format!("TEAM {} WINS", if state.winner == 0 { "TEAL" } else { "CORAL" }),
+                    ui::GOOD,
+                    format!("TEAL {}   |   CORAL {}", state.scores[0], state.scores[1]),
+                ),
+                Some(state) => ("THE LINE HAS FALLEN".to_string(), ui::WARN, format!("REACHED NIGHT {}   |   {} KILLS", state.day, state.kills)),
+                None => (String::new(), ui::WARN, String::new()),
+            };
             ui::root(&mut commands, 0.7).with_children(|root| {
-                ui::label(root, "THE LINE HAS FALLEN", 40.0, ui::WARN);
+                ui::label(root, headline, 40.0, tint);
                 ui::label(root, summary, 18.0, ui::TEXT);
                 root.spawn(ui::panel(420.0)).with_children(|panel| {
                     ui::button(panel, order, "RETURN TO MENU", Act::Leave);
@@ -330,6 +354,6 @@ fn build_menu(
                 });
             });
         }
-        Screen::None | Screen::Station { .. } => {}
+        Screen::None | Screen::Station { .. } | Screen::Loadout => {}
     }
 }

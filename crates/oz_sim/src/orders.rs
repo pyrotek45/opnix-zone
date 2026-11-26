@@ -32,7 +32,7 @@ pub fn process_commands(
     mut state: ResMut<MatchState>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(&Player, &Transform, &mut Arsenal, &mut Health)>,
+    mut players: Query<(&mut Player, &Transform, &mut Arsenal, &mut Health)>,
     solids: Query<(Entity, &Transform, &Solid)>,
     structures: Query<&Structure>,
     ores: Query<(Entity, &Transform), With<OreNode>>,
@@ -44,7 +44,7 @@ pub fn process_commands(
             fx.write(FxEvent::tell(id, why));
             fx.write(FxEvent::Cue { to: id, sfx: Sfx::UiDeny });
         };
-        let Some((_, transform, mut arsenal, _)) = players.iter_mut().find(|(player, ..)| player.id == id) else { continue };
+        let Some((mut player, transform, mut arsenal, _)) = players.iter_mut().find(|(player, ..)| player.id == id) else { continue };
         let pay = |state: &mut MatchState, cost: &Cost| state.stock.pay(cost);
 
         let done: Option<String> = match event.command.clone() {
@@ -79,11 +79,12 @@ pub fn process_commands(
             PlayerCommand::EquipPart { weapon, slot, variant } => {
                 let (w, s, v) = (weapon as usize, slot as usize, variant as usize);
                 let Some(part) = content.attachments.get(s).and_then(|variants| variants.get(v)) else { continue };
-                if !arsenal.owns(w) || s >= 5 || v >= 8 {
+                // Versus loadouts customise any weapon for free; co-op players pay for parts on guns they own.
+                if w >= arsenal.weapons.len() || (!arsenal.owns(w) && !rules.pvp) || s >= 5 || v >= 8 {
                     deny(&mut fx, "WEAPON NOT OWNED");
                     continue;
                 }
-                if !arsenal.weapons[w].has_part(s, v) {
+                if !arsenal.weapons[w].has_part(s, v) && !rules.pvp {
                     if !pay(&mut state, &Cost::credits(part.cost)) {
                         deny(&mut fx, "NOT ENOUGH CREDITS");
                         continue;
@@ -200,6 +201,21 @@ pub fn process_commands(
                 }
                 fx.write(FxEvent::notice(format!("{} UPGRADED TO LEVEL {}", def.name, level + 1)));
                 None
+            }
+            PlayerCommand::Loadout(loadout) => {
+                let valid = |index: u8| (index as usize) < content.weapons.len();
+                if !rules.pvp || !valid(loadout.primary) || !valid(loadout.secondary) || loadout.primary == loadout.secondary {
+                    deny(&mut fx, "INVALID LOADOUT");
+                    continue;
+                }
+                // Fresh spawns swap instantly; otherwise the class applies on the next life.
+                if player.life < 10.0 {
+                    crate::player::apply_loadout(&content, &mut player, &mut arsenal, loadout);
+                    None
+                } else {
+                    player.loadout = Some(loadout);
+                    Some("LOADOUT APPLIES ON YOUR NEXT SPAWN".to_string())
+                }
             }
             // Mode actions belong to the mode's director, which reads the same events.
             PlayerCommand::Mode(_) => continue,

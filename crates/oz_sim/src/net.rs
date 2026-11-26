@@ -114,6 +114,8 @@ pub struct Private {
     pub health: Health,
     pub arsenal: Arsenal,
     pub respawn: f32,
+    pub team: u8,
+    pub gear_left: u8,
     /// Set while dead so the client lands on the respawn point.
     pub teleport: Option<Vec3>,
 }
@@ -275,13 +277,13 @@ pub fn host_receive(
                     link.host.send(peer, &S2C::Refused("VERSION MISMATCH".into()));
                     continue;
                 }
-                let Some(id) = (1..=250u8).find(|id| !link.peers.values().any(|used| used == id)) else {
+                let Some(id) = (1..crate::bots::FIRST_BOT_ID).find(|id| !link.peers.values().any(|used| used == id)) else {
                     link.host.send(peer, &S2C::Refused("SERVER FULL".into()));
                     continue;
                 };
                 let name: String = name.chars().filter(|c| !c.is_control()).take(16).collect();
                 let bundle = player_bundle(&content, &rules, &map, id, name.clone());
-                let spawn = crate::player::spawn_point(&map, id);
+                let spawn = crate::player::spawn_point(&map, id, rules.pvp.then_some(id % 2));
                 commands.spawn((bundle, ids.next(), Remote { pos: spawn, yaw: 0.0 }));
                 link.peers.insert(peer, id);
                 link.full_timer = 0.0;
@@ -366,7 +368,7 @@ pub fn host_send(
     let q = Quant::new(&rules);
     let mut entities = Vec::with_capacity(players.iter().len() + enemies.iter().len() + shots.iter().len());
     for (id, player, transform, health, arsenal, _) in &players {
-        entities.push(EntState { id: id.0, kind: kind::PLAYER, sub: player.id, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), hp: fraction(health), aux: arsenal.current });
+        entities.push(EntState { id: id.0, kind: kind::PLAYER, sub: player.id, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), hp: fraction(health), aux: (arsenal.current & 0x3f) | (player.team << 6) });
     }
     for (id, enemy, transform, health) in &enemies {
         entities.push(EntState { id: id.0, kind: kind::ENEMY, sub: enemy.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), hp: fraction(health), aux: enemy.attacks });
@@ -388,8 +390,9 @@ pub fn host_send(
     let peers: Vec<(PeerId, u8)> = link.peers.iter().map(|(peer, id)| (*peer, *id)).collect();
     for (peer, id) in peers {
         if let Some((_, player, transform, health, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == id) {
-            let teleport = (!health.alive() || player.respawn > 0.0).then_some(transform.translation);
-            link.host.send(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, teleport }));
+            // Just-spawned players are also pinned so they start at their base.
+            let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4).then_some(transform.translation);
+            link.host.send(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, teleport }));
         }
     }
 }
@@ -437,7 +440,7 @@ pub fn client_receive(
                             ore.amount = ore.max * e.hp as f32 / 255.0;
                         }
                         if let Some(mut input) = input {
-                            input.weapon = e.aux;
+                            input.weapon = e.aux & 0x3f;
                         }
                         continue;
                     }
@@ -445,14 +448,14 @@ pub fn client_receive(
                     let hp = e.hp as f32 / 255.0;
                     let entity = match e.kind {
                         kind::PLAYER => commands
-                            .spawn((base, Player { id: e.sub, name: format!("PLAYER {}", e.sub + 1), respawn: 0.0, calm: 0.0 }, PlayerInput { weapon: e.aux, ..default() }, Health { hp: 100.0 * hp, max: 100.0 }))
+                            .spawn((base, Player::new(e.sub, format!("PLAYER {}", e.sub + 1), e.aux >> 6), PlayerInput { weapon: e.aux & 0x3f, ..default() }, Health { hp: 100.0 * hp, max: 100.0 }))
                             .id(),
                         kind::ENEMY => {
                             let Some(def) = content.enemies.get(e.sub as usize) else { continue };
                             commands.spawn((base, Enemy { kind: e.sub as u16, attacks: e.aux, ..default() }, Health { hp: def.hp * hp, max: def.hp })).id()
                         }
                         kind::PROJECTILE => {
-                            let shot = Projectile { velocity: Vec3::ZERO, gravity: 0.0, damage: 0.0, splash: 0.0, look: ShotLook::from_index(e.sub), owner: None, life: 1.0 };
+                            let shot = Projectile { velocity: Vec3::ZERO, gravity: 0.0, damage: 0.0, splash: 0.0, look: ShotLook::from_index(e.sub), owner: None, team: 255, life: 1.0 };
                             commands.spawn((base, shot)).id()
                         }
                         kind::STRUCTURE => {
@@ -478,6 +481,8 @@ pub fn client_receive(
                     *health = private.health;
                     *arsenal = private.arsenal;
                     player.respawn = private.respawn;
+                    player.team = private.team;
+                    player.gear_left = private.gear_left;
                     // While dead the host owns our position, so we wake up at the spawn point.
                     if let Some(at) = private.teleport {
                         transform.translation = at;

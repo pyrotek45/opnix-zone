@@ -4,7 +4,7 @@
 //! full burst batches into a few draw calls. A hard cap keeps worst-case
 //! fights cheap.
 
-use crate::{ClientSet, art::Art, hud::Notices, view::ViewState};
+use crate::{ClientSet, art::Art, hud::Notices, view::{ViewState, WorldCamera}};
 use bevy::{pbr::NotShadowCaster, prelude::*};
 use oz_sim::prelude::*;
 
@@ -32,7 +32,7 @@ pub struct FxPlugin;
 
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<PlaySfx>().add_systems(Update, (spawn_effects, tick_particles).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+        app.add_event::<PlaySfx>().add_systems(Update, (spawn_effects, tick_particles, night_calls).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -85,9 +85,13 @@ fn spawn_effects(
     mut sounds: EventWriter<PlaySfx>,
     local: Query<&Player, With<LocalPlayer>>,
     particles: Query<(), With<Particle>>,
+    cameras: Query<&Transform, With<WorldCamera>>,
     mut rng: Local<Option<Rng>>,
 ) {
     let me = local.single().map_or(255, |player| player.id);
+    let camera = cameras.single().ok().copied().unwrap_or_default();
+    // Shake falls off with distance from the blast.
+    let rumble = |at: Vec3, power: f32| (power / (1.0 + camera.translation.distance(at) * 0.12)).min(1.6);
     let rng = rng.get_or_insert_with(|| Rng::new(0x5eed));
     let mut fx = Spawner { commands: &mut commands, art: &art, rng, budget: MAX_PARTICLES.saturating_sub(particles.iter().len()) };
     for event in events.read() {
@@ -100,7 +104,17 @@ fn spawn_effects(
                     // Our own tracers start a little ahead so they do not fill the screen.
                     let start = if *by == me { *from + (*to - *from).normalize_or_zero() * 0.6 } else { *from };
                     fx.streak(start, *to, 0.022, if *by == 255 { Paint::Blue } else { Paint::Glow }, 0.055);
-                    fx.burst(*to, 2, &[Paint::Spark, Paint::Dark], 3.0, 0.07, 0.3);
+                    fx.burst(*to, 3, &[Paint::Spark, Paint::Dark], 3.5, 0.07, 0.3);
+                    // A hot flash where the round lands.
+                    let size = Vec3::splat(0.07);
+                    fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(*to).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.07, initial: 0.07, size, grow: 2.5 });
+                    if *by == me {
+                        // Spent casing tumbling out of the ejection port.
+                        let size = Vec3::new(0.02, 0.02, 0.05);
+                        let port = camera.translation + camera.rotation * Vec3::new(0.24, -0.14, -0.45);
+                        let velocity = camera.rotation * Vec3::new(fx.rng.range(1.2, 2.4), fx.rng.range(1.0, 2.0), fx.rng.range(-0.4, 0.4));
+                        fx.particle(Shape::Cube, Paint::Gold, Transform::from_translation(port).with_scale(size), Particle { velocity, gravity: 9.8, life: 0.6, initial: 0.6, size, grow: 0.0 });
+                    }
                 }
                 sounds.write(PlaySfx { sfx: Sfx::Shot(*sound), at: (*by != me).then_some(*from) });
             }
@@ -108,6 +122,7 @@ fn spawn_effects(
                 let size = Vec3::splat(radius * 0.25);
                 fx.particle(Shape::Shard, Paint::Spark, Transform::from_translation(*at).with_scale(size), Particle { velocity: Vec3::ZERO, gravity: 0.0, life: 0.22, initial: 0.22, size, grow: 3.2 });
                 fx.burst(*at, 22, &[Paint::Glow, Paint::Spark, Paint::Dark, Paint::Rust], 9.0, 0.22, 0.9);
+                view.shake += rumble(*at, radius * 0.45);
                 sounds.write(PlaySfx { sfx: Sfx::Explosion, at: Some(*at) });
             }
             FxEvent::EnemyDied { at, kind } => {
@@ -132,6 +147,7 @@ fn spawn_effects(
             }
             FxEvent::Hurt { player } if *player == me => {
                 view.hurt = 1.0;
+                view.shake += 0.7;
                 sounds.write(PlaySfx { sfx: Sfx::Hurt, at: None });
             }
             FxEvent::Sound { sfx, at } => {
@@ -143,6 +159,20 @@ fn spawn_effects(
             FxEvent::Notice { to, text } if *to == 255 || *to == me => notices.push(text.clone()),
             _ => {}
         }
+    }
+}
+
+/// Now and then something out in the dark calls to the others.
+fn night_calls(time: Res<Time>, state: Res<MatchState>, enemies: Query<&Transform, With<Enemy>>, mut sounds: EventWriter<PlaySfx>, mut wait: Local<f32>, mut pick: Local<u32>) {
+    *wait -= time.delta_secs();
+    if *wait > 0.0 || state.phase != Phase::Night {
+        return;
+    }
+    *pick = pick.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    *wait = 1.8 + (*pick >> 24) as f32 / 255.0 * 3.5;
+    let count = enemies.iter().len();
+    if let Some(caller) = enemies.iter().nth(*pick as usize % count.max(1)) {
+        sounds.write(PlaySfx { sfx: Sfx::Growl, at: Some(caller.translation) });
     }
 }
 

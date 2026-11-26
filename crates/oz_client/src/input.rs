@@ -7,7 +7,8 @@
 //! | Move / look   | WASD / mouse          | left / right stick   |
 //! | Fire / aim    | LMB / RMB             | RT / LT              |
 //! | Reload        | R                     | X                    |
-//! | Interact      | E                     | X (hold near a station: tap) |
+//! | Interact      | E                     | X                    |
+//! | Gear / class  | G / L                 | B / Select           |
 //! | Jump / sprint | Space / Shift         | A / click left stick |
 //! | Weapons       | 1-8, wheel, Q         | LB / RB, Y           |
 //! | Pause / back  | Esc                   | Start / B            |
@@ -48,6 +49,10 @@ pub struct Controls {
     pub jump: bool,
     pub sprint: bool,
     pub interact: bool,
+    /// Throw / use equipment (held).
+    pub gear: bool,
+    /// Open the loadout screen (versus modes).
+    pub loadout: bool,
     pub weapon_step: i32,
     pub weapon_slot: Option<u8>,
     pub pause: bool,
@@ -103,6 +108,8 @@ fn read_devices(
     c.jump = key(KeyCode::Space);
     c.sprint = key(KeyCode::ShiftLeft);
     c.interact = tap(KeyCode::KeyE);
+    c.gear = key(KeyCode::KeyG);
+    c.loadout = tap(KeyCode::KeyL);
     c.pause = tap(KeyCode::Escape);
     c.weapon_step = if scroll.delta.y > 0.0 { -1 } else if scroll.delta.y < 0.0 { 1 } else { 0 } + tap(KeyCode::KeyQ) as i32;
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
@@ -144,6 +151,8 @@ fn read_devices(
         c.reload |= held(GamepadButton::West);
         c.reload_pressed |= hit(GamepadButton::West);
         c.interact |= hit(GamepadButton::West);
+        c.gear |= held(GamepadButton::East);
+        c.loadout |= hit(GamepadButton::Select);
         c.jump |= held(GamepadButton::South);
         c.sprint |= held(GamepadButton::LeftThumb);
         c.pause |= hit(GamepadButton::Start);
@@ -212,6 +221,7 @@ fn drive_player(
         (controls.reload && !building, buttons::RELOAD),
         (controls.jump, buttons::JUMP),
         (controls.sprint, buttons::SPRINT),
+        (controls.gear && !building, buttons::GEAR),
     ] {
         if on {
             held |= bit;

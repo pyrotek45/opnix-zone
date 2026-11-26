@@ -2,10 +2,10 @@
 
 use crate::{
     enemy::Enemy,
-    player::{Health, Player},
+    player::{Health, Player, damage_player},
     session::{Content, Map, MatchEntity},
     sim_dt,
-    state::{FxEvent, MatchState},
+    state::{FxEvent, MatchState, Rules},
     structures::Structure,
 };
 use bevy::prelude::*;
@@ -189,6 +189,8 @@ pub struct Projectile {
     pub look: ShotLook,
     /// `Some(player)` = friendly, hurts enemies. `None` = hostile, hurts players, structures, objective.
     pub owner: Option<u8>,
+    /// The owner's team in versus modes; shots never hurt their own team.
+    pub team: u8,
     pub life: f32,
 }
 
@@ -206,6 +208,7 @@ pub fn splash(grid: &Grid, hits: &mut EventWriter<Hit>, at: Vec3, radius: f32, d
 pub fn fly_projectiles(
     time: Res<Time>,
     map: Res<Map>,
+    rules: Res<Rules>,
     grid: Res<Grid>,
     mut state: ResMut<MatchState>,
     mut commands: Commands,
@@ -240,12 +243,30 @@ pub fn fly_projectiles(
             } else if impact.is_some() && shot.splash > 0.0 {
                 splash(&grid, &mut hits, to, shot.splash, shot.damage * 0.7, shot.owner, None);
             }
+            if rules.pvp {
+                // Direct hit, or caught in the blast when it lands.
+                let shooter = shot.owner.map(|id| ("", shot.team, id));
+                let mut direct = None;
+                for (target, mut health, mut player) in &mut players {
+                    if player.team != shot.team && health.alive() && ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.6).is_some_and(|d| d <= length) {
+                        damage_player(&mut health, &mut player, shot.damage, shooter, &mut state, &mut fx);
+                        direct = Some(player.id);
+                        impact = Some(to);
+                    }
+                }
+                if let (Some(at), true) = (impact, shot.splash > 0.0) {
+                    for (target, mut health, mut player) in &mut players {
+                        let distance = (target.translation + Vec3::Y).distance(at);
+                        if player.team != shot.team && Some(player.id) != direct && distance < shot.splash {
+                            damage_player(&mut health, &mut player, shot.damage * (1.0 - 0.7 * distance / shot.splash), shooter, &mut state, &mut fx);
+                        }
+                    }
+                }
+            }
         } else {
             for (target, mut health, mut player) in &mut players {
                 if health.alive() && ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.75).is_some_and(|d| d <= length) {
-                    health.hp -= shot.damage;
-                    player.calm = 0.0;
-                    fx.write(FxEvent::Hurt { player: player.id });
+                    damage_player(&mut health, &mut player, shot.damage, None, &mut state, &mut fx);
                     impact = Some(to);
                 }
             }

@@ -52,6 +52,12 @@ pub struct Rules {
     /// Bitmask of catalog weapons every player starts with.
     pub starter_weapons: u32,
     pub respawn_seconds: f32,
+    /// Team-versus-team: players damage the other team, bots fill empty slots.
+    pub pvp: bool,
+    /// Players per team in versus modes (humans first, bots for the rest).
+    pub team_size: u8,
+    /// Team score that wins a versus match.
+    pub score_limit: u32,
 }
 
 /// The replicated heart of a match. Small enough to send with every snapshot.
@@ -71,6 +77,10 @@ pub struct MatchState {
     /// One level per `Catalog::upgrades` entry.
     pub upgrades: Vec<u8>,
     pub kills: u32,
+    /// Team scores in versus modes.
+    pub scores: [u32; 2],
+    /// Winning team once `phase` is `Won`.
+    pub winner: u8,
 }
 
 impl MatchState {
@@ -97,6 +107,8 @@ pub enum PlayerCommand {
     BuyMod { weapon: u8, kind: ModKind },
     Build { kind: u16, x: f32, z: f32, yaw: f32 },
     Upgrade(u8),
+    /// Versus modes: choose weapons, perk and gear for the next spawn.
+    Loadout(crate::player::Loadout),
     /// Mode-specific action, interpreted by the mode's director (e.g. "call nightfall").
     Mode(u8),
 }

@@ -30,6 +30,9 @@ pub fn frontier_rules(seed: u64) -> Rules {
         start_stock: Stock { credits: 220, ore: [30, 0, 0] },
         starter_weapons: 0b11,
         respawn_seconds: 10.0,
+        pvp: false,
+        team_size: 0,
+        score_limit: 0,
     }
 }
 
@@ -45,6 +48,9 @@ pub fn horde_rules(seed: u64) -> Rules {
         start_stock: Stock { credits: 400, ore: [0; 3] },
         starter_weapons: 0b110,
         respawn_seconds: 20.0,
+        pvp: false,
+        team_size: 0,
+        score_limit: 0,
     }
 }
 

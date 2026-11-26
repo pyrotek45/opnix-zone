@@ -9,6 +9,7 @@
 //! * [`worldgen`] - procedural maps (heightfield, props, ore, spawn points).
 //! * [`arsenal`] - weapons, attachments, mods and the stat pipeline.
 //! * [`content`] - enemy / structure / upgrade definitions and the [`content::Catalog`].
+//! * [`kit`] - a ready-made arsenal games can reuse.
 //! * [`economy`] - shared stock and costs.
 //! * [`synth`] - procedural sound effects.
 
@@ -17,6 +18,7 @@
 pub mod arsenal;
 pub mod content;
 pub mod economy;
+pub mod kit;
 pub mod model;
 pub mod noise;
 pub mod rng;

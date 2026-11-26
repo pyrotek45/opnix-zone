@@ -24,6 +24,8 @@ pub mod audio;
 pub mod fx;
 pub mod hud;
 pub mod input;
+pub mod launch;
+pub mod loadout;
 pub mod menu;
 pub mod retro;
 pub mod scene;
@@ -79,6 +81,7 @@ impl Plugin for ClientPlugin {
             menu::MenuPlugin,
             stations::StationsPlugin,
             hud::HudPlugin,
+            loadout::LoadoutPlugin,
         ));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);

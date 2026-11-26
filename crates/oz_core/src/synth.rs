@@ -31,6 +31,12 @@ pub enum Sfx {
     Dawn,
     Alarm,
     Step,
+    /// Heavy landing after a jump or fall.
+    Land,
+    /// Weapon swap.
+    Swap,
+    /// A distant machine call in the dark.
+    Growl,
     /// Loops.
     Surf,
     NightDrone,
@@ -154,12 +160,49 @@ pub fn render(sfx: Sfx) -> Vec<f32> {
             }
         }
         Sfx::Step => add(Voice { seconds: 0.07, freq: (120.0, 70.0), tone: 0.3, noise: 0.8, bright: 0.25, decay: 8.0, gain: 0.3, ..B }, 0.0),
+        Sfx::Land => add(Voice { seconds: 0.16, freq: (95.0, 42.0), tone: 0.9, noise: 0.7, bright: 0.18, decay: 6.0, gain: 0.55, ..B }, 0.0),
+        Sfx::Swap => {
+            add(Voice { seconds: 0.04, freq: (700.0, 420.0), tone: 0.25, noise: 0.7, bright: 0.85, decay: 9.0, gain: 0.4, ..B }, 0.0);
+            add(Voice { seconds: 0.05, freq: (380.0, 560.0), tone: 0.25, noise: 0.6, bright: 0.7, decay: 9.0, gain: 0.4, ..B }, 0.09);
+        }
+        Sfx::Growl => {
+            add(Voice { seconds: 0.9, freq: (150.0, 62.0), tone: 0.6, square: true, noise: 0.35, bright: 0.12, decay: 2.2, attack: 0.12, gain: 0.5, ..B }, 0.0);
+            add(Voice { seconds: 0.6, freq: (305.0, 118.0), tone: 0.3, square: true, decay: 3.0, attack: 0.2, gain: 0.3, ..B }, 0.1);
+        }
         Sfx::Surf | Sfx::NightDrone => return render_loop(sfx),
     }
+    // Gunshots get a chest thump and everything loud gets a slap-back echo, so
+    // the island sounds like a place rather than a sample player.
+    match sfx {
+        Sfx::Shot(kind) if kind != 6 => {
+            Voice { seconds: 0.14, freq: (150.0, 48.0), decay: 6.0, gain: 0.5, ..B }.mix_into(&mut out, 0.0, 1);
+            echo(&mut out, &[(0.085, 0.24), (0.19, 0.11)]);
+        }
+        Sfx::Explosion | Sfx::Horn | Sfx::Growl | Sfx::EnemyDeath => echo(&mut out, &[(0.11, 0.3), (0.26, 0.16), (0.43, 0.07)]),
+        _ => {}
+    }
     for sample in &mut out {
-        *sample = sample.clamp(-1.0, 1.0);
+        // Soft clip: loud layers saturate instead of crackling.
+        *sample = (*sample * 1.2).tanh();
     }
     out
+}
+
+/// Adds delayed, quieter copies of the sound (`(seconds, gain)` taps).
+fn echo(out: &mut Vec<f32>, taps: &[(f32, f32)]) {
+    let dry = out.clone();
+    for (delay, gain) in taps {
+        let offset = (delay * SAMPLE_RATE as f32) as usize;
+        if out.len() < dry.len() + offset {
+            out.resize(dry.len() + offset, 0.0);
+        }
+        let mut low = 0.0f32;
+        for (i, sample) in dry.iter().enumerate() {
+            // Echoes come back duller than they left.
+            low += (sample - low) * 0.35;
+            out[offset + i] += low * gain;
+        }
+    }
 }
 
 fn sfx_seed(sfx: Sfx) -> u64 {
@@ -229,7 +272,7 @@ mod tests {
     fn every_sound_renders_audibly() {
         let mut all: Vec<Sfx> = (0..8).map(Sfx::Shot).collect();
         all.extend([Sfx::Reload, Sfx::DryFire, Sfx::Hit, Sfx::Kill, Sfx::Explosion, Sfx::EnemyShot, Sfx::EnemyDeath, Sfx::Hurt, Sfx::UiMove,
-            Sfx::UiAccept, Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Surf, Sfx::NightDrone]);
+            Sfx::UiAccept, Sfx::UiDeny, Sfx::Buy, Sfx::Build, Sfx::Mine, Sfx::OreGet, Sfx::Horn, Sfx::Dawn, Sfx::Alarm, Sfx::Step, Sfx::Land, Sfx::Swap, Sfx::Growl, Sfx::Surf, Sfx::NightDrone]);
         for sfx in all {
             let samples = render(sfx);
             let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));

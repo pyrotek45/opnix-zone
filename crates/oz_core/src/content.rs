@@ -146,6 +146,44 @@ impl ShotLook {
     }
 }
 
+/// A passive bonus chosen with a loadout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PerkEffect {
+    /// Movement speed multiplier.
+    Speed(f32),
+    /// Extra maximum health.
+    Health(f32),
+    /// Reload time multiplier.
+    Reload(f32),
+    /// Spread multiplier.
+    Spread(f32),
+}
+
+#[derive(Clone, Debug)]
+pub struct PerkDef {
+    pub name: &'static str,
+    pub blurb: &'static str,
+    pub effect: PerkEffect,
+}
+
+/// Throwable or usable equipment chosen with a loadout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GearKind {
+    /// Thrown explosive.
+    Frag { damage: f32, radius: f32 },
+    /// Instant self-heal.
+    Stim { heal: f32 },
+}
+
+#[derive(Clone, Debug)]
+pub struct GearDef {
+    pub name: &'static str,
+    pub blurb: &'static str,
+    pub kind: GearKind,
+    /// Uses per life.
+    pub count: u8,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
     pub weapons: Vec<WeaponDef>,
@@ -156,6 +194,8 @@ pub struct Catalog {
     pub upgrades: Vec<UpgradeDef>,
     pub stations: Vec<StationDef>,
     pub mode_actions: Vec<ModeAction>,
+    pub perks: Vec<PerkDef>,
+    pub gear: Vec<GearDef>,
     /// Model shown for the objective / beacon core.
     pub objective_model: BlockModel,
 }
