@@ -217,8 +217,8 @@ pub fn process_commands(
                     deny(&mut fx, "INVALID LOADOUT");
                     continue;
                 }
-                // Fresh spawns swap instantly; otherwise the class applies on the next life.
-                if player.life < 10.0 {
+                // In the lobby and on fresh spawns the class swaps at once; otherwise it applies on the next life.
+                if player.life < 10.0 || state.phase == crate::state::Phase::Lobby {
                     crate::player::apply_loadout(&content, &mut player, &mut arsenal, loadout);
                     None
                 } else {

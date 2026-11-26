@@ -52,7 +52,7 @@ impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<PlaySfx>()
             .init_resource::<DeathInfo>()
-            .add_systems(Update, (spawn_effects, tick_particles, night_calls, dress_smoke, swell_smoke).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (spawn_effects, tick_particles, night_calls, dress_smoke, swell_smoke, churn_puffs).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -245,13 +245,21 @@ fn dress_smoke(mut commands: Commands, art: Res<Art>, clouds: Query<(Entity, &Sm
     for (entity, cloud) in &clouds {
         let mut rng = Rng::new(entity.to_bits());
         commands.entity(entity).insert((Visibility::Inherited, CloudAge::default())).with_children(|parent| {
-            for i in 0..14 {
+            for i in 0..24 {
                 let angle = i as f32 * 2.39996;
-                let reach = cloud.radius * 0.62 * ((i as f32 + 0.5) / 14.0).sqrt();
-                let at = Vec3::new(angle.cos() * reach, rng.range(-0.25, 0.45) * cloud.radius, angle.sin() * reach);
-                let size = Vec3::splat(cloud.radius * rng.range(0.5, 0.75));
-                let paint = if i % 3 == 0 { Paint::Bone } else { Paint::Iron };
-                parent.spawn((Mesh3d(art.primitive(Shape::Shard)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(at).with_scale(size).with_rotation(Quat::from_rotation_y(angle)), NotShadowCaster));
+                let reach = cloud.radius * 0.7 * ((i as f32 + 0.5) / 24.0).sqrt();
+                // A low dome: wide at the bottom, puffs piled up in the middle.
+                let height = (1.0 - reach / cloud.radius).max(0.1) * cloud.radius * rng.range(0.3, 0.8) - cloud.radius * 0.2;
+                let at = Vec3::new(angle.cos() * reach, height, angle.sin() * reach);
+                let size = Vec3::new(rng.range(0.4, 0.6), rng.range(0.32, 0.5), rng.range(0.4, 0.6)) * cloud.radius;
+                let paint = [Paint::Iron, Paint::Metal, Paint::Rock, Paint::Iron, Paint::Bone][i % 5];
+                parent.spawn((
+                    Mesh3d(art.primitive(Shape::Shard)),
+                    MeshMaterial3d(art.paint(paint)),
+                    Transform::from_translation(at).with_scale(size).with_rotation(Quat::from_euler(EulerRot::YXZ, angle, rng.range(-0.4, 0.4), rng.range(-0.4, 0.4))),
+                    NotShadowCaster,
+                    Puff(rng.range(-0.5, 0.5)),
+                ));
             }
         });
     }
@@ -271,6 +279,17 @@ fn swell_smoke(time: Res<Time>, mut clouds: Query<(&mut Transform, &SmokeCloud, 
 
 #[derive(Component, Default)]
 struct CloudAge(f32);
+
+/// One lump of a smoke cloud, turning slowly at its own rate.
+#[derive(Component)]
+struct Puff(f32);
+
+fn churn_puffs(time: Res<Time>, mut puffs: Query<(&mut Transform, &Puff)>) {
+    let dt = time.delta_secs();
+    for (mut transform, puff) in &mut puffs {
+        transform.rotate_y(puff.0 * dt);
+    }
+}
 
 fn tick_particles(time: Res<Time>, mut commands: Commands, mut particles: Query<(Entity, &mut Transform, &mut Particle)>) {
     let dt = time.delta_secs().min(0.05);

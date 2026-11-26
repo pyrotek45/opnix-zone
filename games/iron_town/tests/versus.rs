@@ -409,3 +409,53 @@ fn mines_catch_enemies_and_smoke_blocks_sight() {
     assert!(smoke_between(clouds, Vec3::new(-10.0, 1.5, 0.0), Vec3::new(10.0, 1.5, 0.0)));
     assert!(!smoke_between(clouds, Vec3::new(-10.0, 1.5, 8.0), Vec3::new(10.0, 1.5, 8.0)));
 }
+
+#[test]
+fn thrown_smoke_makes_a_cloud() {
+    use oz_sim::combat::SmokeCloud;
+    let mut app = app();
+    let mut rules = deathmatch_rules(7);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    let smoke = app.world().resource::<Content>().gear.iter().position(|g| g.name == "SMOKE").unwrap() as u8;
+    {
+        let mut query = app.world_mut().query_filtered::<(&mut Player, &mut PlayerInput), With<LocalPlayer>>();
+        let (mut player, mut input) = query.single_mut(app.world_mut()).unwrap();
+        player.gear = smoke;
+        player.gear_left = 2;
+        input.buttons = buttons::GEAR;
+    }
+    app.update();
+    app.world_mut().query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().buttons = 0;
+    for _ in 0..(3.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(app.world_mut().query::<&SmokeCloud>().iter(app.world()).count(), 1);
+}
+
+#[test]
+fn a_class_saved_in_the_lobby_is_used_at_kickoff() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(8);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    // Sit in the lobby a while, then save a class.
+    for _ in 0..(15.0 / FRAME) as usize {
+        app.update();
+    }
+    let gear = app.world().resource::<Content>().gear.len() as u8 - 1;
+    let loadout = Loadout { primary: oz_core::kit::gun::SHOTGUN as u8, secondary: oz_core::kit::gun::PISTOL as u8, perk: 1, gear };
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Loadout(loadout) });
+    app.update();
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    let (player, arsenal) = app.world_mut().query_filtered::<(&Player, &Arsenal), With<LocalPlayer>>().single(app.world()).map(|(p, a)| (p.clone(), a.clone())).unwrap();
+    assert_eq!((player.perk, player.gear), (1, gear));
+    assert!(arsenal.owns(oz_core::kit::gun::SHOTGUN));
+}

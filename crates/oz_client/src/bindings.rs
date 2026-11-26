@@ -108,7 +108,7 @@ impl Action {
         match self {
             Action::Forward => "MOVE FORWARD", Action::Back => "MOVE BACK", Action::Left => "MOVE LEFT", Action::Right => "MOVE RIGHT",
             Action::Fire => "FIRE", Action::Aim => "AIM", Action::Reload => "RELOAD", Action::Interact => "USE",
-            Action::Jump => "JUMP", Action::Sprint => "SPRINT / HOLD BREATH", Action::Crouch => "CROUCH", Action::Prone => "PRONE",
+            Action::Jump => "JUMP", Action::Sprint => "SPRINT / BREATH", Action::Crouch => "CROUCH", Action::Prone => "PRONE",
             Action::LeanLeft => "LEAN LEFT", Action::LeanRight => "LEAN RIGHT", Action::Gear => "THROW GEAR", Action::Inspect => "INSPECT WEAPON",
             Action::Loadout => "CHANGE CLASS", Action::Scoreboard => "SCOREBOARD", Action::Chat => "CHAT",
         }
@@ -267,7 +267,7 @@ pub fn build_controls(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<S
         root.spawn(ui::panel(700.0)).with_children(|panel| {
             panel.spawn(ui::row(8.0)).with_children(|grid| {
                 for (index, action) in Action::ALL.iter().enumerate() {
-                    let key = if capture.action == Some(*action) { "PRESS A KEY".to_string() } else { settings.bindings.label(*action) };
+                    let key = if capture.action == Some(*action) { "PRESS KEY".to_string() } else { settings.bindings.label(*action) };
                     ui::sized_button(grid, order, format!("{:<20} {key}", action.title()), Act::Rebind(index as u8), None, Val::Px(320.0));
                 }
             });
