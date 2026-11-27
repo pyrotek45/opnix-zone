@@ -270,8 +270,11 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
     if bot.plan == Plan::Retreat && !expired {
         return;
     }
+    // Strayed from a human squad leader: drop whatever it was doing and catch up.
+    let strayed = bodies.iter().filter(|b| b.team == me.team && !b.bot).any(|_| true)
+        && bodies.iter().filter(|b| b.team == me.team).min_by_key(|b| (b.bot as u8, b.id)).is_some_and(|l| !l.bot && l.id != me.id && l.at.distance(feet) > 10.0);
     // Keep a plan while it lasts, refreshing where it points.
-    if !expired {
+    if !expired && !strayed {
         match bot.plan {
             Plan::Hunt => {
                 if let Some(p) = fresh {
@@ -346,7 +349,20 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
         }
         return;
     }
+    // With a human leading, the squad sticks close: they only peel off for trouble near
+    // the human, and never wander far.
+    let human_lead = leader.is_some_and(|l| !l.bot);
+    let lead_at = leader.map_or(feet, |l| l.at);
+    let target = if human_lead { target.filter(|p| p.distance(lead_at) < 25.0) } else { target };
+    let far_from_lead = human_lead && feet.distance(lead_at) > 10.0;
     match (bot.role, target) {
+        _ if far_from_lead => {
+            bot.plan = Plan::Follow;
+            bot.plan_until = now + 1.0;
+            let angle = me.id as f32 * 2.4;
+            let spot = lead_at + Vec3::new(angle.cos(), 0.0, angle.sin()) * 3.5;
+            go(bot, Vec3::new(spot.x, lead_at.y, spot.z));
+        }
         (Role::Rusher, Some(p)) => {
             bot.plan = Plan::Hunt;
             bot.plan_until = now + 8.0;
