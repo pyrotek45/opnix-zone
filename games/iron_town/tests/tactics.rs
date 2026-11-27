@@ -350,3 +350,16 @@ fn cover_facing_round_trips() {
         assert!((cover_yaw(code).unwrap() - angle).abs() < 1e-4);
     }
 }
+
+#[test]
+fn leaves_hide_what_is_behind_them() {
+    use oz_sim::bots::leaves_between;
+    let crown = [(Vec3::new(0.0, 2.0, 0.0), 1.5)];
+    // Straight through a crown: hidden. Past it: seen. From inside your own bush: you see out.
+    assert!(leaves_between(&crown, Vec3::new(-5.0, 2.0, 0.0), Vec3::new(5.0, 2.0, 0.0)));
+    assert!(!leaves_between(&crown, Vec3::new(-5.0, 2.0, 4.0), Vec3::new(5.0, 2.0, 4.0)));
+    assert!(!leaves_between(&crown, Vec3::new(0.0, 2.0, 0.0), Vec3::new(8.0, 2.0, 0.0)));
+    // Every town has some.
+    let map = oz_core::worldgen::World::generate(deathmatch_rules(3).recipe);
+    assert!(!map.foliage().is_empty());
+}

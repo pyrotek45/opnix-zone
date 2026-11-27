@@ -77,6 +77,18 @@ pub struct Noise {
 #[derive(Resource, Default)]
 pub struct Noises(pub Vec<Noise>);
 
+/// Does a line of sight pass through leaves? Leaves around the looker do not count:
+/// you can see out of the bush you are hiding in.
+pub fn leaves_between(foliage: &[(Vec3, f32)], from: Vec3, to: Vec3) -> bool {
+    let span = to - from;
+    let length = span.length();
+    if length < 1e-3 {
+        return false;
+    }
+    let dir = span / length;
+    foliage.iter().any(|(center, radius)| center.distance(from) > *radius && crate::combat::ray_sphere(from, dir, *center, *radius).is_some_and(|d| d < length))
+}
+
 /// How far footsteps carry for a given stance and speed.
 pub fn footstep_radius(stance_now: u8, speed: f32) -> f32 {
     if speed < 1.0 {
@@ -169,8 +181,15 @@ pub fn drive_bots(
     mut noises: ResMut<Noises>,
     solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Player>)>,
     (smokes, pickups): (Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>, Query<(&Transform, &crate::loot::Pickup), Without<Player>>),
+    mut leaves: Local<(u64, Vec<(Vec3, f32)>)>,
 ) {
     let dt = sim_dt(&time);
+    // Tree crowns and bushes hide whoever is behind (or inside) them.
+    let key = map.recipe.seed ^ map.props.len() as u64;
+    if leaves.0 != key || leaves.1.is_empty() {
+        *leaves = (key, map.foliage());
+    }
+    let foliage = &leaves.1;
     // Everyone a bot might fight, humans and bots alike.
     let fighters: Vec<(Entity, u8, Vec3, u8)> =
         players.iter().filter(|(.., health, _, _, _)| health.alive()).map(|(entity, _, player, transform, input, ..)| (entity, player.team, transform.translation, input.stance)).collect();
@@ -254,7 +273,10 @@ pub fn drive_bots(
             let upright = PlayerInput { lean: 0, ..*input };
             let sees = |from: Vec3, chest: Vec3| {
                 let distance = chest.distance(from);
-                distance < 85.0 && obstruction(&map, &statics, &solids, from, (chest - from) / distance.max(1e-3), distance) >= distance - 0.6 && !crate::combat::smoke_between(smokes, from, chest)
+                distance < 85.0
+                    && obstruction(&map, &statics, &solids, from, (chest - from) / distance.max(1e-3), distance) >= distance - 0.6
+                    && !crate::combat::smoke_between(smokes, from, chest)
+                    && (distance < 4.0 || !leaves_between(foliage, from, chest))
             };
             let (sentry, alert) = (bot.sentry, bot.alert > 0.0);
             let facing_dir = Vec2::new(-input.yaw.sin(), -input.yaw.cos());

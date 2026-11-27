@@ -199,8 +199,9 @@ fn medals(
                         killstreak::reward::SUPPLY => ("ENEMY SUPPLY DROP", "THEY JUST REARMED", "Enemy supply drop."),
                         _ => ("ENEMY ATTACK DRONE", "SHOOT IT DOWN", "Enemy attack drone. Shoot it down."),
                     };
+                    // The banner (and the announcer, if installed) is warning enough: no alarm tone,
+                    // which grated with bots calling in streaks all match.
                     banners.push(warning, advice, Color::srgb(1.0, 0.35, 0.3));
-                    sounds.write(PlaySfx::new(Sfx::Alarm, None));
                     announce.write(Announce(line.into()));
                 }
             }
