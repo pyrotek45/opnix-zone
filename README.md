@@ -26,9 +26,15 @@ Always use `--release` to play; debug builds are much slower. Linux needs the
 usual Bevy system packages (ALSA, udev, X11 or Wayland, Vulkan); `shell.nix`
 provides them on Nix. Add `--no-default-features` to build without audio.
 
+The main menu is only for getting into a game: **PLAY SOLO** and **HOST GAME**
+open a lobby, **JOIN GAME** joins one, and your name, settings and the
+**MODEL VIEWER** (every operator pose side by side) sit below. Everything about
+the game itself - the mode (versus and co-op horde), the map size, the map and
+the match settings - is chosen by the host in the lobby; guests see the same
+values read-only.
+
 Shortcuts past the menu: `--solo`, `--host`, `--join ADDRESS`, `--mode N`,
-`--seed N`, `--teams N`. **MODEL VIEWER** in the main menu shows every
-operator pose side by side.
+`--seed N`, `--teams N`, `--map NAME`, `--size small|medium|large`.
 
 ## Playing online (no server, no VPN, no port forwarding)
 
@@ -252,10 +258,22 @@ full day/night cycle - and weather - the map's own, clear, overcast, rain, fog
 or random fronts that roll through mid-match. Robots carry flashlights at
 night.
 
-**Maps:** pick a **LAYOUT** in the main menu (or `--map crossroads`,
-`--map dockyard`, `--map officetower`, `--map spacestation`,
-`--map mountainside`). *Random Town* is freshly generated every match; the
-fixed maps are the same every time so you can learn them.
+**Maps:** pick a **MAP SIZE** and a **MAP** in the lobby (or `--size small`,
+`--map crossroads`, `--map dockyard`, `--map officetower`,
+`--map spacestation`, `--map mountainside`, `--map smalltown`,
+`--map mediumtown`). Each size has its own random town, freshly generated
+every match, and its fixed maps, which are the same every time so you can
+learn them:
+
+* **Small** (about 116 m): *Small Town* - the original Iron Town map, a 5 x 5
+  grid of lots round a fountain plaza - Crossroads and Dockyard. Teams go up
+  to 4 a side.
+* **Medium** (about 145-175 m): *Medium Town* - the same streets at 7 x 7
+  lots - Office Tower and Space Station. Up to 5 a side.
+* **Large** (about 224 m, the default): *Random Town* in any theme or a
+  chosen one, and Mountainside. Up to 6 a side.
+
+Terrorist hunt puts fewer hostiles on the smaller outdoor maps.
 
 *Random Town* is a big map - about 220 m across, the bases at the far ends -
 with long sightlines for snipers and dense blocks for close fights. Every

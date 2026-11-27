@@ -7,14 +7,14 @@ use crate::{
     bots::{Bot, FIRST_BOT_ID, spawn_bot},
     net::NetIds,
     player::{Arsenal, Health, Player, PlayerInput, respawn},
-    session::{Content, Map, Modes, Relaunch},
+    session::{Content, Map, ModeDef, Modes, Relaunch},
     sim_dt,
     state::{CommandEvent, FxEvent, LobbyAction, MatchState, Phase, PlayerCommand, RosterEntry, Rules, SimRng},
 };
 use bevy::prelude::*;
 use oz_core::{
     synth::Sfx,
-    worldgen::{Biome, Layout, Theme, Weather, WorldRecipe},
+    worldgen::{Biome, Layout, MapSize, Theme, Weather, WorldRecipe},
 };
 
 const COUNTDOWN: f32 = 5.0;
@@ -36,8 +36,44 @@ pub const SETTLE: f32 = 0.9;
 /// Longest player name.
 pub const NAME_MAX: usize = 14;
 
-/// Versus map choices: the random town (any theme), the town in each theme, then the fixed maps.
+/// Versus map choices: the random town (any theme), the town in each theme, then the other
+/// layouts in [`Layout::VERSUS`] (the fixed maps and the small and medium random towns).
 pub const MAPS: u8 = 1 + Theme::ALL.len() as u8 + (Layout::VERSUS.len() - 1) as u8;
+
+/// The layout a map choice builds.
+pub fn choice_layout(choice: u8) -> Layout {
+    let themes = Theme::ALL.len() as u8;
+    if choice <= themes { Layout::Town } else { Layout::VERSUS[((choice - themes) as usize).min(Layout::VERSUS.len() - 1)] }
+}
+
+/// How big a map choice is: the themed towns are large, every other layout has its own size.
+pub fn choice_size(choice: u8) -> MapSize {
+    choice_layout(choice).size()
+}
+
+/// How big the map these rules play is (the lobby's MAP SIZE).
+pub fn map_size(rules: &Rules) -> MapSize {
+    rules.recipe.layout.size()
+}
+
+/// The map choices of one size, the random town of that size first.
+pub fn maps_of_size(size: MapSize) -> Vec<u8> {
+    let mut maps: Vec<u8> = (0..MAPS).filter(|c| choice_size(*c) == size).collect();
+    maps.sort_by_key(|c| !(*c == 0 || choice_layout(*c).is_grid_town()));
+    maps
+}
+
+/// Most players a team should have on a map of this size (spawns and lanes stay sensible).
+pub fn team_cap(size: MapSize) -> u8 {
+    match size {
+        MapSize::Small => 4,
+        MapSize::Medium => 5,
+        MapSize::Large => MAX_TEAM,
+    }
+}
+
+/// Co-op modes in the lobby: at most this many in the squad.
+pub const COOP_SQUAD: u8 = 4;
 
 /// Which of the [`MAPS`] these rules play.
 pub fn map_choice(rules: &Rules) -> u8 {
@@ -53,7 +89,7 @@ pub fn map_title(choice: u8) -> &'static str {
     match choice {
         0 => "RANDOM TOWN",
         c if c <= themes => Theme::ALL[(c - 1) as usize].title(),
-        c => Layout::VERSUS[((c - themes) as usize).min(Layout::VERSUS.len() - 1)].title(),
+        c => choice_layout(c).title(),
     }
 }
 
@@ -66,8 +102,14 @@ pub fn map_recipe(choice: u8, seed: u64, biome: Biome) -> WorldRecipe {
     match choice {
         0 => WorldRecipe::town(seed, biome),
         c if c <= themes => WorldRecipe::themed(seed, biome, Theme::ALL[(c - 1) as usize]),
-        c => WorldRecipe::preset(Layout::VERSUS[((c - themes) as usize).min(Layout::VERSUS.len() - 1)], biome, Weather::from_seed(seed)),
+        c if choice_layout(c).is_grid_town() => WorldRecipe::grid_town(choice_layout(c), seed, biome),
+        c => WorldRecipe::preset(choice_layout(c), biome, Weather::from_seed(seed)),
     }
+}
+
+/// Does this map choice roll new streets from its seed (the random towns)?
+pub fn rolls_streets(choice: u8) -> bool {
+    choice <= Theme::ALL.len() as u8 || choice_layout(choice).is_grid_town()
 }
 
 /// The name of the bot skill closest to `difficulty`.
@@ -118,10 +160,55 @@ pub fn unique_name(name: &str, taken: &[&str]) -> String {
     name.to_string()
 }
 
-/// The modes a versus lobby can switch between.
+/// The versus modes: the ones that play out in a lobby.
 pub fn versus_modes(modes: &Modes) -> Vec<u8> {
     modes.0.iter().enumerate().filter(|(_, m)| m.playable && (m.rules)(0).pvp).map(|(i, _)| i as u8).collect()
 }
+
+/// Every mode the lobby offers: the versus modes, then the co-op ones (which start straight
+/// from the lobby and come back to it). Empty when the game has no versus mode to hold a
+/// lobby in.
+pub fn lobby_modes(modes: &Modes) -> Vec<u8> {
+    let mut list = versus_modes(modes);
+    if !list.is_empty() {
+        list.extend(modes.0.iter().enumerate().filter(|(_, m)| m.playable && !(m.rules)(0).pvp).map(|(i, _)| i as u8));
+    }
+    list
+}
+
+/// A playable co-op mode: picked in the lobby, it starts its own match when the host starts.
+pub fn coop_mode(modes: &Modes, mode: u8) -> Option<&ModeDef> {
+    modes.0.get(mode as usize).filter(|m| m.playable && !(m.rules)(0).pvp)
+}
+
+/// How many maps a co-op mode offers: its horde maps, or a biome for its islands.
+pub fn coop_maps(def: &ModeDef) -> u8 {
+    if (def.rules)(0).horde { Layout::HORDE.len() as u8 } else { Biome::ALL.len() as u8 }
+}
+
+pub fn coop_map_title(def: &ModeDef, choice: u8) -> &'static str {
+    if (def.rules)(0).horde { Layout::HORDE[choice as usize % Layout::HORDE.len()].title() } else { Biome::ALL[choice as usize % Biome::ALL.len()].look().title }
+}
+
+/// The rules a co-op pick starts: the mode's own, on the chosen map, with the lobby's squad
+/// size and its bot skill as the threat.
+pub fn coop_rules(modes: &Modes, mode: u8, map: u8, squad: u8, threat: f32, seed: u64) -> Option<Rules> {
+    let def = coop_mode(modes, mode)?;
+    let mut rules = (def.rules)(seed);
+    rules.mode = mode;
+    if rules.horde {
+        rules.recipe = WorldRecipe::horde(Layout::HORDE[map as usize % Layout::HORDE.len()]);
+        rules.team_size = squad.clamp(1, COOP_SQUAD);
+    } else {
+        rules.recipe.biome = Biome::ALL[map as usize % Biome::ALL.len()];
+    }
+    rules.difficulty *= threat;
+    Some(rules)
+}
+
+/// The authority keeps the lobby it left for a co-op match, to come back to afterwards.
+#[derive(Resource, Default)]
+pub struct LobbyReturn(pub Option<Rules>);
 
 /// The rules for switching the lobby to `mode`: that mode's own defaults, on the same map,
 /// keeping the host's bot, time-limit choices, with room for every human already here.
@@ -134,14 +221,21 @@ pub fn rules_for_mode(modes: &Modes, mode: u8, current: &Rules, humans: [usize; 
     rules.difficulty = current.difficulty;
     rules.time_limit = current.time_limit;
     rules.no_bots = current.no_bots;
-    let needed = if rules.hunt { humans[0] + humans[1] } else { humans[0].max(humans[1]) };
-    rules.team_size = rules.team_size.max(needed.min(MAX_TEAM as usize) as u8);
+    rules.team_size = rules.team_size.max(humans_needed(&rules, humans));
     Some(rules)
 }
 
-/// Terrorist hunt: how many hostiles hold the map for a squad of `squad`.
+/// Seats a team needs so every human here keeps one.
+fn humans_needed(rules: &Rules, humans: [usize; 2]) -> u8 {
+    let needed = if rules.hunt { humans[0] + humans[1] } else { humans[0].max(humans[1]) };
+    needed.min(MAX_TEAM as usize) as u8
+}
+
+/// Terrorist hunt: how many hostiles hold the map for a squad of `squad`. Smaller outdoor
+/// maps get fewer (the indoor ones stack their floors, so they keep the full count).
 pub fn hunt_hostiles(rules: &Rules, squad: u8) -> usize {
-    ((14.0 + 6.0 * squad as f32) * rules.difficulty).round().clamp(8.0, 50.0) as usize
+    let room = if rules.recipe.layout.is_indoor() { 1.0 } else { (rules.recipe.arena() / 112.0).clamp(0.5, 1.0) };
+    ((14.0 + 6.0 * squad as f32) * rules.difficulty * room).round().clamp(8.0, 50.0) as usize
 }
 
 /// Terrorist hunt: the squad's base is a safe zone this wide (metres from its first
@@ -314,8 +408,17 @@ pub fn run_versus(
     mut orders: EventReader<CommandEvent>,
     mut players: Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput, Option<&Bot>)>,
     mut fx: EventWriter<FxEvent>,
-    (modes, mut rng, mut relaunch): (Res<Modes>, ResMut<SimRng>, ResMut<Relaunch>),
+    (modes, mut rng, mut relaunch, mut back): (Res<Modes>, ResMut<SimRng>, ResMut<Relaunch>, ResMut<LobbyReturn>),
 ) {
+    let humans_now = |players: &Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput, Option<&Bot>)>| {
+        let mut humans = [0; 2];
+        for (player, .., bot) in players {
+            if bot.is_none() {
+                humans[(player.team as usize).min(1)] += 1;
+            }
+        }
+        humans
+    };
     let dt = sim_dt(&time);
     // Time of day: fixed, or a cycle that runs through the match.
     state.clock += dt;
@@ -366,21 +469,48 @@ pub fn run_versus(
                 };
             }
             LobbyAction::TeamSize(step) if host && state.phase == Phase::Lobby => {
-                let size = (state.team_size as i32 + step as i32).clamp(1, MAX_TEAM as i32) as u8;
+                // A co-op pick sizes its squad; versus teams fit the map (but every human keeps a seat).
+                let cap = if coop_mode(&modes, state.next_mode).is_some() { COOP_SQUAD } else { team_cap(map_size(&rules)).max(humans_needed(&rules, humans_now(&players))) };
+                let size = (state.team_size as i32 + step as i32).clamp(1, cap as i32) as u8;
                 state.team_size = size;
                 rules.team_size = size;
             }
             // Mode and map: the pick shows at once, and the lobby reloads on it once it settles.
             LobbyAction::Mode(step) if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
-                let choices = versus_modes(&modes);
+                let choices = lobby_modes(&modes);
                 if !choices.is_empty() {
+                    let was_coop = coop_mode(&modes, state.next_mode).is_some();
                     let at = choices.iter().position(|m| *m == state.next_mode).unwrap_or(0);
                     state.next_mode = choices[(at as i32 + step as i32).rem_euclid(choices.len() as i32) as usize];
+                    // Co-op picks choose from their own maps; back to versus, the lobby's map again.
+                    match (was_coop, coop_mode(&modes, state.next_mode).is_some()) {
+                        (false, true) => state.next_map = 0,
+                        (true, false) => state.next_map = map_choice(&rules),
+                        (true, true) => state.next_map = coop_mode(&modes, state.next_mode).map_or(0, |def| state.next_map % coop_maps(def)),
+                        _ => {}
+                    }
+                    if coop_mode(&modes, state.next_mode).is_some() {
+                        state.team_size = state.team_size.min(COOP_SQUAD);
+                        rules.team_size = state.team_size;
+                    }
                     state.change_in = SETTLE;
                 }
             }
             LobbyAction::Map(step) if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
-                state.next_map = (state.next_map as i32 + step as i32).rem_euclid(MAPS as i32) as u8;
+                if let Some(def) = coop_mode(&modes, state.next_mode) {
+                    state.next_map = (state.next_map as i32 + step as i32).rem_euclid(coop_maps(def) as i32) as u8;
+                } else {
+                    // Through the maps of the chosen size.
+                    let maps = maps_of_size(choice_size(state.next_map));
+                    let at = maps.iter().position(|m| *m == state.next_map).unwrap_or(0);
+                    state.next_map = maps[(at as i32 + step as i32).rem_euclid(maps.len() as i32) as usize];
+                }
+                state.change_in = SETTLE;
+            }
+            LobbyAction::MapSize(step) if host && state.phase == Phase::Lobby && state.countdown <= 0.0 && coop_mode(&modes, state.next_mode).is_none() => {
+                let at = MapSize::ALL.iter().position(|s| *s == choice_size(state.next_map)).unwrap_or(2);
+                let size = MapSize::ALL[(at as i32 + step as i32).rem_euclid(MapSize::ALL.len() as i32) as usize];
+                state.next_map = maps_of_size(size)[0];
                 state.change_in = SETTLE;
             }
             LobbyAction::NewMap if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
@@ -405,27 +535,31 @@ pub fn run_versus(
         }
     }
 
-    // The host's mode / map pick has settled: reload the lobby on it.
+    // The host's mode / map pick has settled: reload the lobby on it. A co-op pick waits in
+    // the lobby until the host starts it.
     if state.phase == Phase::Lobby && state.change_in > 0.0 {
         state.change_in -= dt;
-        if state.change_in <= 0.0 {
+        if state.change_in <= 0.0 && coop_mode(&modes, state.next_mode).is_some() {
             state.change_in = 0.0;
-            let mut humans = [0; 2];
-            for (player, .., bot) in &players {
-                if bot.is_none() {
-                    humans[(player.team as usize).min(1)] += 1;
-                }
-            }
+            state.reroll = false;
+        } else if state.change_in <= 0.0 {
+            state.change_in = 0.0;
+            let humans = humans_now(&players);
             let mut next = if state.next_mode != rules.mode { rules_for_mode(&modes, state.next_mode, &rules, humans) } else { Some(rules.clone()) };
             if let Some(next) = &mut next
                 && (state.next_map != map_choice(&rules) || state.reroll)
             {
                 let seed = rng.0.next_u64();
                 // A fresh roll of a fixed map gets new colours instead of new streets.
-                let fixed = state.next_map > Theme::ALL.len() as u8;
+                let fixed = !rolls_streets(state.next_map);
                 let biome = if fixed && state.next_map == map_choice(&rules) { Biome::ALL[(seed % Biome::ALL.len() as u64) as usize] } else { next.recipe.biome };
                 next.recipe = map_recipe(state.next_map, seed, biome);
-                next.map = if fixed { 0 } else { state.next_map };
+                next.map = if state.next_map > Theme::ALL.len() as u8 { 0 } else { state.next_map };
+                // A smaller map takes smaller teams (every human keeps a seat).
+                if map_size(next) != map_size(&rules) {
+                    let cap = team_cap(map_size(next)).max(humans_needed(next, humans));
+                    next.team_size = next.team_size.min(cap);
+                }
             }
             state.reroll = false;
             match next {
@@ -449,7 +583,15 @@ pub fn run_versus(
             if state.countdown.ceil() < before && state.countdown > 0.0 {
                 fx.write(FxEvent::Sound { sfx: Sfx::UiMove, at: None });
             }
-            if state.countdown <= 0.0 {
+            if state.countdown <= 0.0 && coop_mode(&modes, state.next_mode).is_some() {
+                // A co-op pick: its own match starts, and the lobby waits for everyone to come back.
+                state.countdown = 0.0;
+                let seed = rng.0.next_u64();
+                if let Some(coop) = coop_rules(&modes, state.next_mode, state.next_map, state.team_size, rules.difficulty, seed) {
+                    back.0 = Some(rules.clone());
+                    relaunch.0 = Some(coop);
+                }
+            } else if state.countdown <= 0.0 {
                 state.countdown = 0.0;
                 state.phase = Phase::Live;
                 state.scores = [0, 0];
@@ -562,6 +704,23 @@ pub fn run_versus(
     }
 }
 
+/// Authority, co-op matches: the host takes everyone back to the lobby they left (or a fresh
+/// one on the first versus mode).
+pub fn back_to_lobby(mut orders: EventReader<CommandEvent>, rules: Res<Rules>, modes: Res<Modes>, mut relaunch: ResMut<Relaunch>, mut back: ResMut<LobbyReturn>) {
+    for order in orders.read() {
+        if order.player != 0 || !matches!(order.command, PlayerCommand::Lobby(LobbyAction::BackToLobby)) || relaunch.0.is_some() || rules.pvp {
+            continue;
+        }
+        let lobby = back.0.take().or_else(|| {
+            let mode = *versus_modes(&modes).first()?;
+            let mut lobby = (modes.0[mode as usize].rules)(rules.recipe.seed ^ 0x10bb);
+            lobby.mode = mode;
+            Some(lobby)
+        });
+        relaunch.0 = lobby;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,5 +731,25 @@ mod tests {
         assert_eq!(team_for_newcomer([(0, false), (1, false)].into_iter()), 0);
         // Bots do not count: they make room.
         assert_eq!(team_for_newcomer([(0, false), (1, true), (1, true)].into_iter()), 1);
+    }
+
+    #[test]
+    fn every_map_has_a_size_and_each_size_starts_on_its_random_town() {
+        let mut seen = 0;
+        for size in MapSize::ALL {
+            let maps = maps_of_size(size);
+            assert!(maps.len() >= 3, "{size:?}: {maps:?}");
+            assert!(rolls_streets(maps[0]), "{size:?} starts on a random town");
+            for choice in &maps {
+                assert_eq!(map_recipe(*choice, 5, Biome::IronShoals).layout.size(), size);
+            }
+            seen += maps.len();
+        }
+        assert_eq!(seen, MAPS as usize, "every map choice is in exactly one size");
+        assert_eq!(maps_of_size(MapSize::Large)[0], 0, "large starts on the themed random town (the default)");
+        assert_eq!(choice_layout(maps_of_size(MapSize::Small)[0]), Layout::SmallTown);
+        let a = map_recipe(maps_of_size(MapSize::Small)[0], 1, Biome::IronShoals);
+        let b = map_recipe(maps_of_size(MapSize::Small)[0], 2, Biome::IronShoals);
+        assert_ne!(a.seed, b.seed, "the small town rolls new streets");
     }
 }

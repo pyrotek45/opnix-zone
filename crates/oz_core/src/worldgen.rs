@@ -6,7 +6,8 @@
 //! sandbars) for co-op, and towns for versus - the random town, which rolls a
 //! [`Theme`] from its seed (suburbs, desert outpost, farmland, industrial
 //! town, woods park) so everything on the map belongs together, and the fixed
-//! maps (Crossroads, Dockyard, Office Tower, Space Station, Mountainside).
+//! maps (Crossroads, Dockyard, Office Tower, Space Station, Mountainside), and
+//! the small and medium street-grid towns ([`MapSize`] groups them for the lobby).
 //! Every generator fills in the same [`World`] struct to work with the rest of
 //! the engine.
 //!
@@ -160,6 +161,35 @@ pub enum Layout {
     /// Horde map: a swamp research station in thick fog - a landing pad, a boardwalk, a
     /// greenhouse, a specimen lab, a pump house and a cold store.
     Blackfen,
+    /// The small random town (the original Iron Town map): a 5 x 5 grid of lots round a
+    /// fountain plaza on an island about 116 m across. Different every seed.
+    SmallTown,
+    /// The medium random town: the same street grid at 7 x 7 lots, about 175 m across.
+    /// Different every seed.
+    MediumTown,
+}
+
+/// How big a versus map is: the lobby's MAP SIZE setting picks from the maps of one size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum MapSize {
+    /// About 116 m of play area: the small town, Crossroads, Dockyard.
+    Small,
+    /// About 145-175 m: the medium town, Office Tower, Space Station.
+    Medium,
+    /// About 224 m: the themed random towns and Mountainside.
+    Large,
+}
+
+impl MapSize {
+    pub const ALL: [MapSize; 3] = [MapSize::Small, MapSize::Medium, MapSize::Large];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            MapSize::Small => "SMALL",
+            MapSize::Medium => "MEDIUM",
+            MapSize::Large => "LARGE",
+        }
+    }
 }
 
 impl Layout {
@@ -175,8 +205,23 @@ impl Layout {
         matches!(self, Layout::CinderWorks | Layout::Blackfen)
     }
 
-    /// Versus map choices: the random town, then the fixed maps.
-    pub const VERSUS: [Layout; 6] = [Layout::Town, Layout::Crossroads, Layout::Dockyard, Layout::OfficeTower, Layout::SpaceStation, Layout::Mountainside];
+    /// Versus map choices: the random town, then the fixed maps, then the smaller random towns.
+    pub const VERSUS: [Layout; 8] =
+        [Layout::Town, Layout::Crossroads, Layout::Dockyard, Layout::OfficeTower, Layout::SpaceStation, Layout::Mountainside, Layout::SmallTown, Layout::MediumTown];
+
+    /// The random street-grid towns (a new town every seed, no theme).
+    pub fn is_grid_town(self) -> bool {
+        matches!(self, Layout::SmallTown | Layout::MediumTown)
+    }
+
+    /// Which size class the map belongs to.
+    pub fn size(self) -> MapSize {
+        match self {
+            Layout::SmallTown | Layout::Crossroads | Layout::Dockyard | Layout::CinderWorks | Layout::Blackfen => MapSize::Small,
+            Layout::MediumTown | Layout::OfficeTower | Layout::SpaceStation => MapSize::Medium,
+            Layout::Town | Layout::Mountainside | Layout::Archipelago => MapSize::Large,
+        }
+    }
 
     pub fn title(self) -> &'static str {
         match self {
@@ -189,6 +234,8 @@ impl Layout {
             Layout::Mountainside => "MOUNTAINSIDE",
             Layout::CinderWorks => "CINDER WORKS",
             Layout::Blackfen => "BLACKFEN STATION",
+            Layout::SmallTown => "SMALL TOWN",
+            Layout::MediumTown => "MEDIUM TOWN",
         }
     }
 
@@ -257,6 +304,26 @@ impl WorldRecipe {
         Self::town(seed, biome)
     }
 
+    /// A random street-grid town of the given layout ([`Layout::SmallTown`] or
+    /// [`Layout::MediumTown`]): new streets every seed.
+    pub fn grid_town(layout: Layout, seed: u64, biome: Biome) -> Self {
+        let layout = if layout.is_grid_town() { layout } else { Layout::SmallTown };
+        Self { seed, ..Self::preset(layout, biome, Weather::from_seed(seed)) }
+    }
+
+    /// Half the side of the square the fighting happens in (see [`World::arena`]).
+    pub fn arena(&self) -> f32 {
+        match self.layout {
+            Layout::Archipelago => self.main_radius,
+            Layout::Crossroads | Layout::Dockyard | Layout::SmallTown => 58.0,
+            Layout::MediumTown => 58.0 * MEDIUM_TOWN_SCALE,
+            Layout::OfficeTower => 72.0,
+            Layout::SpaceStation => 86.0,
+            Layout::CinderWorks | Layout::Blackfen => 40.0,
+            _ => 112.0,
+        }
+    }
+
     /// A horde map with its own look: the foundry under a low night sky, the fen in fog.
     pub fn horde(layout: Layout) -> Self {
         match layout {
@@ -279,7 +346,8 @@ impl WorldRecipe {
         };
         // The compact maps keep the original island; the others get a square of land.
         let (half_extent, main_radius) = match layout {
-            Layout::Crossroads | Layout::Dockyard => (96.0, 68.0),
+            Layout::Crossroads | Layout::Dockyard | Layout::SmallTown => (96.0, 68.0),
+            Layout::MediumTown => (96.0 * MEDIUM_TOWN_SCALE, 68.0 * MEDIUM_TOWN_SCALE),
             Layout::OfficeTower => (100.0, 84.0),
             Layout::SpaceStation => (104.0, 96.0),
             Layout::CinderWorks | Layout::Blackfen => (72.0, 60.0),
@@ -562,6 +630,10 @@ pub const STOREY: f32 = 3.2;
 pub const WADE_DEPTH: f32 = 0.65;
 const SEABED: f32 = -1.4;
 const BASE_RADIUS: f32 = 15.0;
+/// The street grid's lot pitch: a lot and half a street either side.
+const LOT: f32 = 21.0;
+/// The medium town is the small town's island and bases, this much further out.
+pub const MEDIUM_TOWN_SCALE: f32 = 1.5;
 
 impl World {
     pub fn generate(recipe: WorldRecipe) -> World {
@@ -601,14 +673,7 @@ impl World {
             clutter: Vec::new(),
             waypoints: Vec::new(),
             theme: (recipe.layout == Layout::Town).then(|| Theme::from_seed(recipe.seed)),
-            arena: match recipe.layout {
-                Layout::Archipelago => recipe.main_radius,
-                Layout::Crossroads | Layout::Dockyard => 58.0,
-                Layout::OfficeTower => 72.0,
-                Layout::SpaceStation => 86.0,
-                Layout::CinderWorks | Layout::Blackfen => 40.0,
-                _ => 112.0,
-            },
+            arena: recipe.arena(),
             style: shapes::Style::default(),
             roads: Vec::new(),
             lanes: Vec::new(),
@@ -807,6 +872,7 @@ impl World {
         match self.recipe.layout {
             Layout::Crossroads => self.crossroads(rng),
             Layout::Dockyard => self.dockyard(rng),
+            Layout::SmallTown | Layout::MediumTown => self.random_lots(rng),
             Layout::OfficeTower => return self.office_tower(rng),
             Layout::SpaceStation => return self.space_station(rng),
             Layout::Mountainside => return self.mountainside(rng),
@@ -815,6 +881,48 @@ impl World {
             _ => return self.themed_town(rng),
         }
         self.finish_town(rng);
+    }
+
+    /// The street-grid towns: lots [`LOT`] apart, `n` either side of an open plaza in the
+    /// middle, and the town's scale (1 for the small town and the compact fixed maps).
+    fn grid(&self) -> (i32, f32) {
+        if self.recipe.layout == Layout::MediumTown { (3, MEDIUM_TOWN_SCALE) } else { (2, 1.0) }
+    }
+
+    /// The random street-grid town: a square of lots round an open plaza - courtyards, pairs
+    /// of narrow houses with an alley between, and bigger blocks of up to three storeys.
+    fn random_lots(&mut self, rng: &mut Rng) {
+        let (n, _) = self.grid();
+        for gx in -n..=n {
+            for gz in -n..=n {
+                if (gx, gz) == (0, 0) {
+                    continue; // The plaza stays open.
+                }
+                let center = Vec2::new(gx as f32 * LOT, gz as f32 * LOT);
+                let roll = rng.unit();
+                if roll < 0.12 {
+                    self.courtyard(rng, center);
+                } else if roll < 0.42 {
+                    // Two narrow houses with an alley between them.
+                    for side in [-1.0, 1.0] {
+                        let half = Vec2::new(rng.range(3.6, 6.2), rng.range(2.9, 3.4));
+                        let at = center + Vec2::new(rng.range(-0.8, 0.8), side * 4.2);
+                        self.building(rng, at, half, 1);
+                    }
+                } else {
+                    let half = Vec2::new(rng.range(4.4, 6.6), rng.range(4.2, 6.6));
+                    let floors = if half.x > 5.6 && half.y > 5.0 && rng.chance(0.4) {
+                        3
+                    } else if rng.chance(0.55) {
+                        2
+                    } else {
+                        1
+                    };
+                    let at = center + Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
+                    self.building(rng, at, half, floors);
+                }
+            }
+        }
     }
 
     /// Fixed map: three lanes. North alley (z = 24): two rows of tight two-storey houses.
@@ -876,10 +984,15 @@ impl World {
 
     /// Everything a town needs whatever its layout: cover, the square, clutter, greenery, bases.
     fn finish_town(&mut self, rng: &mut Rng) {
+        // Everything below is laid out for the small island; the medium town spreads it out.
+        let (_, s) = self.grid();
+        let area = (s * s).round() as usize;
         // Cover in the streets and the plaza.
-        for i in 0..80 {
-            let p = Vec2::new(rng.range(-60.0, 60.0), rng.range(-58.0, 58.0));
-            if self.occupied(p, 1.6) || p.x.abs() > 54.0 {
+        for i in 0..80 * area {
+            let p = Vec2::new(rng.range(-60.0, 60.0), rng.range(-58.0, 58.0)) * s;
+            // The plaza's fountain goes in the middle afterwards, and the bases' sandbags.
+            let base_front = (p.x.abs() - 50.0 * s).abs() < 2.5 && p.y.abs() < 13.0;
+            if self.occupied(p, 1.6) || p.x.abs() > 54.0 * s || base_front || (self.recipe.layout != Layout::Dockyard && p.length() < 6.0) {
                 continue;
             }
             let kind = match i % 5 {
@@ -901,11 +1014,11 @@ impl World {
         }
         // Concrete barriers in the streets: chest-high to a crouching robot, low enough to vault.
         let mut placed = 0;
-        for _ in 0..120 {
-            if placed >= 16 {
+        for _ in 0..120 * area {
+            if placed >= 16 * area {
                 break;
             }
-            let p = Vec2::new(rng.range(-50.0, 50.0), rng.range(-50.0, 50.0));
+            let p = Vec2::new(rng.range(-50.0, 50.0), rng.range(-50.0, 50.0)) * s;
             let along_x = rng.chance(0.5);
             let half = if along_x { Vec2::new(1.3, 0.28) } else { Vec2::new(0.28, 1.3) };
             if self.occupied(p, 2.4) || p.length() < 6.0 {
@@ -926,16 +1039,16 @@ impl World {
         self.greenery(rng);
         let look = self.recipe.biome.look();
         for _ in 0..look.palms / 3 {
-            let p = Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(56.0, 64.0);
-            if !self.occupied(p, 1.0) && p.x.abs() < 50.0 {
+            let p = Vec2::from_angle(rng.range(0.0, TAU)) * rng.range(56.0, 64.0) * s;
+            if !self.occupied(p, 1.0) && p.x.abs() < 50.0 * s {
                 self.props.push(Prop { kind: PropKind::Palm, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: 0.0, scale: rng.range(2.8, 5.0) });
             }
         }
         for team in 0..2 {
-            let x = if team == 0 { -58.0 } else { 58.0 };
+            let x = if team == 0 { -58.0 * s } else { 58.0 * s };
             self.team_spawns[team] = (0..6).map(|i| Vec2::new(x + (i % 2) as f32 * 2.5 * if team == 0 { 1.0 } else { -1.0 }, -12.5 + i as f32 * 5.0)).collect();
             // A little sandbagged cover in front of each base.
-            let front = if team == 0 { -50.0 } else { 50.0 };
+            let front = if team == 0 { -50.0 * s } else { 50.0 * s };
             for z in [-9.0, 0.0, 9.0] {
                 let y = self.height(front, z);
                 self.solid(Aabb::span(Vec3::new(front - 0.4, y - 0.2, z - 1.6), Vec3::new(front + 0.4, y + COVER_HEIGHT, z + 1.6)), Paint::Sand);
@@ -1429,23 +1542,25 @@ impl World {
 
     /// Bins, barrels, benches, mailboxes, crate stacks and parked cars along the streets.
     fn street_clutter(&mut self, rng: &mut Rng) {
+        let (n, s) = self.grid();
         let kinds = [(ClutterKind::Bin, 14), (ClutterKind::Barrel, 10), (ClutterKind::Bench, 8), (ClutterKind::Mailbox, 6), (ClutterKind::Crates, 8), (ClutterKind::Car, 6)];
         for (kind, count) in kinds {
+            let count = (count as f32 * s * s).round() as usize;
             let mut placed = 0;
             for _ in 0..count * 12 {
                 if placed >= count {
                     break;
                 }
                 // Streets run between the lots on the 21 m grid.
-                let along = rng.range(-55.0, 55.0);
-                let street = (rng.below(5) as f32 - 2.0) * 21.0 + 10.5 * if rng.chance(0.5) { 1.0 } else { -1.0 };
+                let along = rng.range(-55.0, 55.0) * s;
+                let street = (rng.below(2 * n as usize + 1) as f32 - n as f32) * LOT + LOT * 0.5 * if rng.chance(0.5) { 1.0 } else { -1.0 };
                 let across = rng.range(-2.6, 2.6);
                 let on_x = rng.chance(0.5);
                 let p = if on_x { Vec2::new(along, street + across) } else { Vec2::new(street + across, along) };
                 let turned = !on_x;
                 let half = kind.half();
                 let reach = half.x.max(half.z) + 0.8;
-                if p.x.abs() > 54.0 || p.length() < 6.0 || self.occupied(p, reach) || self.clutter.iter().any(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) < reach + 1.5) {
+                if p.x.abs() > 54.0 * s || p.length() < 6.0 || self.occupied(p, reach) || self.clutter.iter().any(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) < reach + 1.5) {
                     continue;
                 }
                 self.clutter.push(Clutter { kind, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned });
@@ -1458,30 +1573,31 @@ impl World {
     fn greenery(&mut self, rng: &mut Rng) {
         let look = self.recipe.biome.look();
         let lush = look.grass[1] > look.grass[0] && look.grass[1] > look.grass[2] * 0.9;
+        let (n, s) = self.grid();
         // Street trees on the lot corners, where they never block a doorway.
-        for gx in -2i32..=2 {
-            for gz in -2i32..=2 {
+        for gx in -n..=n {
+            for gz in -n..=n {
                 if !rng.chance(0.45) {
                     continue;
                 }
-                let p = Vec2::new(gx as f32 * 21.0 + 10.5, gz as f32 * 21.0 + 10.5) + Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-                if p.length() < 7.0 || self.occupied(p, 1.2) || p.x.abs() > 52.0 {
+                let p = Vec2::new(gx as f32 * LOT + LOT * 0.5, gz as f32 * LOT + LOT * 0.5) + Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
+                if p.length() < 7.0 || self.occupied(p, 1.2) || p.x.abs() > 52.0 * s {
                     continue;
                 }
                 self.props.push(Prop { kind: PropKind::Tree, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: rng.range(0.0, TAU), scale: rng.range(3.6, 5.2) });
             }
         }
-        for _ in 0..40 {
-            let p = Vec2::new(rng.range(-60.0, 60.0), rng.range(-60.0, 60.0));
+        for _ in 0..(40.0 * s * s) as usize {
+            let p = Vec2::new(rng.range(-60.0, 60.0), rng.range(-60.0, 60.0)) * s;
             if self.occupied(p, 0.9) || p.length() < 5.0 {
                 continue;
             }
             self.props.push(Prop { kind: PropKind::Bush, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: rng.range(0.0, TAU), scale: rng.range(0.7, 1.2) });
         }
         // Grass tufts: dense where it is green, sparse elsewhere.
-        let tufts = if lush { 2600 } else { 900 };
+        let tufts = (if lush { 2600.0 } else { 900.0 } * s * s) as usize;
         for _ in 0..tufts {
-            let p = Vec2::new(rng.range(-70.0, 70.0), rng.range(-70.0, 70.0));
+            let p = Vec2::new(rng.range(-70.0, 70.0), rng.range(-70.0, 70.0)) * s;
             let h = self.height(p.x, p.y);
             if h < self.water + 0.3 || self.occupied(p, 0.3) {
                 continue;
@@ -1495,8 +1611,11 @@ impl World {
         let g = self.height(c.x, c.y);
         for (dx, dz, long_x) in [(-6.0, 0.0, false), (6.0, 0.0, false), (0.0, -6.0, true), (0.0, 6.0, true)] {
             if rng.chance(0.75) {
-                let half = if long_x { Vec3::new(3.0, COVER_HEIGHT * 0.5, 0.25) } else { Vec3::new(0.25, COVER_HEIGHT * 0.5, 3.0) };
-                self.solid(Aabb::new(Vec3::new(c.x + dx, g + COVER_HEIGHT * 0.5, c.y + dz), half), Paint::Concrete);
+                let (hx, hz) = if long_x { (3.0, 0.25) } else { (0.25, 3.0) };
+                let (x, z) = (c.x + dx, c.y + dz);
+                // Footed on the lowest ground under it, so no end hangs over a dip.
+                let low = [(x - hx, z - hz), (x + hx, z + hz), (x, z)].iter().map(|(x, z)| self.height(*x, *z)).fold(g, f32::min);
+                self.solid(Aabb::span(Vec3::new(x - hx, low.min(g - 0.1), z - hz), Vec3::new(x + hx, g + COVER_HEIGHT, z + hz)), Paint::Concrete);
             }
         }
         self.solid(Aabb::new(Vec3::new(c.x, g + 0.4, c.y), Vec3::new(1.2, 0.5, 1.2)), Paint::Concrete);
@@ -1766,6 +1885,7 @@ mod tests {
     fn nothing_hangs_in_the_air() {
         for seed in [1, 3, 9, 10, 17, 22] {
             let mut maps: Vec<(String, World)> = Theme::ALL.into_iter().map(|t| (format!("{t:?} {seed}"), World::generate(WorldRecipe::themed(seed, Biome::IronShoals, t)))).collect();
+            maps.extend(grid_towns(seed));
             if seed == 9 {
                 for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town) {
                     maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
@@ -1787,6 +1907,7 @@ mod tests {
         let mut maps: Vec<(String, World)> = Vec::new();
         for seed in [1, 3, 9, 17] {
             maps.extend(Theme::ALL.into_iter().map(|t| (format!("{t:?} {seed}"), World::generate(WorldRecipe::themed(seed, Biome::IronShoals, t)))));
+            maps.extend(grid_towns(seed));
         }
         for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town) {
             maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
@@ -1879,6 +2000,27 @@ mod tests {
             // Every doorway is a doorway: wide enough, tall enough.
             assert!(w.doors.iter().all(|d| d.width >= 1.6 && d.width <= DOOR_WIDTH + 0.05 && d.height >= 2.3), "{what}: odd doors");
         }
+    }
+
+    /// The small and medium random towns rolled from `seed`.
+    fn grid_towns(seed: u64) -> Vec<(String, World)> {
+        [Layout::SmallTown, Layout::MediumTown].into_iter().map(|l| (format!("{l:?} {seed}"), World::generate(WorldRecipe::grid_town(l, seed, Biome::IronShoals)))).collect()
+    }
+
+    #[test]
+    fn grid_towns_are_new_every_seed_and_sized_by_layout() {
+        for seed in [1, 2, 5, 9, 17, 40] {
+            for (what, w) in grid_towns(seed) {
+                spawns_are_clear(&w, &what);
+                assert!(w.blocks.len() > 300 && w.blocks.len() < 12_000, "{what}: {} blocks", w.blocks.len());
+                let apart = w.team_spawns[0][0].distance(w.team_spawns[1][0]);
+                let (lo, hi) = if w.recipe.layout == Layout::SmallTown { (100.0, 125.0) } else { (150.0, 185.0) };
+                assert!(apart > lo && apart < hi, "{what}: bases {apart} m apart");
+                assert!(w.team_spawns.iter().flatten().all(|s| w.in_bounds(s.x, s.y) && w.height(s.x, s.y) > w.water), "{what}: a spawn off the land");
+            }
+        }
+        let (a, b) = (World::generate(WorldRecipe::grid_town(Layout::SmallTown, 1, Biome::IronShoals)), World::generate(WorldRecipe::grid_town(Layout::SmallTown, 2, Biome::IronShoals)));
+        assert_ne!(a.blocks.len(), b.blocks.len(), "new streets every seed");
     }
 
     #[test]

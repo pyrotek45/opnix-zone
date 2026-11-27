@@ -103,6 +103,7 @@ impl Plugin for SimPlugin {
             .init_resource::<session::PendingMatch>()
             .init_resource::<session::Relaunch>()
             .init_resource::<session::Relaunched>()
+            .init_resource::<versus::LobbyReturn>()
             .init_resource::<net::NetLink>()
             .init_resource::<nav::NavScratch>()
             .init_resource::<lagcomp::LagHistory>()
@@ -123,6 +124,8 @@ impl Plugin for SimPlugin {
             .add_systems(OnEnter(Active), breakables::spawn_breakables)
             .add_systems(Update, breakables::sync_breakables.run_if(in_state(Active)))
             .add_systems(Update, (versus::run_versus, versus::fill_teams, session::relaunch, objective::run_objectives.run_if(objective::objective_mode)).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
+            // Co-op matches started from the lobby go back to it.
+            .add_systems(Update, (versus::back_to_lobby, session::relaunch).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(not(versus::versus)))
             .add_systems(
                 Update,
                 (

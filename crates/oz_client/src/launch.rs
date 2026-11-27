@@ -7,11 +7,14 @@
 //! game --join ADDRESS       join a host
 //! ```
 //! `--seed N` fixes the map and `--teams N` sets the team size in versus modes.
+//! `--map NAME` picks a map by name (`CROSSROADS`, `SUBURBS`, `SMALLTOWN`, a horde map...)
+//! and `--size small|medium|large` the random town of that size.
 
 use crate::settings::Settings;
 use bevy::prelude::*;
 use oz_net::{DEFAULT_PORT, normalize_address};
-use oz_sim::{net, prelude::*};
+use oz_core::worldgen::MapSize;
+use oz_sim::{net, prelude::*, versus};
 
 /// Add as a `Startup` system.
 pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res<Settings>, mut pending: ResMut<PendingMatch>) {
@@ -29,11 +32,17 @@ pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res
         {
             rules.recipe = oz_core::worldgen::WorldRecipe::horde(layout);
         }
-        if let Some(layout) = value("--map").and_then(|m| oz_core::worldgen::Layout::VERSUS.into_iter().find(|l| l.title().replace(' ', "").eq_ignore_ascii_case(&m.replace(' ', ""))))
+        // Versus: a map by name (a theme, a fixed map, SMALLTOWN...), or the random town of a size.
+        let squash = |m: &str| m.replace([' ', '-', '_'], "").to_ascii_uppercase();
+        let choice = value("--map")
+            .and_then(|m| (0..versus::MAPS).find(|c| squash(versus::map_title(*c)) == squash(&m)))
+            .or_else(|| value("--size").and_then(|s| MapSize::ALL.into_iter().find(|size| size.title().eq_ignore_ascii_case(&s))).map(|size| versus::maps_of_size(size)[0]));
+        if let Some(choice) = choice
             && rules.recipe.layout.is_town()
-            && layout != oz_core::worldgen::Layout::Town
+            && !rules.horde
         {
-            rules.recipe = oz_core::worldgen::WorldRecipe::preset(layout, rules.recipe.biome, rules.recipe.weather);
+            rules.recipe = versus::map_recipe(choice, seed, rules.recipe.biome);
+            rules.map = if choice <= oz_core::worldgen::Theme::ALL.len() as u8 { choice } else { 0 };
         }
         if let Some(weather) = value("--weather").and_then(|w| oz_core::worldgen::Weather::ALL.into_iter().find(|x| x.name().eq_ignore_ascii_case(&w))) {
             rules.recipe.weather = weather;

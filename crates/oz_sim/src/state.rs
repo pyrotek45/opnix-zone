@@ -251,6 +251,8 @@ pub enum LobbyAction {
     Mode(i8),
     /// Host only: step the map (random town, a themed town, or a fixed layout).
     Map(i8),
+    /// Host only: step the map size (small, medium, large); the map list follows it.
+    MapSize(i8),
     /// Host only: a fresh roll of the current map choice.
     NewMap,
     /// Host only: step the score limit.
@@ -263,6 +265,8 @@ pub enum LobbyAction {
     Bots,
     /// Host only: step the respawn delay.
     Respawn(i8),
+    /// Host only, in a co-op match started from the lobby: everyone back to the lobby.
+    BackToLobby,
 }
 
 #[derive(Event, Clone, Debug)]

@@ -33,6 +33,10 @@ pub struct Settings {
     pub token: u64,
     /// The five saved classes, encoded by `loadout` (empty = defaults).
     pub classes: Vec<String>,
+    /// The last lobby this player hosted: its mode and map choice (`versus::MAPS`), so
+    /// PLAY SOLO and HOST GAME open on the same game again.
+    pub lobby_mode: u8,
+    pub lobby_map: u8,
 }
 
 impl Default for Settings {
@@ -57,6 +61,8 @@ impl Default for Settings {
             bindings: Default::default(),
             token: 0,
             classes: Vec::new(),
+            lobby_mode: 0,
+            lobby_map: 0,
         }
     }
 }
@@ -106,6 +112,8 @@ impl Settings {
                 "last_address" => s.last_address = sanitize(value, 64),
                 "token" => s.token = value.parse().unwrap_or(0),
                 "class" => s.classes.push(sanitize(value, 200)),
+                "lobby_mode" => s.lobby_mode = value.parse().unwrap_or(0),
+                "lobby_map" => s.lobby_map = value.parse().unwrap_or(0),
                 _ => s.bindings.load_line(key, value),
             }
         }
@@ -147,6 +155,7 @@ impl Settings {
         );
         let text = text + &format!("effects={}\n", if self.full_effects { "full" } else { "reduced" });
         let text = text + &format!("aim_assist={}\nstick_curve={}\n", if self.aim_assist { "on" } else { "off" }, if self.dynamic_curve { "dynamic" } else { "standard" });
+        let text = text + &format!("lobby_mode={}\nlobby_map={}\n", self.lobby_mode, self.lobby_map);
         let text = text + &format!("token={}\n", self.token) + &self.bindings.save_lines();
         let text = text + &self.classes.iter().map(|c| format!("class={c}\n")).collect::<String>();
         if let Some(dir) = path.parent() {
