@@ -42,6 +42,8 @@ pub struct Class {
     pub tab: u8,
     /// Which page of the armory is showing.
     pub page: Page,
+    /// The kind of gun being browsed (`GunClass` as a number).
+    pub kind: u8,
     loaded: bool,
 }
 
@@ -52,6 +54,8 @@ pub enum Page {
     #[default]
     Classes,
     Class,
+    /// For a gun slot: pistols, SMGs, rifles... then the guns of that kind.
+    Kind,
     Pick,
     Parts,
 }
@@ -70,7 +74,7 @@ impl Default for Class {
             active: 0,
             tab: 0,
             page: Page::Classes,
-            loaded: false,
+            kind: 0, loaded: false,
         }
     }
 }
@@ -269,14 +273,21 @@ fn armory_actions(
             }
             Act::ArmoryTab(tab) if edit => {
                 class.tab = (*tab).min(5);
-                class.page = Page::Pick;
-                request.0 = Some(tab_focus(&class));
+                open_tab(&mut class, &content, &mut request);
                 dirty.0 = true;
             }
-            Act::Tab(step) if edit && matches!(class.page, Page::Pick | Page::Parts) => {
+            Act::Tab(step) if edit && matches!(class.page, Page::Kind | Page::Pick | Page::Parts) => {
                 class.tab = (class.tab as i32 + step).rem_euclid(TABS.len() as i32) as u8;
+                open_tab(&mut class, &content, &mut request);
+                dirty.0 = true;
+            }
+            Act::ArmoryKind(kind) if edit => {
+                class.kind = *kind;
                 class.page = Page::Pick;
-                request.0 = Some(tab_focus(&class));
+                let (held, _) = class.weapon(class.tab.min(1));
+                let first = content.weapons.iter().position(|w| w.frame.is_some() && w.class as u8 == *kind).unwrap_or(0) as u8;
+                let in_kind = content.weapons.get(held as usize).is_some_and(|w| w.class as u8 == *kind);
+                request.0 = Some(Act::ArmoryItem(if in_kind { held } else { first }));
                 dirty.0 = true;
             }
             Act::ArmoryItem(item) if edit => {
@@ -370,7 +381,8 @@ fn armory_actions(
                 // Up one page, landing on what we came from.
                 let (page, focus) = match class.page {
                     Page::Parts => (Page::Pick, tab_focus(&class)),
-                    Page::Pick => (Page::Class, Act::ArmoryTab(class.tab)),
+                    Page::Pick if class.tab <= 1 => (Page::Kind, Act::ArmoryKind(class.kind)),
+                    Page::Pick | Page::Kind => (Page::Class, Act::ArmoryTab(class.tab)),
                     _ => (Page::Classes, Act::ClassPick(class.active as u8)),
                 };
                 class.page = page;
@@ -386,6 +398,20 @@ fn armory_actions(
     }
     if changed {
         save(&class, &mut settings);
+    }
+}
+
+/// Opens the current tab: guns start at their kinds (on the kind of the gun held now),
+/// everything else at its list.
+fn open_tab(class: &mut Class, content: &Content, request: &mut FocusRequest) {
+    if class.tab <= 1 {
+        let (held, _) = class.weapon(class.tab);
+        class.kind = content.weapons.get(held as usize).map_or(0, |w| w.class as u8);
+        class.page = Page::Kind;
+        request.0 = Some(Act::ArmoryKind(class.kind));
+    } else {
+        class.page = Page::Pick;
+        request.0 = Some(tab_focus(class));
     }
 }
 
@@ -485,10 +511,20 @@ fn panel_at(left: Option<f32>, right: Option<f32>, top: f32, width: f32) -> impl
     )
 }
 
+/// The kinds of gun, in the order the armory lists them.
+const GUN_KINDS: [oz_core::arsenal::GunClass; 7] = {
+    use oz_core::arsenal::GunClass::*;
+    [Rifle, Smg, Shotgun, Sniper, Lmg, Pistol, Launcher]
+};
+
+fn kind_name(kind: u8) -> &'static str {
+    GUN_KINDS.iter().find(|k| **k as u8 == kind).map_or("GUNS", |k| k.name())
+}
+
 fn heading(parent: &mut ChildSpawnerCommands, text: impl Into<String>) {
     parent
         .spawn((Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)), margin: UiRect::bottom(Val::Px(4.0)), ..default() }, BackgroundColor(Color::srgba(0.45, 0.88, 0.95, 0.16))))
-        .with_children(|h| ui::label(h, text, 14.0, ui::ACCENT));
+        .with_children(|h| ui::label(h, text, 17.0, ui::ACCENT));
 }
 
 fn streak_names(loadout: &Loadout) -> String {
@@ -522,36 +558,39 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
     let career = &career;
     let mut order = Order::default();
     let order = &mut order;
-    let gun_page = matches!(page, Page::Pick | Page::Parts) && class.tab <= 1;
+    let gun_page = matches!(page, Page::Kind | Page::Pick | Page::Parts) && class.tab <= 1;
 
     ui::root(&mut commands, 0.0).with_children(|root| {
         // Where we are: ARMORY > ASSAULT > PRIMARY > ATTACHMENTS.
         root.spawn(Node { position_type: PositionType::Absolute, left: Val::Px(24.0), top: Val::Px(14.0), flex_direction: FlexDirection::Column, ..default() }).with_children(|top| {
-            ui::label(top, "ARMORY", 30.0, ui::TEXT);
+            ui::label(top, "ARMORY", 36.0, ui::TEXT);
             let mut trail = vec![if edit { "CLASSES".to_string() } else { "SELECT A CLASS FOR YOUR NEXT LIFE".to_string() }];
             if page != Page::Classes {
                 trail.push(format!("{}  {}", class.active + 1, CLASS_NAMES[class.active]));
             }
-            if matches!(page, Page::Pick | Page::Parts) {
+            if matches!(page, Page::Kind | Page::Pick | Page::Parts) {
                 trail.push(TABS[class.tab as usize].to_string());
+            }
+            if matches!(page, Page::Pick | Page::Parts) && class.tab <= 1 {
+                trail.push(kind_name(class.kind).to_string());
             }
             if page == Page::Parts {
                 trail.push("ATTACHMENTS".to_string());
             }
-            ui::label(top, format!(">  {}", trail.join("  >  ")), 14.0, ui::ACCENT);
+            ui::label(top, format!(">  {}", trail.join("  >  ")), 17.0, ui::ACCENT);
             let (division, points) = career.division();
             ui::label(top, format!("LEVEL {}  ({:.0}%)      RANK {division} {points}", career.level(), career.progress() * 100.0), 12.0, ui::DIM);
         });
 
         // One list at a time, on the left.
-        root.spawn(panel_at(Some(24.0), None, 84.0, 400.0)).with_children(|panel| match page {
+        root.spawn(panel_at(Some(24.0), None, 96.0, 440.0)).with_children(|panel| match page {
             Page::Classes => {
                 heading(panel, "CLASSES");
                 for (i, name) in CLASS_NAMES.iter().enumerate() {
                     ui::slim(panel, order, format!("{}   {name}", i + 1), Act::ClassPick(i as u8), None, i == class.active, Val::Percent(100.0));
                 }
                 if !edit {
-                    ui::label(panel, "RANKED: CLASSES ARE LOCKED DURING A MATCH. EDIT THEM IN THE LOBBY.", 11.0, ui::DIM);
+                    ui::label(panel, "RANKED: CLASSES ARE LOCKED DURING A MATCH. EDIT THEM IN THE LOBBY.", 13.0, ui::DIM);
                 }
             }
             Page::Class => {
@@ -560,26 +599,38 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                     ui::slim(panel, order, format!("{name:<11}{}", slot_value(&content, &c, t as u8)), Act::ArmoryTab(t as u8), None, false, Val::Percent(100.0));
                 }
             }
-            Page::Pick => {
+            Page::Kind => {
                 heading(panel, format!("CHOOSE {}", TABS[class.tab as usize]));
+                let (held, _) = class.weapon(class.tab.min(1));
+                let held_kind = content.weapons.get(held as usize).map(|w| w.class as u8);
+                for kind in GUN_KINDS {
+                    let count = content.weapons.iter().filter(|w| w.frame.is_some() && w.class == kind).count();
+                    if count == 0 {
+                        continue;
+                    }
+                    let mark = if held_kind == Some(kind as u8) { "   <" } else { "" };
+                    ui::slim(panel, order, format!("{:<10}{count:>2} GUNS{mark}", kind.name()), Act::ArmoryKind(kind as u8), None, held_kind == Some(kind as u8), Val::Percent(100.0));
+                }
+            }
+            Page::Pick => {
+                heading(panel, format!("CHOOSE {}", if class.tab <= 1 { kind_name(class.kind) } else { TABS[class.tab as usize] }));
                 match class.tab {
                     0 | 1 => {
                         let held = if class.tab == 0 { c.primary } else { c.secondary };
                         let other = if class.tab == 0 { c.secondary } else { c.primary };
-                        // Two columns: the whole arsenal fits on one page.
-                        panel.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(4.0), row_gap: Val::Px(4.0), ..default() }).with_children(|panel| {
-                        for (k, (i, def)) in content.weapons.iter().enumerate().filter(|(_, w)| w.frame.is_some()).enumerate() {
+                        // One kind of gun at a time, as a list.
+                        for (i, def) in content.weapons.iter().enumerate().filter(|(_, w)| w.frame.is_some() && w.class as u8 == class.kind) {
                             let tag = if !career.gun_unlocked(i as u8) {
-                                format!("  LOCKED - LV {}", crate::career::gun_level(i as u8))
+                                format!("   LOCKED  LV {}", crate::career::gun_level(i as u8))
                             } else if i as u8 == other {
-                                "  (SWAP)".to_string()
+                                "   (SWAP)".to_string()
+                            } else if i as u8 == held {
+                                "   EQUIPPED".to_string()
                             } else {
                                 String::new()
                             };
-                            let tag = if tag.starts_with("  LOCKED") { tag.replace("  LOCKED - ", "\n  ") } else { tag };
-                            ui::slim_at(panel, order, format!("{}\n{}{tag}", def.name, def.class.name()), Act::ArmoryItem(i as u8), None, i as u8 == held, Val::Px(186.0), Some(IVec2::new(k as i32 % 2, k as i32 / 2)));
+                            ui::slim(panel, order, format!("{}{tag}", def.name), Act::ArmoryItem(i as u8), None, i as u8 == held, Val::Percent(100.0));
                         }
-                        });
                     }
                     2 => {
                         for (i, perk) in content.perks.iter().enumerate() {
@@ -595,13 +646,13 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                         for (i, name) in oz_sim::player::vision::NAMES.iter().enumerate() {
                             ui::slim(panel, order, *name, Act::ArmoryItem(i as u8), None, i as u8 == c.vision, Val::Percent(100.0));
                         }
-                        ui::label(panel, "TOGGLE IN A MATCH WITH N / D-PAD LEFT.", 11.0, ui::DIM);
+                        ui::label(panel, "TOGGLE IN A MATCH WITH N / D-PAD LEFT.", 13.0, ui::DIM);
                     }
                     _ => {
                         for def in oz_sim::killstreak::STREAKS.iter() {
                             ui::slim(panel, order, format!("{:<20}{:>2} KILLS", def.name, def.kills), Act::ArmoryItem(def.id), None, c.streaks.contains(&def.id), Val::Percent(100.0));
                         }
-                        ui::label(panel, "PICK UP TO THREE. BIGGER REWARDS NEED LONGER STREAKS.", 11.0, ui::DIM);
+                        ui::label(panel, "PICK UP TO THREE. BIGGER REWARDS NEED LONGER STREAKS.", 13.0, ui::DIM);
                     }
                 }
             }
@@ -624,13 +675,14 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
             }
         });
 
-        // Bottom right: what the thing under the cursor is, and for guns, what it does.
-        root.spawn(panel_at(None, Some(24.0), 0.0, 400.0))
+        // Bottom left, under the lists: what the thing under the cursor is, and for guns,
+        // what it does. The right of the screen is left to the gun.
+        root.spawn(panel_at(Some(24.0), None, 0.0, 440.0))
             .insert(Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(24.0),
+                left: Val::Px(24.0),
                 bottom: Val::Px(56.0),
-                width: Val::Px(400.0),
+                width: Val::Px(440.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(4.0),
                 padding: UiRect::all(Val::Px(10.0)),
@@ -638,13 +690,13 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                 ..default()
             })
             .with_children(|panel| {
-                panel.spawn((ArmoryTitle, Text::new(""), TextFont { font_size: 15.0, ..default() }, TextColor(ui::TEXT)));
-                panel.spawn((ArmoryBlurb, Text::new(""), TextFont { font_size: 12.0, ..default() }, TextColor(ui::DIM)));
+                panel.spawn((ArmoryTitle, Text::new(""), TextFont { font_size: 17.0, ..default() }, TextColor(ui::TEXT)));
+                panel.spawn((ArmoryBlurb, Text::new(""), TextFont { font_size: 14.0, ..default() }, TextColor(ui::DIM)));
                 if gun_page || page == Page::Class {
                     for (index, name) in crate::gunsmith::BARS.iter().enumerate() {
                         panel.spawn(ui::row(8.0)).with_children(|row| {
-                            row.spawn((Text::new(*name), TextFont { font_size: 10.0, ..default() }, TextColor(ui::DIM), Node { width: Val::Px(80.0), ..default() }));
-                            row.spawn((Node { width: Val::Px(280.0), height: Val::Px(7.0), ..default() }, BackgroundColor(Color::srgba(0.1, 0.14, 0.17, 0.9)))).with_children(|track| {
+                            row.spawn((Text::new(*name), TextFont { font_size: 12.0, ..default() }, TextColor(ui::DIM), Node { width: Val::Px(96.0), ..default() }));
+                            row.spawn((Node { width: Val::Px(300.0), height: Val::Px(8.0), ..default() }, BackgroundColor(Color::srgba(0.1, 0.14, 0.17, 0.9)))).with_children(|track| {
                                 track.spawn((ArmoryFill(index), Node { position_type: PositionType::Absolute, height: Val::Percent(100.0), ..default() }, BackgroundColor(ui::TEXT)));
                                 track.spawn((ArmoryDelta(index), Node { position_type: PositionType::Absolute, height: Val::Percent(100.0), ..default() }, BackgroundColor(ui::GOOD)));
                             });
@@ -687,22 +739,22 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                         "ENTER / CLICK: CHANGE    ESC BACK"
                     }
                 }
-                (Page::Pick, true) => {
+                (Page::Kind | Page::Pick, true) => {
                     if pad {
-                        "(A) CHOOSE    (B) BACK    LB / RB  NEXT SLOT    RIGHT STICK  TURN"
+                        "(A) CHOOSE    (B) BACK    LB / RB  NEXT SLOT    RIGHT STICK  TURN    LT / RT  ZOOM"
                     } else {
-                        "ENTER / CLICK: CHOOSE    ESC BACK    PGUP / PGDN  NEXT SLOT    DRAG TO TURN"
+                        "ENTER / CLICK: CHOOSE    ESC BACK    PGUP / PGDN  NEXT SLOT    DRAG TO TURN    WHEEL ZOOM"
                     }
                 }
                 (Page::Parts, true) => {
                     if pad {
-                        "(A) EDIT A PART, THEN LEFT / RIGHT    (B) BACK    RIGHT STICK  TURN"
+                        "(A) EDIT A PART, THEN LEFT / RIGHT    (B) BACK    RIGHT STICK  TURN    LT / RT  ZOOM"
                     } else {
-                        "ENTER ON A PART, THEN LEFT / RIGHT (OR CLICK)    ESC BACK    DRAG TO TURN"
+                        "ENTER ON A PART, THEN LEFT / RIGHT (OR CLICK)    ESC BACK    DRAG TO TURN    WHEEL ZOOM"
                     }
                 }
             };
-            ui::label(bottom, hint, 12.0, ui::DIM);
+            ui::label(bottom, hint, 14.0, ui::DIM);
             bottom.spawn(Node { flex_grow: 1.0, ..default() });
             let done = if !edit {
                 "CLOSE"
@@ -810,6 +862,16 @@ fn preview(
             let def = &content.weapons[*i as usize];
             let parts = if *i == current { current_parts } else { def.defaults };
             (*i, parts, format!("{}  -  {}", def.class.name(), def.blurb))
+        }
+        Some(Act::ArmoryKind(kind)) => {
+            // The gun you hold if it is this kind, else the kind's first.
+            let names: Vec<&str> = content.weapons.iter().filter(|w| w.frame.is_some() && w.class as u8 == *kind).map(|w| w.name).collect();
+            let shown = if content.weapons.get(current as usize).is_some_and(|w| w.class as u8 == *kind) {
+                (current, current_parts)
+            } else {
+                content.weapons.iter().position(|w| w.frame.is_some() && w.class as u8 == *kind).map_or((current, current_parts), |i| (i as u8, content.weapons[i].defaults))
+            };
+            (shown.0, shown.1, names.join("  /  "))
         }
         Some(Act::ArmoryPart(s, _)) => {
             let def = &content.weapons[current as usize];

@@ -77,6 +77,11 @@ struct ShowTarget(Handle<Image>);
 #[derive(Resource, Default)]
 pub struct Turn {
     pub yaw: f32,
+    /// Armory inspection: tilt, zoom (0 = whole gun, 1 = right up close) and seconds since
+    /// the player last handled it (it turns on its own again after a while).
+    pub pitch: f32,
+    pub zoom: f32,
+    handled: f32,
     built: Option<Stage>,
 }
 
@@ -203,6 +208,9 @@ fn rebuild(
     turn.built = Some(stage.clone());
     if !same_gun {
         turn.yaw = 0.6;
+        turn.pitch = 0.0;
+        turn.zoom = 0.0;
+        turn.handled = 9.0;
     }
     for entity in &subjects {
         commands.entity(entity).despawn();
@@ -257,14 +265,16 @@ fn rebuild(
         Stage::Armory { weapon, parts: equipped } => {
             let model = content.as_deref().and_then(|c| c.weapons.get(*weapon as usize)).map_or_else(BlockModel::new, |def| assemble(def, equipped));
             let (center, size) = bounds(&model);
-            // Big guns fill the spot; small ones are enlarged only so far, so a pistol still reads as a pistol.
-            let scale = (1.0 / size.z.max(size.y).max(0.3)).min(1.5);
+            // Big guns fill the right of the screen; small ones are enlarged only so far, so a
+            // pistol still reads as a pistol.
+            let scale = (1.45 / size.z.max(size.y).max(0.3)).min(2.4);
             let baked = art.bake(&model, &mut meshes);
-            // Off to the upper right, clear of the panels on the left.
-            let pivot = commands.spawn((Subject, Turntable, Transform::from_translation(STAGE + Vec3::new(0.95, 1.62, 0.0)), Visibility::Inherited)).id();
+            // The camera (see `spin`) keeps it in the right-hand part of the screen, clear of
+            // the panels on the left, and closes in as you zoom.
+            let pivot = commands.spawn((Subject, Turntable, Transform::from_translation(ARMORY_PIVOT), Visibility::Inherited)).id();
             let holder = commands.spawn((Transform::from_translation(-center * scale).with_scale(Vec3::splat(scale)), Visibility::Inherited, ChildOf(pivot))).id();
             art.spawn(&mut commands, holder, &baked);
-            *camera = Transform::from_translation(STAGE + Vec3::new(0.0, 1.45, 2.6)).looking_at(STAGE + Vec3::new(0.0, 1.2, 0.0), Vec3::Y);
+            *camera = armory_camera(0.0);
         }
         Stage::Lineup => {
             let gun = gun_for(None, &mut meshes);
@@ -285,7 +295,21 @@ fn rebuild(
     }
 }
 
-/// Turns the subject: slowly on its own, or by dragging / the right stick.
+/// Where the armory gun turns.
+const ARMORY_PIVOT: Vec3 = Vec3::new(0.0, 3001.2, 0.0);
+
+/// The armory camera at a zoom (0 whole gun .. 1 close up): the gun stays a third of the
+/// screen right of centre, in the space the panels leave.
+fn armory_camera(zoom: f32) -> Transform {
+    let distance = 2.5 + (0.75 - 2.5) * zoom.clamp(0.0, 1.0);
+    let side = 0.24 * distance;
+    Transform::from_translation(ARMORY_PIVOT + Vec3::new(-side, 0.12 * distance, distance)).looking_at(ARMORY_PIVOT + Vec3::new(-side, 0.0, 0.0), Vec3::Y)
+}
+
+/// Turns the subject: slowly on its own, or by dragging / the right stick. In the armory
+/// you can also tilt it (drag up and down, right stick) and zoom in (mouse wheel, LT / RT)
+/// to check it out.
+#[allow(clippy::too_many_arguments)]
 fn spin(
     time: Res<Time<Real>>,
     stage: Res<Stage>,
@@ -295,22 +319,59 @@ fn spin(
     controls: Res<Controls>,
     gamepads: Query<&Gamepad>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    mut tables: Query<&mut Transform, (With<Turntable>, With<Subject>)>,
+    scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>,
+    mut tables: Query<&mut Transform, (With<Turntable>, With<Subject>, Without<ShowCamera>)>,
+    mut camera: Query<&mut Transform, (With<ShowCamera>, Without<Turntable>)>,
 ) {
     let dt = time.delta_secs();
-    let centre_drag = windows.single().ok().and_then(|w| w.cursor_position().map(|c| (c.x / w.width() - 0.5).abs() < 0.2)).unwrap_or(false);
-    let stick: f32 = gamepads.iter().map(|pad| pad.right_stick().x).filter(|x| x.abs() > 0.2).sum();
+    let cursor = windows.single().ok().and_then(|w| w.cursor_position().map(|c| c.x / w.width()));
+    let centre_drag = cursor.is_some_and(|x| (x - 0.5).abs() < 0.2);
+    let stick = gamepads.iter().map(|pad| pad.right_stick()).find(|s| s.length() > 0.2).unwrap_or(Vec2::ZERO);
     let gun = matches!(*stage, Stage::Gun { .. } | Stage::Armory { .. });
-    if mouse.pressed(MouseButton::Left) && (centre_drag || matches!(*stage, Stage::Armory { .. })) && gun {
+    let armory = matches!(*stage, Stage::Armory { .. });
+    // In the armory the right of the screen is the gun's: drag or scroll there to handle it.
+    let over_gun = cursor.is_some_and(|x| x > 0.4);
+    turn.handled += dt;
+    if mouse.pressed(MouseButton::Left) && ((armory && over_gun) || (gun && centre_drag)) {
         turn.yaw += motion.delta.x * 0.01;
-    } else if stick != 0.0 {
-        turn.yaw += stick * dt * 2.5;
-    } else if !controls.gamepad || stick == 0.0 {
+        if armory {
+            turn.pitch = (turn.pitch + motion.delta.y * 0.008).clamp(-1.2, 1.2);
+        }
+        turn.handled = 0.0;
+    } else if stick != Vec2::ZERO {
+        turn.yaw += stick.x * dt * 2.5;
+        if armory {
+            turn.pitch = (turn.pitch - stick.y * dt * 1.8).clamp(-1.2, 1.2);
+        }
+        turn.handled = 0.0;
+    } else if turn.handled > 4.0 {
+        // Left alone: back to a slow turn, and level again.
         turn.yaw += dt * if gun { 0.35 } else { 0.12 };
+        turn.pitch -= turn.pitch * (dt * 1.5).min(1.0);
     }
+    if armory {
+        let triggers: f32 = gamepads.iter().map(|pad| pad.get(GamepadButton::RightTrigger2).unwrap_or(0.0) - pad.get(GamepadButton::LeftTrigger2).unwrap_or(0.0)).sum();
+        let wheel = if over_gun { scroll.delta.y.clamp(-3.0, 3.0) * 0.12 } else { 0.0 };
+        if wheel != 0.0 || triggers.abs() > 0.1 {
+            turn.zoom = (turn.zoom + wheel + triggers * dt * 1.2).clamp(0.0, 1.0);
+            turn.handled = 0.0;
+        }
+        if let Ok(mut eye) = camera.single_mut() {
+            let wanted = armory_camera(turn.zoom);
+            if *eye != wanted {
+                *eye = wanted;
+            }
+        }
+    }
+    let _ = &controls;
     for mut transform in &mut tables {
-        transform.rotation =
-            if gun { Quat::from_rotation_y(turn.yaw) * Quat::from_rotation_x(0.12 * (turn.yaw * 0.7).sin()) } else { Quat::from_rotation_y(std::f32::consts::PI + 0.35 + 0.35 * (turn.yaw).sin()) };
+        transform.rotation = if armory {
+            Quat::from_rotation_x(turn.pitch) * Quat::from_rotation_y(turn.yaw)
+        } else if gun {
+            Quat::from_rotation_y(turn.yaw) * Quat::from_rotation_x(0.12 * (turn.yaw * 0.7).sin())
+        } else {
+            Quat::from_rotation_y(std::f32::consts::PI + 0.35 + 0.35 * (turn.yaw).sin())
+        };
     }
 }
 

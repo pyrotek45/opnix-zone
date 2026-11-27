@@ -119,6 +119,8 @@ pub enum Act {
     ClassPick(u8),
     /// Primary, secondary, perk or gear.
     ArmoryTab(u8),
+    /// Open the guns of one kind (`GunClass` as a number) for the current gun slot.
+    ArmoryKind(u8),
     /// Put this weapon / perk / gear (catalog index) in the current tab's slot.
     ArmoryItem(u8),
     /// Step the attachment in this slot of the current tab's weapon.
@@ -282,6 +284,10 @@ pub fn row(gap: f32) -> impl Bundle {
     Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(gap), align_items: AlignItems::Center, flex_wrap: FlexWrap::Wrap, row_gap: Val::Px(gap), ..default() }
 }
 
+pub fn column(gap: f32) -> impl Bundle {
+    Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(gap), align_items: AlignItems::Center, ..default() }
+}
+
 pub fn label(parent: &mut ChildSpawnerCommands, text: impl Into<String>, size: f32, color: Color) {
     parent.spawn((Text::new(text), TextFont { font_size: size, ..default() }, TextColor(color)));
 }
@@ -332,7 +338,7 @@ pub fn slim_at(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl 
     let color = if selected { GOOD } else { TEXT };
     let mut button = parent.spawn((
         Button,
-        Node { width, padding: UiRect::axes(Val::Px(10.0), Val::Px(3.0)), border: UiRect::all(Val::Px(2.0)), ..default() },
+        Node { width, padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)), border: UiRect::all(Val::Px(2.0)), ..default() },
         BackgroundColor(BUTTON),
         BorderColor(BORDER),
         Clickable { act, left, order: order.0 },
@@ -340,7 +346,7 @@ pub fn slim_at(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl 
     if let Some(cell) = cell {
         button.insert(GridPos(cell));
     }
-    button.with_children(|button| label(button, text, 13.0, color));
+    button.with_children(|button| label(button, text, 16.0, color));
 }
 
 /// A greyed-out row that cannot be focused.
