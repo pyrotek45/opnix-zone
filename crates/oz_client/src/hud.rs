@@ -464,7 +464,7 @@ fn update_text(
     (players, subject): (Query<(&Health, &Arsenal, &Player, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
     mut texts: Query<(&Num, &mut Text, &mut TextColor)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
-    (hand_actions, mut strip): (Res<HandActions>, ResMut<StripActions>),
+    (hand_actions, mut strip, killcam): (Res<HandActions>, ResMut<StripActions>, Res<crate::killcam::KillCam>),
     mut shown_for: Local<f32>,
 ) {
     let dt = time.delta_secs();
@@ -473,7 +473,8 @@ fn update_text(
         *ttl > 0.0
     });
     if let Ok(mut visibility) = root.single_mut() {
-        set(&mut *visibility, if matches!(*screen, Screen::None | Screen::Chat) { Visibility::Inherited } else { Visibility::Hidden });
+        // Hidden while a kill cam plays: its letterbox carries what matters.
+        set(&mut *visibility, if matches!(*screen, Screen::None | Screen::Chat) && !killcam.playing() { Visibility::Inherited } else { Visibility::Hidden });
     }
     // The HUD follows whoever the view does (a spectated player in first person).
     let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
@@ -640,6 +641,7 @@ fn update_shapes(
     mut zones: Query<(&Zone, &mut Node), (Without<Seg>, Without<Fill>)>,
     mut hurt: Query<&mut BackgroundColor, (With<HurtOverlay>, Without<Seg>, Without<Fill>)>,
     mut wave_size: Local<u32>,
+    killcam: Res<crate::killcam::KillCam>,
 ) {
     let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
     let Some((health, arsenal, me, transform, input, mover, _)) = pick else {
@@ -649,7 +651,8 @@ fn update_shapes(
         let low = if health.alive() { (0.35 - health.fraction()).max(0.0) * 0.6 } else { 0.45 };
         // Damage, flash and low-health tints belong to the game view, never to a menu over it.
         let in_menu = !matches!(*screen, crate::ui::Screen::None | crate::ui::Screen::Chat);
-        let color = if in_menu {
+        // A kill cam shows the killer's clean view, not our own red-tinted death screen.
+        let color = if in_menu || killcam.playing() {
             Color::NONE
         } else if view.blind > 0.0 {
             // A flashbang whites the screen out, then fades.
