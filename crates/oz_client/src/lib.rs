@@ -22,31 +22,34 @@
 pub mod actors;
 pub mod ambient;
 pub mod art;
-pub mod chat;
-pub mod cover;
-pub mod avatar;
-pub mod bindings;
 #[cfg(feature = "audio")]
 pub mod audio;
+pub mod avatar;
+pub mod bindings;
+pub mod bushes;
+pub mod chat;
+pub mod cover;
 pub mod fx;
 pub mod gunsmith;
 pub mod hud;
 pub mod input;
 pub mod juice;
+pub mod killcam;
 pub mod launch;
 pub mod loadout;
 pub mod lobby;
+pub mod menu;
+pub mod optics;
 pub mod predict;
 pub mod props;
 pub mod reconnect;
-pub mod menu;
-pub mod optics;
 pub mod retro;
 pub mod scene;
 pub mod settings;
 pub mod showroom;
 pub mod spectate;
 pub mod stations;
+pub mod tactical;
 pub mod tags;
 pub mod ui;
 pub mod view;
@@ -76,7 +79,11 @@ impl Plugin for ClientPlugin {
                     primary_window: Some(Window {
                         title: self.title.clone(),
                         resolution: (1280.0_f32, 720.0_f32).into(),
-                        present_mode: if settings.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync },
+                        present_mode: if settings.vsync {
+                            PresentMode::AutoVsync
+                        } else {
+                            PresentMode::AutoNoVsync
+                        },
                         ..default()
                     }),
                     ..default()
@@ -104,8 +111,23 @@ impl Plugin for ClientPlugin {
             hud::HudPlugin,
             loadout::LoadoutPlugin,
         ))
-        .add_plugins((avatar::AvatarPlugin, showroom::ShowroomPlugin, gunsmith::GunsmithPlugin, lobby::LobbyPlugin, spectate::SpectatePlugin, predict::PredictPlugin, chat::ChatPlugin, tags::TagsPlugin, juice::JuicePlugin, wreck::WreckPlugin, ambient::AmbientPlugin, optics::OpticsPlugin, props::PropsPlugin,
+        .add_plugins((
+            avatar::AvatarPlugin,
+            showroom::ShowroomPlugin,
+            gunsmith::GunsmithPlugin,
+            lobby::LobbyPlugin,
+            spectate::SpectatePlugin,
+            predict::PredictPlugin,
+            chat::ChatPlugin,
+            tags::TagsPlugin,
+            juice::JuicePlugin,
+            wreck::WreckPlugin,
+            ambient::AmbientPlugin,
+            optics::OpticsPlugin,
+            props::PropsPlugin,
+            tactical::TacticalPlugin,
         ));
+        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);
     }

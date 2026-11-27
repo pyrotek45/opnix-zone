@@ -31,9 +31,15 @@ impl Template {
             mesh.compute_flat_normals();
         }
         let read = |mesh: &Mesh, id| -> Vec<Vec3> {
-            mesh.attribute(id).and_then(|a| a.as_float3()).map(|v| v.iter().map(|p| Vec3::from(*p)).collect()).unwrap_or_default()
+            mesh.attribute(id)
+                .and_then(|a| a.as_float3())
+                .map(|v| v.iter().map(|p| Vec3::from(*p)).collect())
+                .unwrap_or_default()
         };
-        Self { positions: read(&mesh, Mesh::ATTRIBUTE_POSITION), normals: read(&mesh, Mesh::ATTRIBUTE_NORMAL) }
+        Self {
+            positions: read(&mesh, Mesh::ATTRIBUTE_POSITION),
+            normals: read(&mesh, Mesh::ATTRIBUTE_NORMAL),
+        }
     }
 }
 
@@ -112,22 +118,47 @@ impl Art {
 
     pub fn add_part(&self, builder: &mut MeshBuilder, part: &Part, offset: Transform) {
         let template = &self.templates[&part.shape];
-        let local = offset * Transform { translation: part.pos, rotation: part.rot, scale: part.size };
+        let local = offset
+            * Transform {
+                translation: part.pos,
+                rotation: part.rot,
+                scale: part.size,
+            };
         let matrix = local.compute_matrix();
         let rotation = local.rotation;
         let color = linear(part.paint);
         for (position, normal) in template.positions.iter().zip(&template.normals) {
-            builder.positions.push(matrix.transform_point3(*position).to_array());
+            builder
+                .positions
+                .push(matrix.transform_point3(*position).to_array());
             // Inverse-transpose for non-uniform scale keeps facets lit correctly.
-            builder.normals.push((rotation * (*normal / part.size.max(Vec3::splat(1e-4)))).normalize_or_zero().to_array());
+            builder.normals.push(
+                (rotation * (*normal / part.size.max(Vec3::splat(1e-4))))
+                    .normalize_or_zero()
+                    .to_array(),
+            );
             builder.colors.push(color);
         }
     }
 
     /// Merges a whole model (any paints) into lit and unlit builders at `offset`.
-    pub fn add_model(&self, lit: &mut MeshBuilder, unlit: &mut MeshBuilder, model: &BlockModel, offset: Transform) {
+    pub fn add_model(
+        &self,
+        lit: &mut MeshBuilder,
+        unlit: &mut MeshBuilder,
+        model: &BlockModel,
+        offset: Transform,
+    ) {
         for part in &model.parts {
-            self.add_part(if part.paint.unlit() { &mut *unlit } else { &mut *lit }, part, offset);
+            self.add_part(
+                if part.paint.unlit() {
+                    &mut *unlit
+                } else {
+                    &mut *lit
+                },
+                part,
+                offset,
+            );
         }
     }
 
@@ -137,35 +168,78 @@ impl Art {
         let mut extras = Vec::new();
         for part in &model.parts {
             match part.anim {
-                Anim::None | Anim::Mag | Anim::Slide => self.add_part(if part.paint.unlit() { &mut unlit } else { &mut lit }, part, Transform::IDENTITY),
-                Anim::Leg { phase } => self.add_part(&mut legs[(phase.fract() >= 0.5) as usize], part, Transform::IDENTITY),
+                Anim::None | Anim::Mag | Anim::Slide => self.add_part(
+                    if part.paint.unlit() {
+                        &mut unlit
+                    } else {
+                        &mut lit
+                    },
+                    part,
+                    Transform::IDENTITY,
+                ),
+                Anim::Leg { phase } => self.add_part(
+                    &mut legs[(phase.fract() >= 0.5) as usize],
+                    part,
+                    Transform::IDENTITY,
+                ),
                 _ => extras.push(*part),
             }
         }
-        let mut finish = |builder: MeshBuilder| (!builder.is_empty()).then(|| meshes.add(builder.build()));
+        let mut finish =
+            |builder: MeshBuilder| (!builder.is_empty()).then(|| meshes.add(builder.build()));
         let [a, b] = legs;
-        Baked { lit: finish(lit), unlit: finish(unlit), legs: [finish(a), finish(b)], extras }
+        Baked {
+            lit: finish(lit),
+            unlit: finish(unlit),
+            legs: [finish(a), finish(b)],
+            extras,
+        }
     }
 
     /// Attaches a baked model's meshes as children of `root`.
     pub fn spawn(&self, commands: &mut Commands, root: Entity, baked: &Baked) {
-        commands.entity(root).insert(Visibility::Inherited).with_children(|parent| {
-            if let Some(mesh) = &baked.lit {
-                parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(self.lit.clone())));
-            }
-            if let Some(mesh) = &baked.unlit {
-                parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(self.unlit.clone()), NotShadowCaster));
-            }
-            for (group, mesh) in baked.legs.iter().enumerate() {
-                if let Some(mesh) = mesh {
-                    parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(self.lit.clone()), LegGroup(group), NotShadowCaster));
+        commands
+            .entity(root)
+            .insert(Visibility::Inherited)
+            .with_children(|parent| {
+                if let Some(mesh) = &baked.lit {
+                    parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(self.lit.clone())));
                 }
-            }
-            for part in &baked.extras {
-                let base = Transform { translation: part.pos, rotation: part.rot, scale: part.size };
-                parent.spawn((Mesh3d(self.primitive(part.shape)), MeshMaterial3d(self.paint(part.paint)), base, AnimPart { anim: part.anim, base }, NotShadowCaster));
-            }
-        });
+                if let Some(mesh) = &baked.unlit {
+                    parent.spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(self.unlit.clone()),
+                        NotShadowCaster,
+                    ));
+                }
+                for (group, mesh) in baked.legs.iter().enumerate() {
+                    if let Some(mesh) = mesh {
+                        parent.spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(self.lit.clone()),
+                            LegGroup(group),
+                            NotShadowCaster,
+                        ));
+                    }
+                }
+                for part in &baked.extras {
+                    let base = Transform {
+                        translation: part.pos,
+                        rotation: part.rot,
+                        scale: part.size,
+                    };
+                    parent.spawn((
+                        Mesh3d(self.primitive(part.shape)),
+                        MeshMaterial3d(self.paint(part.paint)),
+                        base,
+                        AnimPart {
+                            anim: part.anim,
+                            base,
+                        },
+                        NotShadowCaster,
+                    ));
+                }
+            });
     }
 }
 
@@ -177,12 +251,34 @@ impl Plugin for ArtPlugin {
     }
 }
 
-fn setup_art(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
+fn setup_art(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     let shapes = [
         (Shape::Cube, Cuboid::default().mesh().build(), false),
-        (Shape::Shard, Sphere::new(1.0).mesh().ico(0).expect("valid subdivision"), true),
-        (Shape::Cylinder, Cylinder::new(0.5, 1.0).mesh().resolution(8).build(), false),
-        (Shape::Cone, Cone { radius: 0.5, height: 1.0 }.mesh().resolution(6).build(), true),
+        (
+            Shape::Shard,
+            Sphere::new(1.0).mesh().ico(0).expect("valid subdivision"),
+            true,
+        ),
+        (
+            Shape::Cylinder,
+            Cylinder::new(0.5, 1.0).mesh().resolution(8).build(),
+            false,
+        ),
+        (
+            Shape::Cone,
+            Cone {
+                radius: 0.5,
+                height: 1.0,
+            }
+            .mesh()
+            .resolution(6)
+            .build(),
+            true,
+        ),
     ];
     let mut templates = HashMap::default();
     let mut primitives = HashMap::default();
@@ -190,8 +286,22 @@ fn setup_art(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
         let template = Template::new(mesh, flat);
         // Stand-alone primitives reuse the flattened data so they match baked models exactly.
         let standalone = Mesh::new(PrimitiveTopology::TriangleList, KEEP_FOR_BOUNDS)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, template.positions.iter().map(|p| p.to_array()).collect::<Vec<_>>())
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, template.normals.iter().map(|n| n.to_array()).collect::<Vec<_>>());
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                template
+                    .positions
+                    .iter()
+                    .map(|p| p.to_array())
+                    .collect::<Vec<_>>(),
+            )
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_NORMAL,
+                template
+                    .normals
+                    .iter()
+                    .map(|n| n.to_array())
+                    .collect::<Vec<_>>(),
+            );
         primitives.insert(shape, meshes.add(standalone));
         templates.insert(shape, template);
     }
@@ -199,14 +309,28 @@ fn setup_art(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
         .into_iter()
         .map(|paint| {
             let [r, g, b] = paint.rgb();
-            (paint, materials.add(StandardMaterial { base_color: Color::srgb(r, g, b), unlit: paint.unlit(), perceptual_roughness: 0.95, ..default() }))
+            (
+                paint,
+                materials.add(StandardMaterial {
+                    base_color: Color::srgb(r, g, b),
+                    unlit: paint.unlit(),
+                    perceptual_roughness: 0.95,
+                    ..default()
+                }),
+            )
         })
         .collect();
     commands.insert_resource(Art {
         templates,
         primitives,
-        lit: materials.add(StandardMaterial { perceptual_roughness: 0.95, ..default() }),
-        unlit: materials.add(StandardMaterial { unlit: true, ..default() }),
+        lit: materials.add(StandardMaterial {
+            perceptual_roughness: 0.95,
+            ..default()
+        }),
+        unlit: materials.add(StandardMaterial {
+            unlit: true,
+            ..default()
+        }),
         paints,
     });
 }
@@ -220,7 +344,11 @@ mod tests {
     /// robots would be culled while in plain view (the "flickering robot" bug).
     #[test]
     fn meshes_keep_what_culling_needs() {
-        let builder = MeshBuilder { positions: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [0.0, 2.0, 1.0]], normals: vec![[0.0, 1.0, 0.0]; 3], colors: vec![[1.0; 4]; 3] };
+        let builder = MeshBuilder {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 2.0, 0.0], [0.0, 2.0, 1.0]],
+            normals: vec![[0.0, 1.0, 0.0]; 3],
+            colors: vec![[1.0; 4]; 3],
+        };
         let mesh = builder.build();
         assert!(mesh.asset_usage.contains(RenderAssetUsages::MAIN_WORLD));
         use bevy::render::mesh::MeshAabb;

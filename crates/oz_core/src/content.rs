@@ -18,7 +18,11 @@ pub enum Brain {
     /// Keeps its distance and lobs projectiles.
     Ranged { range: f32, shot_speed: f32 },
     /// Hovers at `altitude` and strafes.
-    Flyer { altitude: f32, range: f32, shot_speed: f32 },
+    Flyer {
+        altitude: f32,
+        range: f32,
+        shot_speed: f32,
+    },
 }
 
 /// What an enemy goes for first.
@@ -51,9 +55,15 @@ pub struct EnemyDef {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StructureKind {
-    Turret { range: f32, damage: f32, interval: f32 },
+    Turret {
+        range: f32,
+        damage: f32,
+        interval: f32,
+    },
     /// Extracts ore per second from the deposit it is built on.
-    Drill { rate: f32 },
+    Drill {
+        rate: f32,
+    },
     Wall,
 }
 
@@ -103,8 +113,12 @@ pub enum StationPage {
 impl StationPage {
     pub fn title(self) -> &'static str {
         match self {
-            StationPage::Weapons => "WEAPONS", StationPage::Attachments => "ATTACHMENTS", StationPage::Mods => "MODS",
-            StationPage::Build => "BUILD", StationPage::Upgrades => "UPGRADES", StationPage::Mission => "MISSION",
+            StationPage::Weapons => "WEAPONS",
+            StationPage::Attachments => "ATTACHMENTS",
+            StationPage::Mods => "MODS",
+            StationPage::Build => "BUILD",
+            StationPage::Upgrades => "UPGRADES",
+            StationPage::Mission => "MISSION",
         }
     }
 }
@@ -147,11 +161,29 @@ pub enum ShotLook {
 
 impl ShotLook {
     pub fn from_index(i: u8) -> Self {
-        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine, ShotLook::Drone][(i as usize).min(7)]
+        [
+            ShotLook::Rocket,
+            ShotLook::Acid,
+            ShotLook::Bolt,
+            ShotLook::Grenade,
+            ShotLook::Knife,
+            ShotLook::Canister,
+            ShotLook::Mine,
+            ShotLook::Drone,
+        ][(i as usize).min(7)]
     }
 
     pub fn paint(self) -> Paint {
-        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red, Paint::Dark][self as usize]
+        [
+            Paint::Glow,
+            Paint::Green,
+            Paint::Red,
+            Paint::Iron,
+            Paint::Metal,
+            Paint::Concrete,
+            Paint::Red,
+            Paint::Dark,
+        ][self as usize]
     }
 
     /// Size of the projectile's mesh.
@@ -255,6 +287,12 @@ pub struct Catalog {
 impl Catalog {
     /// Multiplier for an effect given the team's upgrade levels: `1 + sum(level * per_level)`.
     pub fn bonus(&self, levels: &[u8], effect: UpgradeEffect) -> f32 {
-        1.0 + self.upgrades.iter().zip(levels).filter(|(u, _)| u.effect == effect).map(|(u, level)| u.per_level * *level as f32).sum::<f32>()
+        1.0 + self
+            .upgrades
+            .iter()
+            .zip(levels)
+            .filter(|(u, _)| u.effect == effect)
+            .map(|(u, level)| u.per_level * *level as f32)
+            .sum::<f32>()
     }
 }

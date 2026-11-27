@@ -27,12 +27,16 @@ pub fn frontier_rules(seed: u64) -> Rules {
         objective_hp: 600.0,
         mining: true,
         difficulty: 1.0,
-        start_stock: Stock { credits: 220, ore: [30, 0, 0] },
+        start_stock: Stock {
+            credits: 220,
+            ore: [30, 0, 0],
+        },
         starter_weapons: 0b11,
         respawn_seconds: 10.0,
         pvp: false,
         team_size: 0,
         score_limit: 0,
+        hunt: false,
     }
 }
 
@@ -40,17 +44,24 @@ pub fn frontier_rules(seed: u64) -> Rules {
 pub fn horde_rules(seed: u64) -> Rules {
     Rules {
         mode: mode::HORDE,
-        recipe: WorldRecipe { islets: 2, ..WorldRecipe::archipelago(seed, Biome::SunkenReach) },
+        recipe: WorldRecipe {
+            islets: 2,
+            ..WorldRecipe::archipelago(seed, Biome::SunkenReach)
+        },
         day_seconds: 0.0,
         objective_hp: 0.0,
         mining: false,
         difficulty: 1.0,
-        start_stock: Stock { credits: 400, ore: [0; 3] },
+        start_stock: Stock {
+            credits: 400,
+            ore: [0; 3],
+        },
         starter_weapons: 0b110,
         respawn_seconds: 20.0,
         pvp: false,
         team_size: 0,
         score_limit: 0,
+        hunt: false,
     }
 }
 
@@ -60,14 +71,44 @@ pub struct EmberAtollPlugin;
 
 impl Plugin for EmberAtollPlugin {
     fn build(&self, app: &mut App) {
-        let planned = |name, blurb| ModeDef { name, blurb, playable: false, rules: frontier_rules, catalog: content::catalog };
+        let planned = |name, blurb| ModeDef {
+            name,
+            blurb,
+            playable: false,
+            rules: frontier_rules,
+            catalog: content::catalog,
+        };
         app.insert_resource(Modes(vec![
-            ModeDef { name: "FRONTIER", blurb: "Mine by day. Hold the beacon by night. Automate the islands.", playable: true, rules: frontier_rules, catalog: content::catalog },
-            ModeDef { name: "HORDE", blurb: "Endless waves, no beacon, no mining. Last squad standing.", playable: true, rules: horde_rules, catalog: content::catalog },
-            planned("OUTBREAK", "PLANNED - round-based undead survival with wall buys and mystery crates."),
-            planned("DEATHMATCH", "PLANNED - fast team and free-for-all firefights with loadouts."),
-            planned("CONQUEST", "PLANNED - large maps, capture points, vehicles and squads."),
-            planned("BASTION", "PLANNED - tower-defense build-up along fixed attack lanes."),
+            ModeDef {
+                name: "FRONTIER",
+                blurb: "Mine by day. Hold the beacon by night. Automate the islands.",
+                playable: true,
+                rules: frontier_rules,
+                catalog: content::catalog,
+            },
+            ModeDef {
+                name: "HORDE",
+                blurb: "Endless waves, no beacon, no mining. Last squad standing.",
+                playable: true,
+                rules: horde_rules,
+                catalog: content::catalog,
+            },
+            planned(
+                "OUTBREAK",
+                "PLANNED - round-based undead survival with wall buys and mystery crates.",
+            ),
+            planned(
+                "DEATHMATCH",
+                "PLANNED - fast team and free-for-all firefights with loadouts.",
+            ),
+            planned(
+                "CONQUEST",
+                "PLANNED - large maps, capture points, vehicles and squads.",
+            ),
+            planned(
+                "BASTION",
+                "PLANNED - tower-defense build-up along fixed attack lanes.",
+            ),
         ]))
         .add_plugins(director::SiegePlugin);
     }

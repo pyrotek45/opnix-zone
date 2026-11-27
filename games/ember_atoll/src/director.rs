@@ -28,34 +28,56 @@ pub struct SiegePlugin;
 impl Plugin for SiegePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Siege>()
-            .add_systems(OnEnter(MatchPhase::Active), |mut siege: ResMut<Siege>, rules: Res<Rules>, mut state: ResMut<MatchState>| {
-                *siege = Siege::default();
-                if rules.day_seconds <= 0.0 {
-                    state.timer = INTERMISSION;
-                }
-            })
+            .add_systems(
+                OnEnter(MatchPhase::Active),
+                |mut siege: ResMut<Siege>, rules: Res<Rules>, mut state: ResMut<MatchState>| {
+                    *siege = Siege::default();
+                    if rules.day_seconds <= 0.0 {
+                        state.timer = INTERMISSION;
+                    }
+                },
+            )
             .add_systems(Update, run_director.in_set(SimSet::Logic));
     }
 }
 
 /// Builds tonight's attack: spend a threat budget on enemies unlocked so far.
-pub fn compose_wave(catalog: &Catalog, day: u32, difficulty: f32, players: usize, rng: &mut Rng) -> Vec<u16> {
-    let mut budget = (5.0 + 5.0 * day as f32) * difficulty * (1.0 + 0.4 * players.saturating_sub(1) as f32);
-    let pool: Vec<(u16, &EnemyDef)> = catalog.enemies.iter().enumerate().filter(|(_, e)| !e.boss && e.first_wave <= day).map(|(i, e)| (i as u16, e)).collect();
+pub fn compose_wave(
+    catalog: &Catalog,
+    day: u32,
+    difficulty: f32,
+    players: usize,
+    rng: &mut Rng,
+) -> Vec<u16> {
+    let mut budget =
+        (5.0 + 5.0 * day as f32) * difficulty * (1.0 + 0.4 * players.saturating_sub(1) as f32);
+    let pool: Vec<(u16, &EnemyDef)> = catalog
+        .enemies
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| !e.boss && e.first_wave <= day)
+        .map(|(i, e)| (i as u16, e))
+        .collect();
     let mut wave = Vec::new();
     while budget >= 1.0 && !pool.is_empty() && wave.len() < 600 {
-        let affordable: Vec<_> = pool.iter().filter(|(_, e)| e.threat as f32 <= budget).collect();
-        let Some((kind, def)) = rng.pick(&affordable) else { break };
+        let affordable: Vec<_> = pool
+            .iter()
+            .filter(|(_, e)| e.threat as f32 <= budget)
+            .collect();
+        let Some((kind, def)) = rng.pick(&affordable) else {
+            break;
+        };
         wave.push(*kind);
         budget -= def.threat as f32;
     }
     // Every fifth night a boss leads the assault, arriving once the fight is underway.
     if day.is_multiple_of(5)
-        && let Some(boss) = catalog.enemies.iter().position(|e| e.boss) {
-            for _ in 0..(day / 5).min(4) {
-                wave.insert(wave.len() / 2, boss as u16);
-            }
+        && let Some(boss) = catalog.enemies.iter().position(|e| e.boss)
+    {
+        for _ in 0..(day / 5).min(4) {
+            wave.insert(wave.len() / 2, boss as u16);
         }
+    }
     wave
 }
 
@@ -82,16 +104,29 @@ fn run_director(
         match order.command {
             PlayerCommand::Mode(action::CALL_NIGHTFALL) => skip_day = true,
             PlayerCommand::Mode(action::REPAIR_BEACON) => {
-                let Some(cost) = content.mode_actions.get(action::REPAIR_BEACON as usize).map(|a| a.cost) else { continue };
+                let Some(cost) = content
+                    .mode_actions
+                    .get(action::REPAIR_BEACON as usize)
+                    .map(|a| a.cost)
+                else {
+                    continue;
+                };
                 if state.objective_hp >= state.objective_max || state.over() {
                     fx.write(FxEvent::tell(order.player, "BEACON IS AT FULL INTEGRITY"));
                 } else if state.stock.pay(&cost) {
-                    state.objective_hp = (state.objective_hp + action::REPAIR_AMOUNT).min(state.objective_max);
-                    fx.write(FxEvent::Cue { to: order.player, sfx: Sfx::Buy });
+                    state.objective_hp =
+                        (state.objective_hp + action::REPAIR_AMOUNT).min(state.objective_max);
+                    fx.write(FxEvent::Cue {
+                        to: order.player,
+                        sfx: Sfx::Buy,
+                    });
                     fx.write(FxEvent::notice("BEACON REPAIRED"));
                 } else {
                     fx.write(FxEvent::tell(order.player, "NOT ENOUGH RESOURCES"));
-                    fx.write(FxEvent::Cue { to: order.player, sfx: Sfx::UiDeny });
+                    fx.write(FxEvent::Cue {
+                        to: order.player,
+                        sfx: Sfx::UiDeny,
+                    });
                 }
             }
             _ => {}
@@ -106,14 +141,27 @@ fn run_director(
             state.enemies_left = 0;
             if state.timer <= 0.0 || skip_day {
                 let player_count = players.iter().len().max(1);
-                siege.queue = compose_wave(&content, state.day, rules.difficulty, player_count, &mut rng.0);
+                siege.queue = compose_wave(
+                    &content,
+                    state.day,
+                    rules.difficulty,
+                    player_count,
+                    &mut rng.0,
+                );
                 siege.spawn_timer = 3.0;
                 state.phase = Phase::Night;
                 state.timer = 0.0;
                 state.enemies_left = siege.queue.len() as u32;
                 let boss = state.day.is_multiple_of(5);
-                fx.write(FxEvent::notice(if boss { format!("NIGHT {} - SOMETHING HUGE IS COMING", state.day) } else { format!("NIGHT {} - THEY RISE FROM THE SEA", state.day) }));
-                fx.write(FxEvent::Sound { sfx: Sfx::Horn, at: None });
+                fx.write(FxEvent::notice(if boss {
+                    format!("NIGHT {} - SOMETHING HUGE IS COMING", state.day)
+                } else {
+                    format!("NIGHT {} - THEY RISE FROM THE SEA", state.day)
+                }));
+                fx.write(FxEvent::Sound {
+                    sfx: Sfx::Horn,
+                    at: None,
+                });
             }
         }
         Phase::Night => {
@@ -124,10 +172,20 @@ fn run_director(
             while siege.spawn_timer <= 0.0 && !siege.queue.is_empty() {
                 siege.spawn_timer += (1.3 - 0.07 * state.day as f32).max(0.12);
                 let Some(kind) = siege.queue.pop() else { break };
-                let Some(landing) = rng.0.pick(&map.landings).copied() else { break };
+                let Some(landing) = rng.0.pick(&map.landings).copied() else {
+                    break;
+                };
                 let at = landing + Vec2::new(rng.0.range(-3.0, 3.0), rng.0.range(-3.0, 3.0));
                 let hp_scale = (1.0 + 0.08 * (state.day - 1) as f32) * rules.difficulty;
-                spawn_enemy(&mut commands, &mut ids, &content, kind, Vec3::new(at.x, map.water - 1.2, at.y), hp_scale, &mut rng);
+                spawn_enemy(
+                    &mut commands,
+                    &mut ids,
+                    &content,
+                    kind,
+                    Vec3::new(at.x, map.water - 1.2, at.y),
+                    hp_scale,
+                    &mut rng,
+                );
             }
             state.enemies_left = siege.queue.len() as u32 + alive;
             if siege.queue.is_empty() && alive == 0 && state.timer > 4.0 {
@@ -135,12 +193,19 @@ fn run_director(
                 state.stock.credits += bonus;
                 state.day += 1;
                 state.phase = Phase::Day;
-                state.timer = if rules.day_seconds > 0.0 { rules.day_seconds } else { INTERMISSION };
+                state.timer = if rules.day_seconds > 0.0 {
+                    rules.day_seconds
+                } else {
+                    INTERMISSION
+                };
                 for mut node in &mut ores {
                     node.amount = (node.amount + node.max * 0.35).min(node.max);
                 }
                 fx.write(FxEvent::notice(format!("DAWN - NIGHT SURVIVED  +${bonus}")));
-                fx.write(FxEvent::Sound { sfx: Sfx::Dawn, at: None });
+                fx.write(FxEvent::Sound {
+                    sfx: Sfx::Dawn,
+                    at: None,
+                });
             }
         }
         Phase::Lobby | Phase::Live => return,
@@ -151,10 +216,19 @@ fn run_director(
     }
 
     let beacon_lost = state.objective_max > 0.0 && state.objective_hp <= 0.0;
-    let squad_wiped = state.objective_max <= 0.0 && !players.is_empty() && players.iter().all(|health| !health.alive());
+    let squad_wiped = state.objective_max <= 0.0
+        && !players.is_empty()
+        && players.iter().all(|health| !health.alive());
     if beacon_lost || squad_wiped {
         state.phase = Phase::Lost;
-        fx.write(FxEvent::notice(if beacon_lost { "THE BEACON HAS FALLEN" } else { "THE SQUAD HAS FALLEN" }));
-        fx.write(FxEvent::Sound { sfx: Sfx::Alarm, at: None });
+        fx.write(FxEvent::notice(if beacon_lost {
+            "THE BEACON HAS FALLEN"
+        } else {
+            "THE SQUAD HAS FALLEN"
+        }));
+        fx.write(FxEvent::Sound {
+            sfx: Sfx::Alarm,
+            at: None,
+        });
     }
 }

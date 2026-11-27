@@ -12,14 +12,33 @@ use std::time::Duration;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
-    let mode = value("--mode").and_then(|m| m.parse::<usize>().ok()).unwrap_or(0);
-    let port = value("--port").and_then(|p| p.parse::<u16>().ok()).unwrap_or(DEFAULT_PORT);
-    let seed = value("--seed").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0x45eab1);
+    let value = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let mode = value("--mode")
+        .and_then(|m| m.parse::<usize>().ok())
+        .unwrap_or(0);
+    let port = value("--port")
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let seed = value("--seed")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0x45eab1);
 
     let mut app = App::new();
     // 60 simulation ticks per second is plenty for a server and keeps CPU use low.
-    app.add_plugins((MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(1.0 / 60.0))), LogPlugin::default(), StatesPlugin, SimPlugin, EmberAtollPlugin));
+    app.add_plugins((
+        MinimalPlugins.set(ScheduleRunnerPlugin::run_loop(Duration::from_secs_f64(
+            1.0 / 60.0,
+        ))),
+        LogPlugin::default(),
+        StatesPlugin,
+        SimPlugin,
+        EmberAtollPlugin,
+    ));
 
     let modes = app.world().resource::<Modes>();
     let Some(def) = modes.0.get(mode).filter(|def| def.playable) else {
@@ -37,11 +56,23 @@ fn main() {
         }
     }
     println!("Ember Atoll dedicated server - mode {name}, port {port}. Ctrl+C to stop.");
-    app.add_systems(Update, (restart_when_lost, net::print_join_code.run_if(in_state(MatchPhase::Active)))).run();
+    app.add_systems(
+        Update,
+        (
+            restart_when_lost,
+            net::print_join_code.run_if(in_state(MatchPhase::Active)),
+        ),
+    )
+    .run();
 }
 
 /// A lost match restarts after a short pause so the server never sits dead.
-fn restart_when_lost(time: Res<Time>, state: Option<Res<MatchState>>, phase: Res<State<MatchPhase>>, mut waited: Local<f32>) {
+fn restart_when_lost(
+    time: Res<Time>,
+    state: Option<Res<MatchState>>,
+    phase: Res<State<MatchPhase>>,
+    mut waited: Local<f32>,
+) {
     if *phase.get() != MatchPhase::Active {
         return;
     }

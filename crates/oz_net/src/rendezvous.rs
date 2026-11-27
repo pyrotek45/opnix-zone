@@ -47,9 +47,20 @@ impl Board for Ntfy {
     }
 
     fn read(&self, topic: &str, minutes: u32) -> io::Result<Vec<String>> {
-        let url = format!("{}/{topic}/raw?poll=1&since={minutes}m", self.base.trim_end_matches('/'));
-        let body = ureq::get(&url).timeout(Duration::from_secs(6)).call().map_err(io::Error::other)?.into_string()?;
-        Ok(body.lines().map(str::to_string).filter(|l| !l.is_empty()).collect())
+        let url = format!(
+            "{}/{topic}/raw?poll=1&since={minutes}m",
+            self.base.trim_end_matches('/')
+        );
+        let body = ureq::get(&url)
+            .timeout(Duration::from_secs(6))
+            .call()
+            .map_err(io::Error::other)?
+            .into_string()?;
+        Ok(body
+            .lines()
+            .map(str::to_string)
+            .filter(|l| !l.is_empty())
+            .collect())
     }
 }
 
@@ -59,12 +70,22 @@ pub struct MemoryBoard(Arc<Mutex<Vec<(String, String)>>>);
 
 impl Board for MemoryBoard {
     fn post(&self, topic: &str, message: &str) -> io::Result<()> {
-        self.0.lock().map_err(|_| io::Error::other("poisoned"))?.push((topic.into(), message.into()));
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?
+            .push((topic.into(), message.into()));
         Ok(())
     }
 
     fn read(&self, topic: &str, _: u32) -> io::Result<Vec<String>> {
-        Ok(self.0.lock().map_err(|_| io::Error::other("poisoned"))?.iter().filter(|(t, _)| t == topic).map(|(_, m)| m.clone()).collect())
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?
+            .iter()
+            .filter(|(t, _)| t == topic)
+            .map(|(_, m)| m.clone())
+            .collect())
     }
 }
 
@@ -82,13 +103,21 @@ pub fn new_code() -> String {
 
 /// Uppercases and strips spaces and dashes; `None` if it cannot be a code.
 pub fn normalize_code(text: &str) -> Option<String> {
-    let code: String = text.chars().filter(|c| !matches!(c, ' ' | '-')).map(|c| c.to_ascii_uppercase()).collect();
+    let code: String = text
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-'))
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
     (code.len() == CODE_LEN && code.bytes().all(|b| ALPHABET.contains(&b))).then_some(code)
 }
 
 /// Shown to players as `K7Q-4MZ`.
 pub fn pretty_code(code: &str) -> String {
-    if code.len() == CODE_LEN { format!("{}-{}", &code[..3], &code[3..]) } else { code.to_string() }
+    if code.len() == CODE_LEN {
+        format!("{}-{}", &code[..3], &code[3..])
+    } else {
+        code.to_string()
+    }
 }
 
 fn topic(code: &str) -> String {
@@ -96,15 +125,23 @@ fn topic(code: &str) -> String {
 }
 
 fn list(addrs: &[SocketAddr]) -> String {
-    addrs.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+    addrs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn parse_list(text: &str) -> Vec<SocketAddr> {
-    text.split(',').filter_map(|a| a.trim().parse().ok()).collect()
+    text.split(',')
+        .filter_map(|a| a.trim().parse().ok())
+        .collect()
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// What the game thread and the board thread share.
@@ -157,9 +194,10 @@ impl Rendezvous {
                         for line in lines {
                             if let Some(rest) = line.strip_prefix("OZC ")
                                 && seen.insert(rest.to_string())
-                                    && let Some((_, addrs)) = rest.split_once(' ') {
-                                        fresh.push(parse_list(addrs));
-                                    }
+                                && let Some((_, addrs)) = rest.split_once(' ')
+                            {
+                                fresh.push(parse_list(addrs));
+                            }
                         }
                         if let Ok(mut s) = thread_shared.lock() {
                             s.joiners.extend(fresh);
@@ -202,7 +240,11 @@ impl Rendezvous {
                 }
                 match board.read(&topic, 12 * 60) {
                     Ok(lines) => {
-                        let host = lines.iter().rev().find_map(|l| l.strip_prefix("OZH ")).map(parse_list);
+                        let host = lines
+                            .iter()
+                            .rev()
+                            .find_map(|l| l.strip_prefix("OZH "))
+                            .map(parse_list);
                         if let Ok(mut s) = thread_shared.lock() {
                             if let Some(host) = host {
                                 s.theirs = host;
@@ -222,14 +264,18 @@ impl Rendezvous {
     /// Tells the board thread where we can be reached.
     pub fn set_ours(&self, addrs: Vec<SocketAddr>) {
         if let Ok(mut s) = self.shared.lock()
-            && s.ours != addrs {
-                s.ours = addrs;
-            }
+            && s.ours != addrs
+        {
+            s.ours = addrs;
+        }
     }
 
     /// Joiner: the host's addresses, once its post is found.
     pub fn host_addrs(&self) -> Vec<SocketAddr> {
-        self.shared.lock().map(|s| s.theirs.clone()).unwrap_or_default()
+        self.shared
+            .lock()
+            .map(|s| s.theirs.clone())
+            .unwrap_or_default()
     }
 
     pub fn found_host(&self) -> bool {
@@ -238,7 +284,10 @@ impl Rendezvous {
 
     /// Host: joiners who announced themselves since the last call.
     pub fn take_joiners(&self) -> Vec<Vec<SocketAddr>> {
-        self.shared.lock().map(|mut s| std::mem::take(&mut s.joiners)).unwrap_or_default()
+        self.shared
+            .lock()
+            .map(|mut s| std::mem::take(&mut s.joiners))
+            .unwrap_or_default()
     }
 
     /// The last error from the board, if the latest attempt failed.
@@ -271,7 +320,10 @@ mod tests {
     fn codes_are_short_unambiguous_and_forgiving() {
         let code = new_code();
         assert_eq!(code.len(), CODE_LEN);
-        assert_eq!(normalize_code(&pretty_code(&code).to_lowercase()), Some(code.clone()));
+        assert_eq!(
+            normalize_code(&pretty_code(&code).to_lowercase()),
+            Some(code.clone())
+        );
         assert_eq!(normalize_code("k7q 4mz"), Some("K7Q4MZ".into()));
         assert_eq!(normalize_code("192.168.1.4"), None);
         assert_eq!(normalize_code("IOU0L1"), None);
@@ -283,11 +335,17 @@ mod tests {
         let mut host: Host<u32, u32> = Host::bind("127.0.0.1:0").unwrap();
         let host_side = Rendezvous::host(board.clone(), new_code());
         // The host advertises a dead address first, then the real one.
-        host_side.set_ours(vec!["127.0.0.1:9".parse().unwrap(), host.local_addr().unwrap()]);
+        host_side.set_ours(vec![
+            "127.0.0.1:9".parse().unwrap(),
+            host.local_addr().unwrap(),
+        ]);
 
         let mut client: Client<u32, u32> = Client::open().unwrap();
         let joiner = Rendezvous::join(board, host_side.code.clone());
-        joiner.set_ours(vec![SocketAddr::from(([127, 0, 0, 1], client.local_port()))]);
+        joiner.set_ours(vec![SocketAddr::from((
+            [127, 0, 0, 1],
+            client.local_port(),
+        ))]);
         client.send(&7);
 
         let start = Instant::now();
@@ -301,7 +359,10 @@ mod tests {
                 }
             }
             client.poll();
-            delivered |= host.poll().into_iter().any(|e| matches!(e, HostEvent::Message(_, 7)));
+            delivered |= host
+                .poll()
+                .into_iter()
+                .any(|e| matches!(e, HostEvent::Message(_, 7)));
             if delivered && punched > 0 {
                 break;
             }

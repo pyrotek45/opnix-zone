@@ -42,17 +42,33 @@ pub mod weapons;
 use bevy::prelude::*;
 
 pub mod prelude {
-    pub use crate::combat::{Grid, Hit, Mine, Projectile, SmokeCloud, Solid, smoke_between, smoke_scale};
+    pub use crate::bots::Bot;
+    pub use crate::combat::{
+        Grid, Hit, Mine, Projectile, SmokeCloud, Solid, smoke_between, smoke_scale,
+    };
     pub use crate::enemy::{Enemy, spawn_enemy};
     pub use crate::net::{NetId, NetLink};
-    pub use crate::bots::Bot;
-    pub use crate::player::{Arsenal, EYE, Health, Loadout, LocalPlayer, Mover, Player, PlayerInput, buttons, flags, stance};
-    pub use crate::session::{Content, Map, MatchEntity, MatchSetup, ModeDef, Modes, PendingMatch, Station, Statics, end_match};
-    pub use crate::state::{CommandEvent, FxEvent, LobbyAction, MatchPhase, MatchState, NetRole, Phase, PlayerCommand, RosterEntry, Rules, SimRng};
+    pub use crate::player::{
+        Arsenal, EYE, Health, Loadout, LocalPlayer, Mover, Player, PlayerInput, buttons, flags,
+        stance,
+    };
+    pub use crate::session::{
+        Content, Map, MatchEntity, MatchSetup, ModeDef, Modes, PendingMatch, Statics, Station,
+        end_match,
+    };
+    pub use crate::state::{
+        CommandEvent, FxEvent, LobbyAction, MatchPhase, MatchState, NetRole, Phase, PlayerCommand,
+        RosterEntry, Rules, SimRng,
+    };
     pub use crate::structures::{OreNode, Structure};
     pub use crate::{SimPlugin, SimSet, authority, sim_dt};
     pub use oz_core::{
-        arsenal::*, content::*, economy::*, model::*, rng::Rng, synth::Sfx,
+        arsenal::*,
+        content::*,
+        economy::*,
+        model::*,
+        rng::Rng,
+        synth::Sfx,
         worldgen::{Biome, World as GameMap, WorldRecipe},
     };
 }
@@ -102,14 +118,56 @@ impl Plugin for SimPlugin {
             .add_event::<combat::Hit>()
             .add_event::<breakables::Trace>()
             .init_resource::<breakables::Blasts>()
-            .configure_sets(Update, (SimSet::Receive, SimSet::Orders, SimSet::Logic, SimSet::Resolve, SimSet::Send).chain())
-            .configure_sets(Update, (SimSet::Orders, SimSet::Logic, SimSet::Resolve).run_if(in_state(Active)).run_if(authority))
-            .add_systems(Update, (net::poll_joining, session::start_pending_match).chain().before(SimSet::Receive))
-            .add_systems(Update, (net::host_receive, net::client_receive).in_set(SimSet::Receive).run_if(in_state(Active)))
-            .add_systems(Update, (orders::process_commands, killstreak::use_streaks, breakables::work_doors).chain().in_set(SimSet::Orders))
+            .init_resource::<bots::Noises>()
+            .configure_sets(
+                Update,
+                (
+                    SimSet::Receive,
+                    SimSet::Orders,
+                    SimSet::Logic,
+                    SimSet::Resolve,
+                    SimSet::Send,
+                )
+                    .chain(),
+            )
+            .configure_sets(
+                Update,
+                (SimSet::Orders, SimSet::Logic, SimSet::Resolve)
+                    .run_if(in_state(Active))
+                    .run_if(authority),
+            )
+            .add_systems(
+                Update,
+                (net::poll_joining, session::start_pending_match)
+                    .chain()
+                    .before(SimSet::Receive),
+            )
+            .add_systems(
+                Update,
+                (net::host_receive, net::client_receive)
+                    .in_set(SimSet::Receive)
+                    .run_if(in_state(Active)),
+            )
+            .add_systems(
+                Update,
+                (
+                    orders::process_commands,
+                    killstreak::use_streaks,
+                    breakables::work_doors,
+                )
+                    .chain()
+                    .in_set(SimSet::Orders),
+            )
             .add_systems(OnEnter(Active), breakables::spawn_breakables)
             .add_systems(Update, breakables::sync_breakables.run_if(in_state(Active)))
-            .add_systems(Update, (versus::run_versus, versus::fill_teams).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
+            .add_systems(
+                Update,
+                (versus::run_versus, versus::fill_teams)
+                    .chain()
+                    .in_set(SimSet::Orders)
+                    .after(orders::process_commands)
+                    .run_if(versus::versus),
+            )
             .add_systems(
                 Update,
                 (
@@ -131,9 +189,31 @@ impl Plugin for SimPlugin {
                     .chain()
                     .in_set(SimSet::Logic),
             )
-            .add_systems(Update, (breakables::collect_blasts, breakables::break_things, combat::resolve_hits, player::presentation_flags, versus::update_roster).chain().in_set(SimSet::Resolve))
-            .add_systems(Update, (player::move_players, net::smooth_remote).after(SimSet::Receive).before(SimSet::Orders).run_if(in_state(Active)))
-            .add_systems(Update, (net::host_send, net::client_send).in_set(SimSet::Send).run_if(in_state(Active)))
+            .add_systems(
+                Update,
+                (
+                    breakables::collect_blasts,
+                    breakables::break_things,
+                    combat::resolve_hits,
+                    player::presentation_flags,
+                    versus::update_roster,
+                )
+                    .chain()
+                    .in_set(SimSet::Resolve),
+            )
+            .add_systems(
+                Update,
+                (player::move_players, net::smooth_remote)
+                    .after(SimSet::Receive)
+                    .before(SimSet::Orders)
+                    .run_if(in_state(Active)),
+            )
+            .add_systems(
+                Update,
+                (net::host_send, net::client_send)
+                    .in_set(SimSet::Send)
+                    .run_if(in_state(Active)),
+            )
             .add_systems(Update, combat::tick_smoke.run_if(in_state(Active)))
             .add_systems(OnExit(Active), session::cleanup_match);
     }

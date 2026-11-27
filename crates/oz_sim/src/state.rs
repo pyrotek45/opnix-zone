@@ -1,7 +1,9 @@
 //! Shared match state, rules, commands and presentation events.
 
 use bevy::prelude::*;
-use oz_core::{arsenal::ModKind, economy::Stock, model::Paint, rng::Rng, synth::Sfx, worldgen::WorldRecipe};
+use oz_core::{
+    arsenal::ModKind, economy::Stock, model::Paint, rng::Rng, synth::Sfx, worldgen::WorldRecipe,
+};
 use serde::{Deserialize, Serialize};
 
 /// Who owns the simulation on this machine.
@@ -62,6 +64,10 @@ pub struct Rules {
     pub team_size: u8,
     /// Team score that wins a versus match.
     pub score_limit: u32,
+    /// Terrorist hunt: team 0 clears a map held by a crowd of team-1 bots that
+    /// do not respawn, see and hear like sentries, and react to noise.
+    #[serde(default)]
+    pub hunt: bool,
 }
 
 /// The replicated heart of a match. Small enough to send with every snapshot.
@@ -106,6 +112,9 @@ pub struct MatchState {
     pub doors: Vec<u8>,
     pub panes: Vec<u8>,
     pub clutter: Vec<u8>,
+    /// Terrorist hunt: respawns the squad has left, and hostiles still standing.
+    pub lives: u16,
+    pub hostiles: u16,
     /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
     #[serde(skip)]
     pub credits: Vec<u8>,
@@ -148,9 +157,21 @@ pub enum PlayerCommand {
     BuyWeapon(u8),
     BuyAmmo(u8),
     /// Buys (if needed) and equips an attachment.
-    EquipPart { weapon: u8, slot: u8, variant: u8 },
-    BuyMod { weapon: u8, kind: ModKind },
-    Build { kind: u16, x: f32, z: f32, yaw: f32 },
+    EquipPart {
+        weapon: u8,
+        slot: u8,
+        variant: u8,
+    },
+    BuyMod {
+        weapon: u8,
+        kind: ModKind,
+    },
+    Build {
+        kind: u16,
+        x: f32,
+        z: f32,
+        yaw: f32,
+    },
     Upgrade(u8),
     /// Versus modes: choose weapons, perk and gear for the next spawn.
     Loadout(crate::player::Loadout),
@@ -191,45 +212,129 @@ pub struct CommandEvent {
 pub enum FxEvent {
     /// A shot or beam. `by` is a player id, or 255 for turrets.
     /// `local` marks a shot the client predicted itself; the host never sets it.
-    Shot { by: u8, sound: u8, from: Vec3, to: Vec3, beam: bool, tracer: Paint, quiet: bool, local: bool },
+    Shot {
+        by: u8,
+        sound: u8,
+        from: Vec3,
+        to: Vec3,
+        beam: bool,
+        tracer: Paint,
+        quiet: bool,
+        local: bool,
+    },
     /// `victim` was taken down by `by` (a player id).
     /// `head`: finished with a headshot. `blast`: finished by an explosion.
-    Killed { victim: u8, by: u8, head: bool, blast: bool },
+    Killed {
+        victim: u8,
+        by: u8,
+        head: bool,
+        blast: bool,
+    },
     /// `player` reached a killstreak and earned `reward` (see `killstreak::reward`).
-    Streak { player: u8, reward: u8 },
+    Streak {
+        player: u8,
+        reward: u8,
+    },
     /// Someone on `team` called in `reward`.
-    StreakUsed { name: String, team: u8, reward: u8 },
+    StreakUsed {
+        name: String,
+        team: u8,
+        reward: u8,
+    },
     /// A jet screams over the map (airstrike).
-    Flyby { from: Vec3, to: Vec3 },
+    Flyby {
+        from: Vec3,
+        to: Vec3,
+    },
     /// A smoke cloud appeared (clients build their own cloud from this).
-    Smoke { at: Vec3, radius: f32, seconds: f32 },
+    Smoke {
+        at: Vec3,
+        radius: f32,
+        seconds: f32,
+    },
     /// A flashbang went off; each machine blinds its own player if they saw it.
-    Flash { at: Vec3, radius: f32, seconds: f32 },
+    Flash {
+        at: Vec3,
+        radius: f32,
+        seconds: f32,
+    },
+    /// Grenade handling: 0 pin pulled (cooking), 1 thrown, 2 pin put back.
+    Gear {
+        by: u8,
+        stage: u8,
+    },
+    /// A melee strike; `hit` if it connected.
+    Melee {
+        by: u8,
+        hit: bool,
+    },
     /// A line of chat from a player.
-    Chat { name: String, text: String },
-    Explosion { at: Vec3, radius: f32 },
-    EnemyDied { at: Vec3, kind: u16 },
-    StructureLost { at: Vec3 },
-    Arc { from: Vec3, to: Vec3 },
-    Mined { at: Vec3, ore: u8 },
+    Chat {
+        name: String,
+        text: String,
+    },
+    Explosion {
+        at: Vec3,
+        radius: f32,
+    },
+    EnemyDied {
+        at: Vec3,
+        kind: u16,
+    },
+    StructureLost {
+        at: Vec3,
+    },
+    Arc {
+        from: Vec3,
+        to: Vec3,
+    },
+    Mined {
+        at: Vec3,
+        ore: u8,
+    },
     /// `head`: the hit was a headshot (the marker says so).
-    HitMarker { player: u8, kill: bool, head: bool },
+    HitMarker {
+        player: u8,
+        kill: bool,
+        head: bool,
+    },
     /// A robot lost a limb (see `player::limb`); `by` shot it off.
-    LimbLost { player: u8, limb: u8, by: u8 },
-    Hurt { player: u8 },
-    Sound { sfx: Sfx, at: Option<Vec3> },
+    LimbLost {
+        player: u8,
+        limb: u8,
+        by: u8,
+    },
+    Hurt {
+        player: u8,
+    },
+    Sound {
+        sfx: Sfx,
+        at: Option<Vec3>,
+    },
     /// A UI sound for one player only.
-    Cue { to: u8, sfx: Sfx },
+    Cue {
+        to: u8,
+        sfx: Sfx,
+    },
     /// `to` = one player id, or 255 for everyone.
-    Notice { to: u8, text: String },
+    Notice {
+        to: u8,
+        text: String,
+    },
 }
 
 impl FxEvent {
     pub fn notice(text: impl Into<String>) -> Self {
-        FxEvent::Notice { to: 255, text: text.into() }
+        FxEvent::Notice {
+            to: 255,
+            text: text.into(),
+        }
     }
 
     pub fn tell(player: u8, text: impl Into<String>) -> Self {
-        FxEvent::Notice { to: player, text: text.into() }
+        FxEvent::Notice {
+            to: player,
+            text: text.into(),
+        }
     }
 }

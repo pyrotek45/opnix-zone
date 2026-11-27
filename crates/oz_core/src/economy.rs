@@ -29,20 +29,32 @@ pub struct Cost {
 }
 
 impl Cost {
-    pub const FREE: Cost = Cost { credits: 0, ore: [0; 3] };
+    pub const FREE: Cost = Cost {
+        credits: 0,
+        ore: [0; 3],
+    };
 
     pub const fn credits(credits: u32) -> Self {
-        Self { credits, ore: [0; 3] }
+        Self {
+            credits,
+            ore: [0; 3],
+        }
     }
 
     pub const fn new(credits: u32, iron: u32, copper: u32, aether: u32) -> Self {
-        Self { credits, ore: [iron, copper, aether] }
+        Self {
+            credits,
+            ore: [iron, copper, aether],
+        }
     }
 
     /// Price after `level` previous purchases: +60% per level.
     pub fn scaled(self, level: u32) -> Self {
         let m = |v: u32| (v as f32 * (1.0 + 0.6 * level as f32)).round() as u32;
-        Self { credits: m(self.credits), ore: self.ore.map(m) }
+        Self {
+            credits: m(self.credits),
+            ore: self.ore.map(m),
+        }
     }
 
     /// Short label such as `$120 · 20 IRON`.
@@ -57,7 +69,11 @@ impl Cost {
                 parts.push(format!("{n} {}", ore.name()));
             }
         }
-        if parts.is_empty() { "FREE".into() } else { parts.join(" + ") }
+        if parts.is_empty() {
+            "FREE".into()
+        } else {
+            parts.join(" + ")
+        }
     }
 }
 
@@ -96,11 +112,20 @@ mod tests {
 
     #[test]
     fn pay_is_all_or_nothing() {
-        let mut stock = Stock { credits: 100, ore: [5, 0, 0] };
+        let mut stock = Stock {
+            credits: 100,
+            ore: [5, 0, 0],
+        };
         assert!(!stock.pay(&Cost::new(50, 6, 0, 0)));
         assert_eq!(stock.credits, 100);
         assert!(stock.pay(&Cost::new(50, 5, 0, 0)));
-        assert_eq!(stock, Stock { credits: 50, ore: [0; 3] });
+        assert_eq!(
+            stock,
+            Stock {
+                credits: 50,
+                ore: [0; 3]
+            }
+        );
         assert_eq!(Cost::new(100, 10, 0, 0).scaled(1).credits, 160);
     }
 }

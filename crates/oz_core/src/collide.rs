@@ -20,7 +20,10 @@ impl Aabb {
 
     /// From two opposite corners, in any order.
     pub fn span(a: Vec3, b: Vec3) -> Self {
-        Self { center: (a + b) * 0.5, half: (a - b).abs() * 0.5 }
+        Self {
+            center: (a + b) * 0.5,
+            half: (a - b).abs() * 0.5,
+        }
     }
 
     pub fn min(&self) -> Vec3 {
@@ -41,20 +44,27 @@ impl Aabb {
 
     /// Does the footprint (XZ) come within `radius` of a point?
     pub fn touches(&self, x: f32, z: f32, radius: f32) -> bool {
-        (x - self.center.x).abs() < self.half.x + radius && (z - self.center.z).abs() < self.half.z + radius
+        (x - self.center.x).abs() < self.half.x + radius
+            && (z - self.center.z).abs() < self.half.z + radius
     }
 
     /// Ray entry and exit distances, if the ray hits within `max`.
     pub fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, f32)> {
         let (mut lo, mut hi) = (0.0f32, max);
         for axis in 0..3 {
-            let (min, max) = (self.center[axis] - self.half[axis], self.center[axis] + self.half[axis]);
+            let (min, max) = (
+                self.center[axis] - self.half[axis],
+                self.center[axis] + self.half[axis],
+            );
             if dir[axis].abs() < 1e-6 {
                 if origin[axis] < min || origin[axis] > max {
                     return None;
                 }
             } else {
-                let (a, b) = ((min - origin[axis]) / dir[axis], (max - origin[axis]) / dir[axis]);
+                let (a, b) = (
+                    (min - origin[axis]) / dir[axis],
+                    (max - origin[axis]) / dir[axis],
+                );
                 lo = lo.max(a.min(b));
                 hi = hi.min(a.max(b));
                 if hi < lo {
@@ -78,7 +88,13 @@ impl StaticWorld {
     pub fn new(half_extent: f32) -> Self {
         let cell = 4.0;
         let side = (2.0 * half_extent / cell).ceil() as usize + 1;
-        Self { boxes: Vec::new(), cell, half: half_extent, side, cells: vec![Vec::new(); side * side] }
+        Self {
+            boxes: Vec::new(),
+            cell,
+            half: half_extent,
+            side,
+            cells: vec![Vec::new(); side * side],
+        }
     }
 
     fn coord(&self, v: f32) -> usize {
@@ -161,7 +177,8 @@ impl StaticWorld {
         let mut hit = false;
         self.near(center.x, center.z, half.x.max(half.z), |_, b| {
             let skip = except.is_some_and(|p| b.center.xz().distance(Vec2::new(p.x, p.z)) < 0.6);
-            let apart = (0..3).any(|axis| (b.center[axis] - center[axis]).abs() >= b.half[axis] + half[axis]);
+            let apart = (0..3)
+                .any(|axis| (b.center[axis] - center[axis]).abs() >= b.half[axis] + half[axis]);
             hit |= !skip && !apart;
         });
         hit
@@ -194,9 +211,10 @@ impl StaticWorld {
                 for x in cx.saturating_sub(1)..=(cx + 1).min(self.side - 1) {
                     for &index in &self.cells[z * self.side + x] {
                         if let Some((enter, _)) = self.boxes[index as usize].ray(origin, dir, max)
-                            && best.is_none_or(|(d, _)| enter < d) {
-                                best = Some((enter, index as usize));
-                            }
+                            && best.is_none_or(|(d, _)| enter < d)
+                        {
+                            best = Some((enter, index as usize));
+                        }
                     }
                 }
             }
@@ -206,7 +224,10 @@ impl StaticWorld {
 
     /// How far the ray travels inside box `index` (for bullets punching through thin walls).
     pub fn thickness(&self, index: usize, origin: Vec3, dir: Vec3) -> f32 {
-        self.boxes.get(index).and_then(|b| b.ray(origin, dir, f32::MAX)).map_or(f32::MAX, |(enter, exit)| exit - enter)
+        self.boxes
+            .get(index)
+            .and_then(|b| b.ray(origin, dir, f32::MAX))
+            .map_or(f32::MAX, |(enter, exit)| exit - enter)
     }
 }
 
@@ -216,8 +237,14 @@ mod tests {
 
     fn wall() -> StaticWorld {
         let mut w = StaticWorld::new(50.0);
-        w.add(Aabb::span(Vec3::new(4.0, 0.0, -5.0), Vec3::new(4.3, 3.0, 5.0)));
-        w.add(Aabb::span(Vec3::new(-2.0, 0.0, -1.0), Vec3::new(-1.0, 0.3, 1.0)));
+        w.add(Aabb::span(
+            Vec3::new(4.0, 0.0, -5.0),
+            Vec3::new(4.3, 3.0, 5.0),
+        ));
+        w.add(Aabb::span(
+            Vec3::new(-2.0, 0.0, -1.0),
+            Vec3::new(-1.0, 0.3, 1.0),
+        ));
         w
     }
 
@@ -237,12 +264,21 @@ mod tests {
     #[test]
     fn rays_hit_the_nearest_box_and_measure_thickness() {
         let w = wall();
-        let (d, index) = w.raycast(Vec3::new(-10.0, 1.0, 0.0), Vec3::X, 40.0).unwrap();
+        let (d, index) = w
+            .raycast(Vec3::new(-10.0, 1.0, 0.0), Vec3::X, 40.0)
+            .unwrap();
         assert!((d - 14.0).abs() < 1e-4 && index == 0);
         assert!((w.thickness(0, Vec3::new(-10.0, 1.0, 0.0), Vec3::X) - 0.3).abs() < 1e-4);
-        assert!(w.raycast(Vec3::new(-10.0, 4.0, 0.0), Vec3::X, 40.0).is_none());
+        assert!(
+            w.raycast(Vec3::new(-10.0, 4.0, 0.0), Vec3::X, 40.0)
+                .is_none()
+        );
         assert!(w.overlaps(Vec3::new(4.0, 1.0, 0.0), Vec3::splat(0.5), None));
-        assert!(!w.overlaps(Vec3::new(4.0, 1.0, 0.0), Vec3::splat(0.5), Some(Vec3::new(4.15, 0.0, 0.0))));
+        assert!(!w.overlaps(
+            Vec3::new(4.0, 1.0, 0.0),
+            Vec3::splat(0.5),
+            Some(Vec3::new(4.15, 0.0, 0.0))
+        ));
     }
 }
 
@@ -253,10 +289,17 @@ mod support_tests {
     #[test]
     fn a_body_over_a_ledge_stands_on_it() {
         let mut world = StaticWorld::new(50.0);
-        world.add(Aabb::span(Vec3::new(0.0, 0.0, -2.0), Vec3::new(1.0, 1.2, 2.0)));
+        world.add(Aabb::span(
+            Vec3::new(0.0, 0.0, -2.0),
+            Vec3::new(1.0, 1.2, 2.0),
+        ));
         // Centre just off the ledge, body still over it.
         let (x, z) = (-0.2, 0.0);
-        assert_eq!(world.support(x, z, 1.25), f32::NEG_INFINITY, "the centre alone misses it");
+        assert_eq!(
+            world.support(x, z, 1.25),
+            f32::NEG_INFINITY,
+            "the centre alone misses it"
+        );
         assert!((world.support_within(x, z, 1.25, 0.27) - 1.2).abs() < 1e-5);
     }
 }

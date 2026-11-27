@@ -27,8 +27,22 @@ impl Plugin for ChatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ChatLog>()
             .add_systems(OnEnter(MatchPhase::Active), spawn_chat)
-            .add_systems(Update, (open, type_line).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices).before(crate::menu::MenuActions).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, (collect, show).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(
+                Update,
+                (open, type_line)
+                    .chain()
+                    .in_set(ClientSet::Input)
+                    .after(crate::input::ReadDevices)
+                    .before(crate::menu::MenuActions)
+                    .run_if(in_state(MatchPhase::Active)),
+            )
+            .add_systems(
+                Update,
+                (collect, show)
+                    .chain()
+                    .in_set(ClientSet::Present)
+                    .run_if(in_state(MatchPhase::Active)),
+            );
     }
 }
 
@@ -38,9 +52,18 @@ fn spawn_chat(mut commands: Commands, mut log: ResMut<ChatLog>) {
         MatchEntity,
         ChatText,
         Text::new(""),
-        TextFont { font_size: 15.0, ..default() },
+        TextFont {
+            font_size: 15.0,
+            ..default()
+        },
         TextColor(Color::srgb(0.85, 0.95, 0.9)),
-        Node { position_type: PositionType::Absolute, left: Val::Px(22.0), bottom: Val::Px(110.0), max_width: Val::Px(520.0), ..default() },
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(22.0),
+            bottom: Val::Px(110.0),
+            max_width: Val::Px(520.0),
+            ..default()
+        },
         GlobalZIndex(-30),
     ));
 }
@@ -52,7 +75,14 @@ fn open(controls: Res<Controls>, mut screen: ResMut<Screen>, mut log: ResMut<Cha
     }
 }
 
-fn type_line(mut keys: EventReader<KeyboardInput>, mut screen: ResMut<Screen>, mut log: ResMut<ChatLog>, players: Query<&Player, With<LocalPlayer>>, mut orders: EventWriter<CommandEvent>, mut opened: Local<bool>) {
+fn type_line(
+    mut keys: EventReader<KeyboardInput>,
+    mut screen: ResMut<Screen>,
+    mut log: ResMut<ChatLog>,
+    players: Query<&Player, With<LocalPlayer>>,
+    mut orders: EventWriter<CommandEvent>,
+    mut opened: Local<bool>,
+) {
     if *screen != Screen::Chat {
         *opened = false;
         keys.clear();
@@ -73,9 +103,13 @@ fn type_line(mut keys: EventReader<KeyboardInput>, mut screen: ResMut<Screen>, m
             }
             Key::Enter => {
                 if let Ok(player) = players.single()
-                    && !log.draft.trim().is_empty() {
-                        orders.write(CommandEvent { player: player.id, command: PlayerCommand::Chat(log.draft.clone()) });
-                    }
+                    && !log.draft.trim().is_empty()
+                {
+                    orders.write(CommandEvent {
+                        player: player.id,
+                        command: PlayerCommand::Chat(log.draft.clone()),
+                    });
+                }
                 log.draft.clear();
                 *screen = Screen::None;
                 return;
@@ -104,8 +138,14 @@ fn collect(time: Res<Time<Real>>, mut events: EventReader<FxEvent>, mut log: Res
 }
 
 fn show(screen: Res<Screen>, log: Res<ChatLog>, mut text: Query<&mut Text, With<ChatText>>) {
-    let Ok(mut text) = text.single_mut() else { return };
-    let mut lines: Vec<String> = log.lines.iter().map(|(name, line, _)| format!("{name}: {line}")).collect();
+    let Ok(mut text) = text.single_mut() else {
+        return;
+    };
+    let mut lines: Vec<String> = log
+        .lines
+        .iter()
+        .map(|(name, line, _)| format!("{name}: {line}"))
+        .collect();
     if *screen == Screen::Chat {
         lines.push(format!("SAY: {}_    (ENTER SEND, ESC CANCEL)", log.draft));
     }

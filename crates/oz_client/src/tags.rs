@@ -16,16 +16,43 @@ pub struct TagsPlugin;
 
 impl Plugin for TagsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(MatchPhase::Active), spawn_tags).add_systems(Update, place_tags.in_set(ClientSet::Present).after(crate::spectate::Spectating).run_if(in_state(MatchPhase::Active)));
+        app.add_systems(OnEnter(MatchPhase::Active), spawn_tags)
+            .add_systems(
+                Update,
+                place_tags
+                    .in_set(ClientSet::Present)
+                    .after(crate::spectate::Spectating)
+                    .run_if(in_state(MatchPhase::Active)),
+            );
     }
 }
 
 fn spawn_tags(mut commands: Commands) {
     for i in 0..POOL {
         commands
-            .spawn((MatchEntity, Tag(i), Node { position_type: PositionType::Absolute, width: Val::Px(220.0), margin: UiRect::left(Val::Px(-110.0)), justify_content: JustifyContent::Center, ..default() }, Visibility::Hidden, GlobalZIndex(-42)))
+            .spawn((
+                MatchEntity,
+                Tag(i),
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(220.0),
+                    margin: UiRect::left(Val::Px(-110.0)),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                Visibility::Hidden,
+                GlobalZIndex(-42),
+            ))
             .with_children(|tag| {
-                tag.spawn((Text::new(""), TextFont { font_size: 13.0, ..default() }, TextColor(Color::WHITE), TextLayout::new_with_justify(JustifyText::Center)));
+                tag.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: 13.0,
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                    TextLayout::new_with_justify(JustifyText::Center),
+                ));
             });
     }
 }
@@ -42,7 +69,9 @@ fn place_tags(
     mut texts: Query<(&mut Text, &mut TextColor)>,
     smokes: Query<(&Transform, &SmokeCloud)>,
 ) {
-    let (Ok((camera, view)), Ok(me)) = (camera.single(), local.single()) else { return };
+    let (Ok((camera, view)), Ok(me)) = (camera.single(), local.single()) else {
+        return;
+    };
     let eye = view.translation();
     let forward = view.forward().as_vec3();
     let mut shown: Vec<(Vec3, String, Color)> = Vec::new();
@@ -56,15 +85,31 @@ fn place_tags(
             let distance = to.length();
             let friend = !rules.pvp || player.team == me.team;
             let aimed = to.normalize_or_zero().dot(forward) > 0.9985;
-            let visible = || statics.raycast(eye, to / distance.max(1e-3), distance).is_none() && !smoke_between(smokes, eye, head);
-            if friend && distance < TEAM_RANGE || !friend && aimed && distance < ENEMY_RANGE && visible() {
-                let color = if friend { TEAM_COLORS[(player.team as usize).min(1)] } else { Color::srgb(1.0, 0.35, 0.3) };
+            let visible = || {
+                statics
+                    .raycast(eye, to / distance.max(1e-3), distance)
+                    .is_none()
+                    && !smoke_between(smokes, eye, head)
+            };
+            if friend && distance < TEAM_RANGE
+                || !friend && aimed && distance < ENEMY_RANGE && visible()
+            {
+                let color = if friend {
+                    TEAM_COLORS[(player.team as usize).min(1)]
+                } else {
+                    Color::srgb(1.0, 0.35, 0.3)
+                };
                 shown.push((head, player.name.clone(), color));
             }
         }
     }
     for (tag, mut node, mut visibility, children) in &mut tags {
-        let projected = shown.get(tag.0).and_then(|(at, name, color)| camera.world_to_ndc(view, *at).filter(|ndc| ndc.z > 0.0 && ndc.z < 1.0).map(|ndc| (ndc, name, color)));
+        let projected = shown.get(tag.0).and_then(|(at, name, color)| {
+            camera
+                .world_to_ndc(view, *at)
+                .filter(|ndc| ndc.z > 0.0 && ndc.z < 1.0)
+                .map(|ndc| (ndc, name, color))
+        });
         let Some((ndc, name, color)) = projected else {
             if *visibility != Visibility::Hidden {
                 *visibility = Visibility::Hidden;
@@ -75,11 +120,12 @@ fn place_tags(
         node.left = Val::Percent((ndc.x + 1.0) * 50.0);
         node.top = Val::Percent((1.0 - ndc.y) * 50.0);
         if let Some(&child) = children.first()
-            && let Ok((mut text, mut tint)) = texts.get_mut(child) {
-                if text.0 != *name {
-                    text.0 = name.clone();
-                }
-                tint.0 = *color;
+            && let Ok((mut text, mut tint)) = texts.get_mut(child)
+        {
+            if text.0 != *name {
+                text.0 = name.clone();
             }
+            tint.0 = *color;
+        }
     }
 }

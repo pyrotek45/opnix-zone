@@ -161,12 +161,23 @@ pub struct Ping(pub u16);
 #[derive(Serialize, Deserialize, Debug)]
 pub enum C2S {
     /// `token` identifies this install across reconnects (0 = none).
-    Hello { protocol: u32, name: String, token: u64 },
+    Hello {
+        protocol: u32,
+        name: String,
+        token: u64,
+    },
     /// `view` is the server time of the world the client is showing (for lag compensation).
-    Input { input: PlayerInput, pos: Vec3, view: f32 },
+    Input {
+        input: PlayerInput,
+        pos: Vec3,
+        view: f32,
+    },
     Command(PlayerCommand),
     /// `sent` comes back in a pong; `rtt` reports the last measured round trip in ms.
-    Ping { sent: f32, rtt: u16 },
+    Ping {
+        sent: f32,
+        rtt: u16,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -230,9 +241,12 @@ pub struct Private {
     pub respawn: f32,
     pub team: u8,
     pub gear_left: u8,
+    /// Which gear the class carries.
+    pub gear: u8,
     /// Killstreak progress and earned rewards.
     pub streak: u16,
-    pub rewards: u8,
+    pub rewards: [u8; crate::killstreak::STACK],
+    pub streaks: [u8; 3],
     /// Limbs shot off.
     pub lost: u8,
     /// The perk in effect (client effects like thermal need it).
@@ -251,15 +265,25 @@ impl Quant {
     const Y: f32 = 0.01;
 
     fn new(rules: &Rules) -> Self {
-        Self { xz: rules.recipe.half_extent / 32_000.0 }
+        Self {
+            xz: rules.recipe.half_extent / 32_000.0,
+        }
     }
 
     fn pack(&self, p: Vec3) -> [i16; 3] {
-        [(p.x / self.xz) as i16, (p.y / Self::Y).clamp(-32_000.0, 32_000.0) as i16, (p.z / self.xz) as i16]
+        [
+            (p.x / self.xz) as i16,
+            (p.y / Self::Y).clamp(-32_000.0, 32_000.0) as i16,
+            (p.z / self.xz) as i16,
+        ]
     }
 
     fn unpack(&self, p: [i16; 3]) -> Vec3 {
-        Vec3::new(p[0] as f32 * self.xz, p[1] as f32 * Self::Y, p[2] as f32 * self.xz)
+        Vec3::new(
+            p[0] as f32 * self.xz,
+            p[1] as f32 * Self::Y,
+            p[2] as f32 * self.xz,
+        )
     }
 }
 
@@ -281,7 +305,11 @@ fn unpack_pitch(pitch: i8) -> f32 {
 }
 
 fn fraction(health: &Health) -> u8 {
-    if health.alive() { ((health.fraction() * 255.0) as u8).max(1) } else { 0 }
+    if health.alive() {
+        ((health.fraction() * 255.0) as u8).max(1)
+    } else {
+        0
+    }
 }
 
 pub struct HostLink {
@@ -322,7 +350,9 @@ struct Departed {
 
 impl HostLink {
     pub fn router_status(&self) -> Option<PortStatus> {
-        self.router.as_ref().and_then(|status| status.lock().ok().map(|s| s.clone()))
+        self.router
+            .as_ref()
+            .and_then(|status| status.lock().ok().map(|s| s.clone()))
     }
 
     /// The code friends type to join, if this host is reachable that way.
@@ -340,9 +370,10 @@ impl HostLink {
         let mut out = Vec::new();
         // Bound to one specific address (tests, multi-homed machines): that one first.
         if let Ok(bound) = self.host.local_addr()
-            && !bound.ip().is_unspecified() {
-                out.push(bound);
-            }
+            && !bound.ip().is_unspecified()
+        {
+            out.push(bound);
+        }
         if let Some(ip) = local_ip() {
             out.push(std::net::SocketAddr::new(ip, self.port));
         }
@@ -395,7 +426,12 @@ impl NetLink {
 
 /// Opens a listen server and returns a setup ready for [`PendingMatch`].
 /// Loopback-only hosts (tests, local experiments) skip LAN discovery and router setup.
-pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedicated: bool) -> std::io::Result<MatchSetup> {
+pub fn host_setup(
+    rules: Rules,
+    player_name: impl Into<String>,
+    addr: &str,
+    dedicated: bool,
+) -> std::io::Result<MatchSetup> {
     let bound_loopback = addr.starts_with("127.") || addr.starts_with("localhost");
     let board = (!bound_loopback).then(default_board);
     host_setup_with(rules, player_name, addr, dedicated, board)
@@ -403,12 +439,21 @@ pub fn host_setup(rules: Rules, player_name: impl Into<String>, addr: &str, dedi
 
 /// The public board join codes go through: ntfy.sh, or `OPNIX_BOARD` if set.
 pub fn default_board() -> Arc<dyn Board> {
-    let base = std::env::var("OPNIX_BOARD").ok().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| rendezvous::DEFAULT_BOARD.to_string());
+    let base = std::env::var("OPNIX_BOARD")
+        .ok()
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| rendezvous::DEFAULT_BOARD.to_string());
     Arc::new(Ntfy { base })
 }
 
 /// Like [`host_setup`], with an explicit board for join codes (`None` = no code).
-pub fn host_setup_with(rules: Rules, player_name: impl Into<String>, addr: &str, dedicated: bool, board: Option<Arc<dyn Board>>) -> std::io::Result<MatchSetup> {
+pub fn host_setup_with(
+    rules: Rules,
+    player_name: impl Into<String>,
+    addr: &str,
+    dedicated: bool,
+    board: Option<Arc<dyn Board>>,
+) -> std::io::Result<MatchSetup> {
     let mut host = Host::bind(addr)?;
     let bound = host.local_addr()?;
     let public = !bound.ip().is_loopback();
@@ -428,7 +473,14 @@ pub fn host_setup_with(rules: Rules, player_name: impl Into<String>, addr: &str,
         rendezvous_timer: 0.0,
         departed: Vec::new(),
     });
-    Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0 })
+    Ok(MatchSetup {
+        rules,
+        role: NetRole::Host,
+        link,
+        player_name: player_name.into(),
+        local_player: (!dedicated).then_some(0),
+        local_team: 0,
+    })
 }
 
 /// A connection that is waiting for the host's welcome.
@@ -472,11 +524,24 @@ pub fn join_as(commands: &mut Commands, addr: &str, name: impl Into<String>, tok
     let name = name.into();
     match Client::connect(addr) {
         Ok(mut client) => {
-            client.send(&C2S::Hello { protocol: PROTOCOL, name: name.clone(), token });
-            commands.insert_resource(Joining { client: Some(client), name, address: addr.to_string(), token, waited: 0.0, rendezvous: None });
+            client.send(&C2S::Hello {
+                protocol: PROTOCOL,
+                name: name.clone(),
+                token,
+            });
+            commands.insert_resource(Joining {
+                client: Some(client),
+                name,
+                address: addr.to_string(),
+                token,
+                waited: 0.0,
+                rendezvous: None,
+            });
             commands.insert_resource(JoinStatus::Connecting);
         }
-        Err(error) => commands.insert_resource(JoinStatus::Failed(format!("COULD NOT CONNECT: {error}"))),
+        Err(error) => {
+            commands.insert_resource(JoinStatus::Failed(format!("COULD NOT CONNECT: {error}")))
+        }
     }
 }
 
@@ -486,7 +551,13 @@ pub fn join_code(commands: &mut Commands, code: &str, name: impl Into<String>, t
     join_code_with(commands, code, name, token, default_board());
 }
 
-pub fn join_code_with(commands: &mut Commands, code: &str, name: impl Into<String>, token: u64, board: Arc<dyn Board>) {
+pub fn join_code_with(
+    commands: &mut Commands,
+    code: &str,
+    name: impl Into<String>,
+    token: u64,
+    board: Arc<dyn Board>,
+) {
     let Some(code) = rendezvous::normalize_code(code) else {
         commands.insert_resource(JoinStatus::Failed("THAT IS NOT A JOIN CODE".into()));
         return;
@@ -496,16 +567,34 @@ pub fn join_code_with(commands: &mut Commands, code: &str, name: impl Into<Strin
             let name = name.into();
             client.discover_public_address();
             // Queued now, sent the moment the host answers.
-            client.send(&C2S::Hello { protocol: PROTOCOL, name: name.clone(), token });
+            client.send(&C2S::Hello {
+                protocol: PROTOCOL,
+                name: name.clone(),
+                token,
+            });
             let rendezvous = Rendezvous::join(board, code.clone());
-            commands.insert_resource(Joining { client: Some(client), name, address: code, token, waited: 0.0, rendezvous: Some(rendezvous) });
+            commands.insert_resource(Joining {
+                client: Some(client),
+                name,
+                address: code,
+                token,
+                waited: 0.0,
+                rendezvous: Some(rendezvous),
+            });
             commands.insert_resource(JoinStatus::Finding("LOOKING UP THE CODE...".into()));
         }
-        Err(error) => commands.insert_resource(JoinStatus::Failed(format!("COULD NOT OPEN A SOCKET: {error}"))),
+        Err(error) => commands.insert_resource(JoinStatus::Failed(format!(
+            "COULD NOT OPEN A SOCKET: {error}"
+        ))),
     }
 }
 
-pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pending: ResMut<PendingMatch>, mut commands: Commands) {
+pub fn poll_joining(
+    time: Res<Time>,
+    joining: Option<ResMut<Joining>>,
+    mut pending: ResMut<PendingMatch>,
+    mut commands: Commands,
+) {
     let Some(mut joining) = joining else { return };
     joining.waited += time.delta_secs();
     let mut outcome = None;
@@ -529,7 +618,10 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
         } else if rendezvous.found_host() {
             Some("FOUND THE HOST - CONNECTING...".to_string())
         } else if let Some(trouble) = rendezvous.trouble() {
-            Some(format!("CANNOT REACH THE CODE BOARD ({})", trouble.chars().take(40).collect::<String>().to_uppercase()))
+            Some(format!(
+                "CANNOT REACH THE CODE BOARD ({})",
+                trouble.chars().take(40).collect::<String>().to_uppercase()
+            ))
         } else {
             Some("LOOKING UP THE CODE...".to_string())
         };
@@ -537,19 +629,33 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
             commands.insert_resource(JoinStatus::Finding(status));
         }
     }
-    let events = joining.client.as_mut().map(|client| client.poll()).unwrap_or_default();
+    let events = joining
+        .client
+        .as_mut()
+        .map(|client| client.poll())
+        .unwrap_or_default();
     for event in events {
         match event {
-            ClientEvent::Message(S2C::Welcome { player, team, rules }) => outcome = Some(Ok((player, team, rules))),
+            ClientEvent::Message(S2C::Welcome {
+                player,
+                team,
+                rules,
+            }) => outcome = Some(Ok((player, team, rules))),
             ClientEvent::Message(S2C::Refused(why)) => outcome = Some(Err(why)),
             ClientEvent::Disconnected => outcome = Some(Err("HOST CLOSED THE CONNECTION".into())),
             ClientEvent::Message(_) => {}
         }
     }
-    let limit = if joining.rendezvous.is_some() { 30.0 } else { 8.0 };
+    let limit = if joining.rendezvous.is_some() {
+        30.0
+    } else {
+        8.0
+    };
     if joining.waited > limit && outcome.is_none() {
         outcome = Some(Err(match &joining.rendezvous {
-            Some(r) if !r.found_host() => "NO GAME WITH THAT CODE (OR THE CODE BOARD IS UNREACHABLE)".into(),
+            Some(r) if !r.found_host() => {
+                "NO GAME WITH THAT CODE (OR THE CODE BOARD IS UNREACHABLE)".into()
+            }
             Some(_) => "FOUND THE HOST BUT COULD NOT GET THROUGH ITS ROUTER".into(),
             None => "HOST DID NOT ANSWER".into(),
         }));
@@ -560,9 +666,13 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
         Ok((player, team, rules)) => {
             // Take the socket out of the resource we are about to drop.
             let name = joining.name.clone();
-            let Some(client) = joining.client.take() else { return };
+            let Some(client) = joining.client.take() else {
+                return;
+            };
             let code = joining.rendezvous.as_ref().map(|r| r.code.clone());
-            let address = client.host_addr().map_or(joining.address.clone(), |a| a.to_string());
+            let address = client
+                .host_addr()
+                .map_or(joining.address.clone(), |a| a.to_string());
             let link = NetLink::Client(ClientLink {
                 client,
                 player,
@@ -576,7 +686,14 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
                 latched: 0,
                 entities: HashMap::default(),
             });
-            pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player), local_team: team });
+            pending.0 = Some(MatchSetup {
+                rules,
+                role: NetRole::Client,
+                link,
+                player_name: name,
+                local_player: Some(player),
+                local_team: team,
+            });
             commands.insert_resource(JoinStatus::Idle);
         }
         Err(why) => commands.insert_resource(JoinStatus::Failed(why)),
@@ -601,11 +718,17 @@ pub fn host_receive(
     mut orders: EventWriter<CommandEvent>,
     mut fx: EventWriter<FxEvent>,
 ) {
-    let NetLink::Host(link) = &mut *link else { return };
+    let NetLink::Host(link) = &mut *link else {
+        return;
+    };
     let now = time.elapsed_secs();
     if let Some(beacon) = &link.beacon {
         let mode = modes.0.get(rules.mode as usize).map_or("MATCH", |m| m.name);
-        let host_name = state.roster.iter().find(|r| r.id == 0).map_or("DEDICATED SERVER", |r| r.name.as_str());
+        let host_name = state
+            .roster
+            .iter()
+            .find(|r| r.id == 0)
+            .map_or("DEDICATED SERVER", |r| r.name.as_str());
         let humans = state.roster.iter().filter(|r| !r.bot).count() as u8;
         beacon.poll(link.port, host_name, mode, humans);
     }
@@ -618,12 +741,25 @@ pub fn host_receive(
             rendezvous.set_ours(candidates);
         }
     }
-    let joiners = link.rendezvous.as_ref().map(|r| r.take_joiners()).unwrap_or_default();
+    let joiners = link
+        .rendezvous
+        .as_ref()
+        .map(|r| r.take_joiners())
+        .unwrap_or_default();
     for addr in joiners.into_iter().flatten() {
         link.host.punch(addr);
     }
     // Peers that went quiet are dropped as if they had disconnected.
-    let stale: Vec<PeerId> = link.peers.keys().copied().filter(|peer| link.host.silent_for(*peer).is_some_and(|d| d > HOST_TIMEOUT)).collect();
+    let stale: Vec<PeerId> = link
+        .peers
+        .keys()
+        .copied()
+        .filter(|peer| {
+            link.host
+                .silent_for(*peer)
+                .is_some_and(|d| d > HOST_TIMEOUT)
+        })
+        .collect();
     let mut events = link.host.poll();
     for peer in stale {
         link.host.kick(peer);
@@ -632,26 +768,45 @@ pub fn host_receive(
     for event in events {
         match event {
             HostEvent::Connected(_) => {}
-            HostEvent::Message(peer, C2S::Hello { protocol, name, token }) => {
+            HostEvent::Message(
+                peer,
+                C2S::Hello {
+                    protocol,
+                    name,
+                    token,
+                },
+            ) => {
                 if protocol != PROTOCOL {
-                    link.host.send(peer, &S2C::Refused("VERSION MISMATCH".into()));
+                    link.host
+                        .send(peer, &S2C::Refused("VERSION MISMATCH".into()));
                     continue;
                 }
                 // The same install connecting again while its old connection lingers: drop the old one.
                 if token != 0 {
-                    let old: Vec<PeerId> = link.tokens.iter().filter(|(p, t)| **t == token && **p != peer).map(|(p, _)| *p).collect();
+                    let old: Vec<PeerId> = link
+                        .tokens
+                        .iter()
+                        .filter(|(p, t)| **t == token && **p != peer)
+                        .map(|(p, _)| *p)
+                        .collect();
                     for old_peer in old {
                         link.host.kick(old_peer);
                         link.tokens.remove(&old_peer);
                         if let Some(id) = link.peers.remove(&old_peer)
-                            && let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id) {
-                                link.departed.push(Departed::from_player(token, player, arsenal, now));
-                                commands.entity(entity).despawn();
-                            }
+                            && let Some((entity, player, _, _, arsenal)) =
+                                players.iter().find(|(_, player, ..)| player.id == id)
+                        {
+                            link.departed
+                                .push(Departed::from_player(token, player, arsenal, now));
+                            commands.entity(entity).despawn();
+                        }
                     }
                 }
                 link.departed.retain(|d| now - d.left_at < REJOIN_WINDOW);
-                let back = (token != 0).then(|| link.departed.iter().position(|d| d.token == token)).flatten().map(|i| link.departed.remove(i));
+                let back = (token != 0)
+                    .then(|| link.departed.iter().position(|d| d.token == token))
+                    .flatten()
+                    .map(|i| link.departed.remove(i));
                 let free = |id: u8| !link.peers.values().any(|used| *used == id);
                 let id = match back.as_ref().map(|d| d.id).filter(|id| free(*id)) {
                     Some(id) => id,
@@ -663,66 +818,122 @@ pub fn host_receive(
                         id
                     }
                 };
-                let mut name: String = name.chars().filter(|c| !c.is_control()).take(16).collect::<String>().trim().to_string();
+                let mut name: String = name
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(16)
+                    .collect::<String>()
+                    .trim()
+                    .to_string();
                 if name.is_empty() {
                     name = format!("PLAYER {id}");
                 }
                 // Two players with the same name get told apart.
-                if everyone.iter().map(|(p, _)| &p.name).chain(players.iter().map(|(_, p, ..)| &p.name)).any(|n| *n == name) {
+                if everyone
+                    .iter()
+                    .map(|(p, _)| &p.name)
+                    .chain(players.iter().map(|(_, p, ..)| &p.name))
+                    .any(|n| *n == name)
+                {
                     name = format!("{} {id}", name.chars().take(13).collect::<String>());
                 }
                 let team = match &back {
                     Some(seat) if rules.pvp => seat.team,
-                    _ => crate::versus::team_for_newcomer(everyone.iter().map(|(p, bot)| (p.team, bot)).chain(players.iter().map(|(_, p, ..)| (p.team, false)))),
+                    // Terrorist hunt: every human is on the squad.
+                    _ if rules.hunt => 0,
+                    _ => crate::versus::team_for_newcomer(
+                        everyone
+                            .iter()
+                            .map(|(p, bot)| (p.team, bot))
+                            .chain(players.iter().map(|(_, p, ..)| (p.team, false))),
+                    ),
                 };
                 let bundle = player_bundle(&content, &rules, &map, id, name.clone(), team);
                 let spawn = crate::player::spawn_point(&map, id, rules.pvp.then_some(team));
-                let entity = commands.spawn((bundle, ids.next(), Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now))).id();
+                let entity = commands
+                    .spawn((
+                        bundle,
+                        ids.next(),
+                        Remote::at(now, spawn, 0.0),
+                        crate::lagcomp::ViewTime(now),
+                    ))
+                    .id();
                 if let Some(seat) = back.clone() {
                     let gear_count = content.gear.get(seat.gear as usize).map_or(0, |g| g.count);
-                    commands.entity(entity).queue(move |mut entity: EntityWorldMut| seat.restore(&mut entity, gear_count));
+                    commands
+                        .entity(entity)
+                        .queue(move |mut entity: EntityWorldMut| {
+                            seat.restore(&mut entity, gear_count)
+                        });
                 }
                 link.peers.insert(peer, id);
                 if token != 0 {
                     link.tokens.insert(peer, token);
                 }
                 link.full_timer = 0.0;
-                link.host.send(peer, &S2C::Welcome { player: id, team, rules: rules.clone() });
-                fx.write(FxEvent::notice(if back.is_some() { format!("{name} RECONNECTED") } else { format!("{name} JOINED") }));
+                link.host.send(
+                    peer,
+                    &S2C::Welcome {
+                        player: id,
+                        team,
+                        rules: rules.clone(),
+                    },
+                );
+                fx.write(FxEvent::notice(if back.is_some() {
+                    format!("{name} RECONNECTED")
+                } else {
+                    format!("{name} JOINED")
+                }));
             }
             HostEvent::Message(peer, message) => {
-                let Some(&id) = link.peers.get(&peer) else { continue };
+                let Some(&id) = link.peers.get(&peer) else {
+                    continue;
+                };
                 match message {
                     C2S::Input { input, pos, view } => {
-                        if let Some((entity, _, mut current, mut remote, _)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
+                        if let Some((entity, _, mut current, mut remote, _)) =
+                            players.iter_mut().find(|(_, player, ..)| player.id == id)
+                        {
                             *current = input;
                             if pos.is_finite() {
                                 remote.push(now, pos, input.yaw);
                             }
                             if view.is_finite() {
-                                commands.entity(entity).insert(crate::lagcomp::ViewTime(view));
+                                commands
+                                    .entity(entity)
+                                    .insert(crate::lagcomp::ViewTime(view));
                             }
                         }
                     }
                     C2S::Ping { sent, rtt } => {
                         link.host.send_latest(peer, &S2C::Pong { sent });
-                        if let Some((_, mut player, ..)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
+                        if let Some((_, mut player, ..)) =
+                            players.iter_mut().find(|(_, player, ..)| player.id == id)
+                        {
                             player.ping = rtt;
                         }
                     }
                     C2S::Command(command) => {
-                        orders.write(CommandEvent { player: id, command });
+                        orders.write(CommandEvent {
+                            player: id,
+                            command,
+                        });
                     }
                     C2S::Hello { .. } => {}
                 }
             }
             HostEvent::Disconnected(peer) => {
                 let token = link.tokens.remove(&peer).unwrap_or(0);
-                let Some(id) = link.peers.remove(&peer) else { continue };
-                if let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id) {
+                let Some(id) = link.peers.remove(&peer) else {
+                    continue;
+                };
+                if let Some((entity, player, _, _, arsenal)) =
+                    players.iter().find(|(_, player, ..)| player.id == id)
+                {
                     fx.write(FxEvent::notice(format!("{} LEFT", player.name)));
                     if token != 0 {
-                        link.departed.push(Departed::from_player(token, player, arsenal, now));
+                        link.departed
+                            .push(Departed::from_player(token, player, arsenal, now));
                     }
                     commands.entity(entity).despawn();
                 }
@@ -740,7 +951,11 @@ pub fn host_send(
     state: Res<MatchState>,
     players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput)>,
     enemies: Query<(&NetId, &Enemy, &Transform, &Health)>,
-    (shots, mines, drones): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>, Query<(&NetId, &crate::killstreak::Drone, &Transform)>),
+    (shots, mines, drones): (
+        Query<(&NetId, &Projectile, &Transform)>,
+        Query<(&NetId, &crate::combat::Mine, &Transform)>,
+        Query<(&NetId, &crate::killstreak::Drone, &Transform)>,
+    ),
     structures: Query<(&NetId, &Structure, &Transform, &Health)>,
     ores: Query<(&NetId, &OreNode, &Transform)>,
     changed: Query<(), Or<(Added<Structure>, Added<OreNode>)>>,
@@ -771,51 +986,157 @@ pub fn host_send(
         return;
     }
     // Big battles halve the rate; interpolation on the client hides it.
-    link.send_timer = if enemies.iter().len() > 400 { 0.1 } else { 0.05 };
+    link.send_timer = if enemies.iter().len() > 400 {
+        0.1
+    } else {
+        0.05
+    };
     let full = link.full_timer <= 0.0;
     if full {
         link.full_timer = FULL_SNAPSHOT_EVERY;
     }
 
     let q = Quant::new(&rules);
-    let mut entities = Vec::with_capacity(players.iter().len() + enemies.iter().len() + shots.iter().len());
+    let mut entities =
+        Vec::with_capacity(players.iter().len() + enemies.iter().len() + shots.iter().len());
     for (id, player, transform, health, arsenal, input) in &players {
         let pitch = pack_pitch(input.pitch);
-        entities.push(EntState { id: id.0, kind: kind::PLAYER, sub: player.id, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch, hp: fraction(health), aux: (arsenal.current & 0x3f) | (player.team << 6), flags: player.flags, limbs: player.lost });
+        entities.push(EntState {
+            id: id.0,
+            kind: kind::PLAYER,
+            sub: player.id,
+            pos: q.pack(transform.translation),
+            yaw: pack_yaw(transform.rotation),
+            pitch,
+            hp: fraction(health),
+            aux: (arsenal.current & 0x3f) | (player.team << 6),
+            flags: player.flags,
+            limbs: player.lost,
+        });
     }
     for (id, enemy, transform, health) in &enemies {
-        entities.push(EntState { id: id.0, kind: kind::ENEMY, sub: enemy.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: enemy.attacks, flags: 0, limbs: 0 });
+        entities.push(EntState {
+            id: id.0,
+            kind: kind::ENEMY,
+            sub: enemy.kind as u8,
+            pos: q.pack(transform.translation),
+            yaw: pack_yaw(transform.rotation),
+            pitch: 0,
+            hp: fraction(health),
+            aux: enemy.attacks,
+            flags: 0,
+            limbs: 0,
+        });
     }
     for (id, shot, transform) in &shots {
         // aux = owner + 1, so clients can hide copies of projectiles they already predicted.
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: shot.look as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: shot.owner.map_or(0, |o| o.saturating_add(1)), flags: 0, limbs: 0 });
+        entities.push(EntState {
+            id: id.0,
+            kind: kind::PROJECTILE,
+            sub: shot.look as u8,
+            pos: q.pack(transform.translation),
+            yaw: pack_yaw(transform.rotation),
+            pitch: 0,
+            hp: 255,
+            aux: shot.owner.map_or(0, |o| o.saturating_add(1)),
+            flags: 0,
+            limbs: 0,
+        });
     }
     for (id, _, transform) in &drones {
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Drone as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: 255, aux: 0, flags: 0, limbs: 0 });
+        entities.push(EntState {
+            id: id.0,
+            kind: kind::PROJECTILE,
+            sub: ShotLook::Drone as u8,
+            pos: q.pack(transform.translation),
+            yaw: pack_yaw(transform.rotation),
+            pitch: 0,
+            hp: 255,
+            aux: 0,
+            flags: 0,
+            limbs: 0,
+        });
     }
     // Mines travel as projectiles that never move.
     for (id, _, transform) in &mines {
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Mine as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: 255, aux: 0, flags: 0, limbs: 0 });
+        entities.push(EntState {
+            id: id.0,
+            kind: kind::PROJECTILE,
+            sub: ShotLook::Mine as u8,
+            pos: q.pack(transform.translation),
+            yaw: 0,
+            pitch: 0,
+            hp: 255,
+            aux: 0,
+            flags: 0,
+            limbs: 0,
+        });
     }
     if full {
         for (id, structure, transform, health) in &structures {
-            entities.push(EntState { id: id.0, kind: kind::STRUCTURE, sub: structure.kind as u8, pos: q.pack(transform.translation), yaw: pack_yaw(transform.rotation), pitch: 0, hp: fraction(health), aux: structure.shots, flags: 0, limbs: 0 });
+            entities.push(EntState {
+                id: id.0,
+                kind: kind::STRUCTURE,
+                sub: structure.kind as u8,
+                pos: q.pack(transform.translation),
+                yaw: pack_yaw(transform.rotation),
+                pitch: 0,
+                hp: fraction(health),
+                aux: structure.shots,
+                flags: 0,
+                limbs: 0,
+            });
         }
         for (id, node, transform) in &ores {
             let left = ((node.amount / node.max.max(1.0)) * 255.0).ceil() as u8;
-            entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0, limbs: 0 });
+            entities.push(EntState {
+                id: id.0,
+                kind: kind::ORE,
+                sub: node.ore as u8,
+                pos: q.pack(transform.translation),
+                yaw: 0,
+                pitch: 0,
+                hp: left,
+                aux: 0,
+                flags: 0,
+                limbs: 0,
+            });
         }
     }
-    link.host.broadcast_latest(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), full, state: state.clone(), entities }));
+    link.host.broadcast_latest(&S2C::Snapshot(Snapshot {
+        time: time.elapsed_secs(),
+        full,
+        state: state.clone(),
+        entities,
+    }));
 
     let peers: Vec<(PeerId, u8)> = link.peers.iter().map(|(peer, id)| (*peer, *id)).collect();
     for (peer, id) in peers {
-        if let Some((_, player, transform, health, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == id) {
+        if let Some((_, player, transform, health, arsenal, _)) =
+            players.iter().find(|(_, player, ..)| player.id == id)
+        {
             // Just-spawned players are also pinned so they start at their base.
-            let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4).then_some(transform.translation);
-            link.host.send_latest(peer, &S2C::You(Private { health: *health, arsenal: arsenal.clone(), respawn: player.respawn, team: player.team, gear_left: player.gear_left, streak: player.streak, rewards: player.rewards, lost: player.lost, perk: player.perk, teleport }));
+            let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4)
+                .then_some(transform.translation);
+            link.host.send_latest(
+                peer,
+                &S2C::You(Private {
+                    health: *health,
+                    arsenal: arsenal.clone(),
+                    respawn: player.respawn,
+                    team: player.team,
+                    gear_left: player.gear_left,
+                    gear: player.gear,
+                    streak: player.streak,
+                    rewards: player.rewards,
+                    streaks: player.streaks,
+                    lost: player.lost,
+                    perk: player.perk,
+                    teleport,
+                }),
+            );
         }
-    }    // Out now rather than on next frame's poll.
+    } // Out now rather than on next frame's poll.
     link.host.flush();
 }
 
@@ -831,12 +1152,25 @@ pub fn client_receive(
     mut state: ResMut<MatchState>,
     mut commands: Commands,
     mut local: Query<(&mut Health, &mut Arsenal, &mut Player, &mut Transform), With<LocalPlayer>>,
-    mut remotes: Query<(&mut Remote, Option<&mut Health>, Option<&mut Enemy>, Option<&mut Structure>, Option<&mut OreNode>, Option<&mut PlayerInput>, Option<&mut Player>), Without<LocalPlayer>>,
+    mut remotes: Query<
+        (
+            &mut Remote,
+            Option<&mut Health>,
+            Option<&mut Enemy>,
+            Option<&mut Structure>,
+            Option<&mut OreNode>,
+            Option<&mut PlayerInput>,
+            Option<&mut Player>,
+        ),
+        Without<LocalPlayer>,
+    >,
     mut fx: EventWriter<FxEvent>,
     mut next: ResMut<NextState<MatchPhase>>,
     mut was_dead: Local<bool>,
 ) {
-    let NetLink::Client(link) = &mut *link else { return };
+    let NetLink::Client(link) = &mut *link else {
+        return;
+    };
     let q = Quant::new(&rules);
     let local_now = time.elapsed_secs();
     let mut events = link.client.poll();
@@ -852,7 +1186,8 @@ pub fn client_receive(
             ClientEvent::Message(S2C::Snapshot(snapshot)) => {
                 clock.observe(snapshot.time, local_now);
                 *state = snapshot.state.clone();
-                let mut seen = bevy::platform::collections::HashSet::with_capacity(snapshot.entities.len());
+                let mut seen =
+                    bevy::platform::collections::HashSet::with_capacity(snapshot.entities.len());
                 for e in &snapshot.entities {
                     seen.insert(e.id);
                     if e.kind == kind::PLAYER && e.sub == link.player {
@@ -860,7 +1195,11 @@ pub fn client_receive(
                     }
                     let (pos, yaw) = (q.unpack(e.pos), unpack_yaw(e.yaw));
                     if let Some((entity, _)) = link.entities.get(&e.id) {
-                        let Ok((mut remote, health, enemy, structure, ore, input, player)) = remotes.get_mut(*entity) else { continue };
+                        let Ok((mut remote, health, enemy, structure, ore, input, player)) =
+                            remotes.get_mut(*entity)
+                        else {
+                            continue;
+                        };
                         remote.push(snapshot.time, pos, yaw);
                         if let Some(mut health) = health {
                             health.hp = health.max * e.hp as f32 / 255.0;
@@ -884,41 +1223,113 @@ pub fn client_receive(
                             player.flags = e.flags;
                             player.lost = e.limbs;
                             player.team = e.aux >> 6;
-                            if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == player.id)
-                                && player.name != entry.name {
-                                    player.name = entry.name.clone();
-                                }
+                            if let Some(entry) =
+                                snapshot.state.roster.iter().find(|r| r.id == player.id)
+                                && player.name != entry.name
+                            {
+                                player.name = entry.name.clone();
+                            }
                         }
                         continue;
                     }
-                    let base = (MatchEntity, NetId(e.id), Remote::at(snapshot.time, pos, yaw), Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)));
+                    let base = (
+                        MatchEntity,
+                        NetId(e.id),
+                        Remote::at(snapshot.time, pos, yaw),
+                        Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)),
+                    );
                     let hp = e.hp as f32 / 255.0;
                     let entity = match e.kind {
                         kind::PLAYER => commands
                             .spawn((
                                 base,
-                                Player { flags: e.flags, ..Player::new(e.sub, format!("PLAYER {}", e.sub + 1), e.aux >> 6) },
-                                PlayerInput { weapon: e.aux & 0x3f, pitch: unpack_pitch(e.pitch), stance: e.flags & crate::player::flags::STANCE, lean: crate::player::flags::lean(e.flags), ..default() },
-                                Health { hp: 100.0 * hp, max: 100.0 },
+                                Player {
+                                    flags: e.flags,
+                                    ..Player::new(
+                                        e.sub,
+                                        format!("PLAYER {}", e.sub + 1),
+                                        e.aux >> 6,
+                                    )
+                                },
+                                PlayerInput {
+                                    weapon: e.aux & 0x3f,
+                                    pitch: unpack_pitch(e.pitch),
+                                    stance: e.flags & crate::player::flags::STANCE,
+                                    lean: crate::player::flags::lean(e.flags),
+                                    ..default()
+                                },
+                                Health {
+                                    hp: 100.0 * hp,
+                                    max: 100.0,
+                                },
                             ))
                             .id(),
                         kind::ENEMY => {
-                            let Some(def) = content.enemies.get(e.sub as usize) else { continue };
-                            commands.spawn((base, Enemy { kind: e.sub as u16, attacks: e.aux, ..default() }, Health { hp: def.hp * hp, max: def.hp })).id()
+                            let Some(def) = content.enemies.get(e.sub as usize) else {
+                                continue;
+                            };
+                            commands
+                                .spawn((
+                                    base,
+                                    Enemy {
+                                        kind: e.sub as u16,
+                                        attacks: e.aux,
+                                        ..default()
+                                    },
+                                    Health {
+                                        hp: def.hp * hp,
+                                        max: def.hp,
+                                    },
+                                ))
+                                .id()
                         }
                         kind::PROJECTILE => {
-                            let shot = Projectile { velocity: Vec3::ZERO, gravity: 0.0, damage: 0.0, splash: 0.0, look: ShotLook::from_index(e.sub), owner: e.aux.checked_sub(1), team: 255, life: 1.0, effect: crate::combat::Impact::Blast };
+                            let shot = Projectile {
+                                velocity: Vec3::ZERO,
+                                gravity: 0.0,
+                                damage: 0.0,
+                                splash: 0.0,
+                                look: ShotLook::from_index(e.sub),
+                                owner: e.aux.checked_sub(1),
+                                team: 255,
+                                life: 1.0,
+                                effect: crate::combat::Impact::Blast,
+                            };
                             commands.spawn((base, shot)).id()
                         }
                         kind::STRUCTURE => {
-                            let Some(def) = content.structures.get(e.sub as usize) else { continue };
+                            let Some(def) = content.structures.get(e.sub as usize) else {
+                                continue;
+                            };
                             let mut structure = Structure::new(e.sub as u16, None);
                             structure.shots = e.aux;
-                            commands.spawn((base, structure, Health { hp: def.hp * hp, max: def.hp }, Solid { half: crate::structures::oriented_half(def.half, yaw) })).id()
+                            commands
+                                .spawn((
+                                    base,
+                                    structure,
+                                    Health {
+                                        hp: def.hp * hp,
+                                        max: def.hp,
+                                    },
+                                    Solid {
+                                        half: crate::structures::oriented_half(def.half, yaw),
+                                    },
+                                ))
+                                .id()
                         }
-                        _ => commands.spawn((base, OreNode { ore: Ore::from_index(e.sub), amount: hp, max: 1.0 })).id(),
+                        _ => commands
+                            .spawn((
+                                base,
+                                OreNode {
+                                    ore: Ore::from_index(e.sub),
+                                    amount: hp,
+                                    max: 1.0,
+                                },
+                            ))
+                            .id(),
                     };
-                    link.entities.insert(e.id, (entity, kind::is_static(e.kind)));
+                    link.entities
+                        .insert(e.id, (entity, kind::is_static(e.kind)));
                 }
                 link.entities.retain(|id, (entity, is_static)| {
                     let keep = seen.contains(id) || (*is_static && !snapshot.full);
@@ -929,14 +1340,17 @@ pub fn client_receive(
                 });
             }
             ClientEvent::Message(S2C::You(private)) => {
-                if let Ok((mut health, mut arsenal, mut player, mut transform)) = local.single_mut() {
+                if let Ok((mut health, mut arsenal, mut player, mut transform)) = local.single_mut()
+                {
                     *health = private.health;
                     *arsenal = private.arsenal;
                     player.respawn = private.respawn;
                     player.team = private.team;
                     player.gear_left = private.gear_left;
+                    player.gear = private.gear;
                     player.streak = private.streak;
                     player.rewards = private.rewards;
+                    player.streaks = private.streaks;
                     player.lost = private.lost;
                     player.perk = private.perk;
                     // While dead the host owns our position, so we wake up at the spawn point.
@@ -953,8 +1367,17 @@ pub fn client_receive(
             }
             ClientEvent::Message(_) => {}
             ClientEvent::Disconnected => {
-                commands.insert_resource(LostHost { address: link.address.clone(), code: link.code.clone(), name: link.name.clone(), token: link.token });
-                let why = if link.client.silent_for() > CLIENT_TIMEOUT { "THE HOST STOPPED RESPONDING" } else { "THE HOST CLOSED THE MATCH" };
+                commands.insert_resource(LostHost {
+                    address: link.address.clone(),
+                    code: link.code.clone(),
+                    name: link.name.clone(),
+                    token: link.token,
+                });
+                let why = if link.client.silent_for() > CLIENT_TIMEOUT {
+                    "THE HOST STOPPED RESPONDING"
+                } else {
+                    "THE HOST CLOSED THE MATCH"
+                };
                 commands.insert_resource(JoinStatus::Failed(why.into()));
                 crate::session::end_match(&mut next);
                 break;
@@ -971,33 +1394,56 @@ pub fn client_send(
     local: Query<(&PlayerInput, &Transform), With<LocalPlayer>>,
     mut orders: EventReader<CommandEvent>,
 ) {
-    let NetLink::Client(link) = &mut *link else { return };
+    let NetLink::Client(link) = &mut *link else {
+        return;
+    };
     for order in orders.read() {
         link.client.send(&C2S::Command(order.command.clone()));
     }
-    let Ok((input, transform)) = local.single() else { return };
+    let Ok((input, transform)) = local.single() else {
+        return;
+    };
     link.latched |= input.buttons;
     let now = time.elapsed_secs();
     link.ping_timer -= time.delta_secs();
     if link.ping_timer <= 0.0 {
         link.ping_timer = PING_EVERY;
-        link.client.send_latest(&C2S::Ping { sent: now, rtt: link.rtt });
+        link.client.send_latest(&C2S::Ping {
+            sent: now,
+            rtt: link.rtt,
+        });
     }
     link.send_timer -= time.delta_secs();
     if link.send_timer <= 0.0 {
         link.send_timer = INPUT_RATE;
         // Anything pressed since the last send counts, so a quick tap still fires.
-        let sent = PlayerInput { buttons: input.buttons | link.latched, ..*input };
+        let sent = PlayerInput {
+            buttons: input.buttons | link.latched,
+            ..*input
+        };
         link.latched = 0;
-        link.client.send(&C2S::Input { input: sent, pos: transform.translation, view: clock.view(now) });
+        link.client.send(&C2S::Input {
+            input: sent,
+            pos: transform.translation,
+            view: clock.view(now),
+        });
     }
     link.client.flush();
 }
 
 /// Plays networked entities back from their sample buffers, a little in the past.
-pub fn smooth_remote(time: Res<Time>, role: Res<NetRole>, clock: Res<ServerClock>, mut remotes: Query<(&mut Transform, &Remote)>) {
+pub fn smooth_remote(
+    time: Res<Time>,
+    role: Res<NetRole>,
+    clock: Res<ServerClock>,
+    mut remotes: Query<(&mut Transform, &Remote)>,
+) {
     let now = time.elapsed_secs();
-    let playback = if *role == NetRole::Client { clock.view(now) } else { now - HOST_INTERPOLATION };
+    let playback = if *role == NetRole::Client {
+        clock.view(now)
+    } else {
+        now - HOST_INTERPOLATION
+    };
     for (mut transform, remote) in &mut remotes {
         if let Some((pos, yaw)) = remote.sample(playback) {
             transform.translation = pos;
@@ -1034,7 +1480,13 @@ impl Departed {
         }
         let current = self.arsenal.current;
         if let Some(mut arsenal) = entity.get_mut::<Arsenal>() {
-            *arsenal = Arsenal { cooldown: 0.0, reload: 0.0, burst: 0, trigger: false, ..self.arsenal.clone() };
+            *arsenal = Arsenal {
+                cooldown: 0.0,
+                reload: 0.0,
+                burst: 0,
+                trigger: false,
+                ..self.arsenal.clone()
+            };
         }
         if let Some(mut input) = entity.get_mut::<PlayerInput>() {
             input.weapon = current;
@@ -1048,15 +1500,19 @@ pub fn print_join_code(link: Res<NetLink>, mut said: Local<(bool, bool)>) {
     if !said.0 {
         said.0 = true;
         match host.join_code() {
-            Some(code) => println!("JOIN CODE: {}   (friends type this on the Join screen)", rendezvous::pretty_code(&code)),
+            Some(code) => println!(
+                "JOIN CODE: {}   (friends type this on the Join screen)",
+                rendezvous::pretty_code(&code)
+            ),
             None => println!("no join code (local only)"),
         }
     }
     if !said.1
-        && let Some(public) = host.public_addr() {
-            said.1 = true;
-            println!("internet address: {public}");
-        }
+        && let Some(public) = host.public_addr()
+    {
+        said.1 = true;
+        println!("internet address: {public}");
+    }
 }
 
 #[cfg(test)]
@@ -1065,7 +1521,18 @@ mod tests {
 
     #[test]
     fn entity_state_is_compact() {
-        let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7, limbs: 9 };
+        let state = EntState {
+            id: 1,
+            kind: 1,
+            sub: 2,
+            pos: [1, 2, 3],
+            yaw: 4,
+            pitch: -3,
+            hp: 5,
+            aux: 6,
+            flags: 7,
+            limbs: 9,
+        };
         assert_eq!(bincode::serialize(&state).unwrap().len(), 18);
     }
 
@@ -1096,7 +1563,9 @@ mod tests {
 
     #[test]
     fn quantisation_round_trips() {
-        let q = Quant { xz: 160.0 / 32_000.0 };
+        let q = Quant {
+            xz: 160.0 / 32_000.0,
+        };
         let p = Vec3::new(-151.37, 3.21, 88.04);
         assert!(q.unpack(q.pack(p)).distance(p) < 0.02);
         for pitch in [-1.4, 0.0, 0.7] {

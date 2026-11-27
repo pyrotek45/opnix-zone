@@ -5,13 +5,7 @@
 //! is where both the chunky look and most of the frame rate come from: at
 //! pixel size 3 the GPU shades one ninth of the pixels.
 
-use crate::{
-    ClientSet,
-    art::Art,
-    retro::Retro,
-    scene::Sky,
-    settings::Settings,
-};
+use crate::{ClientSet, art::Art, retro::Retro, scene::Sky, settings::Settings};
 use bevy::{
     asset::RenderAssetUsages,
     core_pipeline::{Skybox, tonemapping::Tonemapping},
@@ -49,6 +43,14 @@ struct GunRoot;
 
 #[derive(Component)]
 struct MuzzleFlash;
+
+/// The off hand that cooks and throws grenades in first person.
+#[derive(Component)]
+struct ThrowArm;
+
+/// The grenade in that hand (hidden once it has left it).
+#[derive(Component)]
+struct ThrowGrenade;
 
 #[derive(Component)]
 pub struct Flashlight;
@@ -140,25 +142,56 @@ impl Plugin for ViewPlugin {
             .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
             .add_systems(Startup, setup_presentation)
             .add_systems(Update, resize_target)
-            .add_systems(Update, (follow_player, viewmodel).chain().in_set(FollowPlayer).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(
+                Update,
+                (follow_player, viewmodel)
+                    .chain()
+                    .in_set(FollowPlayer)
+                    .in_set(ClientSet::Present)
+                    .run_if(in_state(MatchPhase::Active)),
+            );
     }
 }
 
 fn target_image(width: u32, height: u32) -> Image {
-    let size = Extent3d { width: width.max(16), height: height.max(16), depth_or_array_layers: 1 };
-    let mut image = Image::new_fill(size, TextureDimension::D2, &[0, 0, 0, 255], TextureFormat::bevy_default(), RenderAssetUsages::default());
-    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
+    let size = Extent3d {
+        width: width.max(16),
+        height: height.max(16),
+        depth_or_array_layers: 1,
+    };
+    let mut image = Image::new_fill(
+        size,
+        TextureDimension::D2,
+        &[0, 0, 0, 255],
+        TextureFormat::bevy_default(),
+        RenderAssetUsages::default(),
+    );
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
     image.sampler = ImageSampler::nearest();
     image
 }
 
 fn setup_presentation(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let handle = images.add(target_image(426, 240));
-    commands.spawn((UiCamera, Camera2d, Camera { order: 1, ..default() }, Msaa::Off));
+    commands.spawn((
+        UiCamera,
+        Camera2d,
+        Camera {
+            order: 1,
+            ..default()
+        },
+        Msaa::Off,
+    ));
     commands.spawn((
         WorldImage,
         ImageNode::new(handle.clone()),
-        Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        },
         GlobalZIndex(-100),
         Visibility::Hidden,
     ));
@@ -175,40 +208,129 @@ fn resize_target(
     mut view: Query<&mut Visibility, With<WorldImage>>,
 ) {
     if let Ok(mut visibility) = view.single_mut() {
-        let wanted = if *phase.get() == MatchPhase::Active { Visibility::Visible } else { Visibility::Hidden };
+        let wanted = if *phase.get() == MatchPhase::Active {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
         if *visibility != wanted {
             *visibility = wanted;
         }
     }
     let Ok(window) = windows.single() else { return };
     let scale = settings.pixel_size.max(1);
-    let (width, height) = ((window.physical_width() / scale).max(16), (window.physical_height() / scale).max(16));
+    let (width, height) = (
+        (window.physical_width() / scale).max(16),
+        (window.physical_height() / scale).max(16),
+    );
     let current = images.get(&target.0).map(|image| image.size());
     if current != Some(UVec2::new(width, height))
-        && let Some(image) = images.get_mut(&target.0) {
-            image.resize(Extent3d { width, height, depth_or_array_layers: 1 });
-        }
+        && let Some(image) = images.get_mut(&target.0)
+    {
+        image.resize(Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        });
+    }
 }
 
 /// Spawned by `scene` once the sky exists.
-pub fn spawn_camera(mut commands: Commands, target: Res<WorldTarget>, sky: Res<Sky>, art: Res<Art>, mut view: ResMut<ViewState>) {
+pub fn spawn_camera(
+    mut commands: Commands,
+    target: Res<WorldTarget>,
+    sky: Res<Sky>,
+    art: Res<Art>,
+    mut view: ResMut<ViewState>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
     *view = ViewState::default();
+    // A robot forearm and hand, and a grenade to put in it.
+    let arm = art.bake(
+        &BlockModel::new()
+            .segment(Paint::Steel, [0.0, -0.05, 0.32], [0.0, 0.0, 0.0], 0.075)
+            .cube(Paint::Dark, [0.0, 0.01, -0.02], [0.1, 0.09, 0.11])
+            .shard(Paint::Aether, [0.0, -0.03, 0.2], [0.05, 0.05, 0.05]),
+        &mut meshes,
+    );
+    let grenade = art.bake(
+        &BlockModel::new()
+            .cylinder(Paint::Iron, [0.0, 0.06, -0.03], [0.07, 0.1, 0.07])
+            .cube(Paint::Steel, [0.0, 0.12, -0.03], [0.03, 0.03, 0.03])
+            .cube(Paint::Gold, [0.03, 0.12, -0.03], [0.02, 0.05, 0.01]),
+        &mut meshes,
+    );
     commands
         .spawn((
             MatchEntity,
             WorldCamera,
             Camera3d::default(),
-            Camera { target: RenderTarget::Image(target.0.clone().into()), order: 0, ..default() },
-            Projection::Perspective(PerspectiveProjection { fov: BASE_FOV.to_radians(), near: 0.05, far: 600.0, ..default() }),
+            Camera {
+                target: RenderTarget::Image(target.0.clone().into()),
+                order: 0,
+                ..default()
+            },
+            Projection::Perspective(PerspectiveProjection {
+                fov: BASE_FOV.to_radians(),
+                near: 0.05,
+                far: 600.0,
+                ..default()
+            }),
             Msaa::Off,
             Tonemapping::Reinhard,
             Retro::default(),
-            DistanceFog { color: Color::srgb(0.65, 0.68, 0.67), falloff: FogFalloff::Linear { start: 60.0, end: 230.0 }, ..default() },
-            Skybox { image: sky.day.clone(), brightness: 1000.0, ..default() },
+            DistanceFog {
+                color: Color::srgb(0.65, 0.68, 0.67),
+                falloff: FogFalloff::Linear {
+                    start: 60.0,
+                    end: 230.0,
+                },
+                ..default()
+            },
+            Skybox {
+                image: sky.day.clone(),
+                brightness: 1000.0,
+                ..default()
+            },
             Transform::from_xyz(0.0, 30.0, 0.0),
         ))
         .with_children(|camera| {
-            camera.spawn((GunRoot, Transform::from_translation(GUN_POS).with_scale(Vec3::splat(GUN_SCALE)), Visibility::Inherited));
+            camera.spawn((
+                GunRoot,
+                Transform::from_translation(GUN_POS).with_scale(Vec3::splat(GUN_SCALE)),
+                Visibility::Inherited,
+            ));
+            camera
+                .spawn((
+                    ThrowArm,
+                    Transform::from_xyz(-0.3, -0.6, -0.4),
+                    Visibility::Hidden,
+                ))
+                .with_children(|hand| {
+                    for (mesh, material) in [(&arm.lit, &art.lit), (&arm.unlit, &art.unlit)] {
+                        if let Some(mesh) = mesh {
+                            hand.spawn((
+                                Mesh3d(mesh.clone()),
+                                MeshMaterial3d(material.clone()),
+                                NotShadowCaster,
+                            ));
+                        }
+                    }
+                    hand.spawn((ThrowGrenade, Transform::IDENTITY, Visibility::Inherited))
+                        .with_children(|g| {
+                            for (mesh, material) in
+                                [(&grenade.lit, &art.lit), (&grenade.unlit, &art.unlit)]
+                            {
+                                if let Some(mesh) = mesh {
+                                    g.spawn((
+                                        Mesh3d(mesh.clone()),
+                                        MeshMaterial3d(material.clone()),
+                                        NotShadowCaster,
+                                    ));
+                                }
+                            }
+                        });
+                });
             camera.spawn((
                 MuzzleFlash,
                 Mesh3d(art.primitive(Shape::Shard)),
@@ -218,11 +340,29 @@ pub fn spawn_camera(mut commands: Commands, target: Res<WorldTarget>, sky: Res<S
                 NotShadowCaster,
                 NotShadowReceiver,
             ));
-            camera.spawn((MuzzleLight, PointLight { color: Color::srgb(1.0, 0.72, 0.3), intensity: 0.0, range: 9.0, shadows_enabled: false, ..default() }, Transform::from_xyz(0.2, -0.05, -1.0)));
+            camera.spawn((
+                MuzzleLight,
+                PointLight {
+                    color: Color::srgb(1.0, 0.72, 0.3),
+                    intensity: 0.0,
+                    range: 9.0,
+                    shadows_enabled: false,
+                    ..default()
+                },
+                Transform::from_xyz(0.2, -0.05, -1.0),
+            ));
             // Helmet lamp: fades in at night so the dark stays moody but playable.
             camera.spawn((
                 Flashlight,
-                SpotLight { color: Color::srgb(1.0, 0.93, 0.8), intensity: 0.0, range: 45.0, outer_angle: 0.5, inner_angle: 0.3, shadows_enabled: false, ..default() },
+                SpotLight {
+                    color: Color::srgb(1.0, 0.93, 0.8),
+                    intensity: 0.0,
+                    range: 45.0,
+                    outer_angle: 0.5,
+                    inner_angle: 0.3,
+                    shadows_enabled: false,
+                    ..default()
+                },
                 // Mounted ahead of the hands so it never washes out the viewmodel.
                 Transform::from_xyz(0.0, 0.1, -1.1),
             ));
@@ -240,17 +380,47 @@ fn follow_player(
     mut sounds: EventWriter<crate::fx::PlaySfx>,
     mut lights: Query<&mut PointLight, With<MuzzleLight>>,
     mut view: ResMut<ViewState>,
-    (players, subject): (Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health, &Player, Has<LocalPlayer>)>, Res<ViewSubject>),
+    (players, subject): (
+        Query<(
+            &Transform,
+            &PlayerInput,
+            &Arsenal,
+            &Mover,
+            &Health,
+            &Player,
+            Has<LocalPlayer>,
+        )>,
+        Res<ViewSubject>,
+    ),
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Player>)>,
-    (role, prediction, settings, statics, cover): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>, Res<Statics>, Res<crate::cover::Cover>),
+    (role, prediction, settings, statics, cover): (
+        Res<NetRole>,
+        Res<crate::predict::Prediction>,
+        Res<crate::settings::Settings>,
+        Res<Statics>,
+        Res<crate::cover::Cover>,
+    ),
 ) {
     let dt = time.delta_secs().min(0.05);
-    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
-    let (Some((player, input, arsenal, mover, health, me, local)), Ok((mut camera, mut projection))) = (pick, cameras.single_mut()) else { return };
+    let pick = subject
+        .0
+        .and_then(|e| players.get(e).ok())
+        .or_else(|| players.iter().find(|(.., local)| *local));
+    let (
+        Some((player, input, arsenal, mover, health, me, local)),
+        Ok((mut camera, mut projection)),
+    ) = (pick, cameras.single_mut())
+    else {
+        return;
+    };
 
     // Recoil kicks whenever the shot counter advances: predicted locally when online.
     let index = held_weapon(input, arsenal) as usize;
-    let shots = if *role == NetRole::Client && local { prediction.total } else { arsenal.shots };
+    let shots = if *role == NetRole::Client && local {
+        prediction.total
+    } else {
+        arsenal.shots
+    };
     if shots != view.last_shots {
         view.last_shots = shots;
         if let Some(def) = content.weapons.get(index) {
@@ -264,13 +434,20 @@ fn follow_player(
             // Each shot twists and shoves the gun a little differently.
             view.shot_count = view.shot_count.wrapping_add(1);
             let count = view.shot_count;
-            let r = |k: u32| ((count.wrapping_mul(2654435761).wrapping_add(k)) >> 16) as f32 / 65536.0 * 2.0 - 1.0;
+            let r = |k: u32| {
+                ((count.wrapping_mul(2654435761).wrapping_add(k)) >> 16) as f32 / 65536.0 * 2.0
+                    - 1.0
+            };
             view.kick_roll = (view.kick_roll + r(1) * 0.09 * recoil.sqrt()).clamp(-0.25, 0.25);
             view.kick_side = (view.kick_side + r(2) * 0.012 * recoil.sqrt()).clamp(-0.04, 0.04);
             view.shake += recoil * 0.12;
             // Brass hits the floor a moment later.
             if def.mode == oz_core::arsenal::FireMode::Hitscan && def.mag > 0 {
-                sounds.write(crate::fx::PlaySfx::new(Sfx::Shell, None).quiet(0.35).later(0.38));
+                sounds.write(
+                    crate::fx::PlaySfx::new(Sfx::Shell, None)
+                        .quiet(0.35)
+                        .later(0.38),
+                );
             }
         }
     }
@@ -300,7 +477,13 @@ fn follow_player(
     // Kit rustles when you change stance or shoulder the gun.
     if input.stance != view.last_stance {
         view.last_stance = input.stance;
-        sounds.write(crate::fx::PlaySfx::new(Sfx::Cloth, None).quiet(if input.stance == stance::PRONE { 1.0 } else { 0.7 }));
+        sounds.write(crate::fx::PlaySfx::new(Sfx::Cloth, None).quiet(
+            if input.stance == stance::PRONE {
+                1.0
+            } else {
+                0.7
+            },
+        ));
     }
     let aiming_now = input.held(buttons::AIM);
     if aiming_now && !view.was_aiming {
@@ -348,8 +531,15 @@ fn follow_player(
         }
     }
 
-    let stats = content.weapons.get(index).zip(arsenal.weapons.get(index)).map(|(def, state)| resolve(def, state, &content.attachments));
-    let interval = content.weapons.get(index).map_or(0.2, |def| def.interval.max(0.05));
+    let stats = content
+        .weapons
+        .get(index)
+        .zip(arsenal.weapons.get(index))
+        .map(|(def, state)| resolve(def, state, &content.attachments));
+    let interval = content
+        .weapons
+        .get(index)
+        .map_or(0.2, |def| def.interval.max(0.05));
     view.cycle = (view.cycle - dt / interval).max(0.0);
     let aiming = input.held(buttons::AIM) && arsenal.reload <= 0.0 && health.alive();
     let quick = match oz_sim::player::perk(&content, me) {
@@ -359,16 +549,29 @@ fn follow_player(
     let handling = stats.map_or(1.0, |s| s.handling) * quick;
     view.ads += (aiming as u8 as f32 - view.ads) * (1.0 - (-dt * 15.0 * handling).exp());
     view.scope_kind = stats.map_or(0, |s| s.scope);
-    view.scoped = if view.scope_kind > 0 { ((view.ads - 0.8) / 0.2).clamp(0.0, 1.0) } else { 0.0 };
+    view.scoped = if view.scope_kind > 0 {
+        ((view.ads - 0.8) / 0.2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
     let ads_fov = stats.map_or(BASE_FOV, |s| s.ads_fov);
     if let Projection::Perspective(perspective) = &mut *projection {
         let base = settings.fov;
         let ads_fov = ads_fov * base / BASE_FOV;
-        perspective.fov = (base + (ads_fov - base) * view.ads + 5.0 * view.sprint * (1.0 - view.ads) + view.kick * 0.9 - view.punch * 4.0).to_radians();
+        perspective.fov = (base
+            + (ads_fov - base) * view.ads
+            + 5.0 * view.sprint * (1.0 - view.ads)
+            + view.kick * 0.9
+            - view.punch * 4.0)
+            .to_radians();
     }
 
-    let bob = Vec3::new(0.0, (view.bob * 2.0).sin() * 0.035 * walking * (1.0 - view.ads), 0.0);
+    let bob = Vec3::new(
+        0.0,
+        (view.bob * 2.0).sin() * 0.035 * walking * (1.0 - view.ads),
+        0.0,
+    );
     let wanted_eye = if health.alive() { input.eye() } else { 0.45 };
     if view.eye == 0.0 {
         view.eye = wanted_eye;
@@ -376,25 +579,45 @@ fn follow_player(
     view.eye += (wanted_eye - view.eye) * (1.0 - (-dt * 10.0).exp());
     // Peeking out of cover glides the head out past the corner.
     let lean_k = 1.0 - (-dt * 12.0).exp();
-    let wanted_lean = if health.alive() { oz_sim::player::lean_offset(&statics, player.translation, input) } else { Vec3::ZERO };
+    let wanted_lean = if health.alive() {
+        oz_sim::player::lean_offset(&statics, player.translation, input)
+    } else {
+        Vec3::ZERO
+    };
     let lean = view.lean;
     view.lean = lean + (wanted_lean - lean) * lean_k;
-    let wanted_third = if cover.third_person() && health.alive() && local { 1.0 } else { 0.0 };
+    let wanted_third = if cover.third_person() && health.alive() && local {
+        1.0
+    } else {
+        0.0
+    };
     view.third += (wanted_third - view.third) * (1.0 - (-dt * 9.0).exp());
     let (eye, roll) = (view.eye, if health.alive() { 0.0 } else { 0.5 });
     let t = time.elapsed_secs();
-    let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
+    let shake =
+        Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
     let head = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob + view.lean;
     // Holding a gun up is never perfectly still: a slow drift down the sights, less when crouched or prone.
     let hold = view.ads * stance::steadiness(input.stance) * 0.0035;
-    let drift = Vec2::new((t * 0.8).sin() + 0.5 * (t * 1.9).sin(), (t * 1.3).cos() * 0.7) * hold;
-    camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x + drift.x, input.pitch + view.recoil * 0.012 + shake.y + drift.y, roll + shake.z);
+    let drift = Vec2::new(
+        (t * 0.8).sin() + 0.5 * (t * 1.9).sin(),
+        (t * 1.3).cos() * 0.7,
+    ) * hold;
+    camera.rotation = Quat::from_euler(
+        EulerRot::YXZ,
+        input.yaw + shake.x + drift.x,
+        input.pitch + view.recoil * 0.012 + shake.y + drift.y,
+        roll + shake.z,
+    );
     // In cover the camera pulls back over the right shoulder, stopping short of walls.
     let shoulder = camera.rotation * Vec3::new(0.65, 0.35, 2.6) * view.third;
     let length = shoulder.length();
     let pulled = if length > 1e-3 {
         let dir = shoulder / length;
-        let reach = statics.raycast(head, dir, length + 0.3).map_or(length, |(d, _)| (d - 0.3).max(0.0)).min(length);
+        let reach = statics
+            .raycast(head, dir, length + 0.3)
+            .map_or(length, |(d, _)| (d - 0.3).max(0.0))
+            .min(length);
         dir * reach
     } else {
         Vec3::ZERO
@@ -405,7 +628,11 @@ fn follow_player(
 /// The weapon to show in the hands: the one the player asked for if they own it
 /// (instant online), otherwise whatever the host says they hold.
 pub fn held_weapon(input: &PlayerInput, arsenal: &Arsenal) -> u8 {
-    if arsenal.owns(input.weapon as usize) { input.weapon } else { arsenal.current }
+    if arsenal.owns(input.weapon as usize) {
+        input.weapon
+    } else {
+        arsenal.current
+    }
 }
 
 fn ease(t: f32) -> f32 {
@@ -415,7 +642,11 @@ fn ease(t: f32) -> f32 {
 
 /// 0 -> 1 -> 0 over `[a, b]`.
 fn bump(t: f32, a: f32, b: f32) -> f32 {
-    if t <= a || t >= b { 0.0 } else { ((t - a) / (b - a) * PI).sin() }
+    if t <= a || t >= b {
+        0.0
+    } else {
+        ((t - a) / (b - a) * PI).sin()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -426,18 +657,62 @@ fn viewmodel(
     mut view: ResMut<ViewState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
-    (players, subject): (Query<(&Arsenal, &Health, &Mover, &PlayerInput, Has<LocalPlayer>)>, Res<ViewSubject>),
-    mut gun: Query<(Entity, &mut Transform, &mut Visibility), (With<GunRoot>, Without<MuzzleFlash>, Without<GunGroup>)>,
-    mut groups: Query<(&GunGroup, &mut Transform, &mut Visibility), (Without<GunRoot>, Without<MuzzleFlash>)>,
-    mut flash: Query<(&mut Transform, &mut Visibility), (With<MuzzleFlash>, Without<GunRoot>, Without<GunGroup>)>,
+    (players, subject): (
+        Query<(&Arsenal, &Health, &Mover, &PlayerInput, Has<LocalPlayer>)>,
+        Res<ViewSubject>,
+    ),
+    mut gun: Query<
+        (Entity, &mut Transform, &mut Visibility),
+        (With<GunRoot>, Without<MuzzleFlash>, Without<GunGroup>),
+    >,
+    mut groups: Query<
+        (&GunGroup, &mut Transform, &mut Visibility),
+        (Without<GunRoot>, Without<MuzzleFlash>),
+    >,
+    mut flash: Query<
+        (&mut Transform, &mut Visibility),
+        (With<MuzzleFlash>, Without<GunRoot>, Without<GunGroup>),
+    >,
     spectate: Res<crate::spectate::Spectate>,
     mut sounds: EventWriter<crate::fx::PlaySfx>,
+    (hands, mut arm, mut nade): (
+        Res<crate::tactical::Hands>,
+        Query<
+            (&mut Transform, &mut Visibility),
+            (
+                With<ThrowArm>,
+                Without<GunRoot>,
+                Without<GunGroup>,
+                Without<MuzzleFlash>,
+                Without<ThrowGrenade>,
+            ),
+        >,
+        Query<
+            &mut Visibility,
+            (
+                With<ThrowGrenade>,
+                Without<ThrowArm>,
+                Without<GunRoot>,
+                Without<GunGroup>,
+                Without<MuzzleFlash>,
+            ),
+        >,
+    ),
 ) {
-    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
-    let (Some((arsenal, health, mover, input, _)), Ok((root, mut transform, mut visibility))) = (pick, gun.single_mut()) else { return };
+    let pick = subject
+        .0
+        .and_then(|e| players.get(e).ok())
+        .or_else(|| players.iter().find(|(.., local)| *local));
+    let (Some((arsenal, health, mover, input, _)), Ok((root, mut transform, mut visibility))) =
+        (pick, gun.single_mut())
+    else {
+        return;
+    };
     let held = held_weapon(input, arsenal);
     let index = held as usize;
-    let (Some(def), Some(state)) = (content.weapons.get(index), arsenal.weapons.get(index)) else { return };
+    let (Some(def), Some(state)) = (content.weapons.get(index), arsenal.weapons.get(index)) else {
+        return;
+    };
     let stats = resolve(def, state, &content.attachments);
 
     // Rebuild the hands only when the weapon or its attachments change.
@@ -447,12 +722,23 @@ fn viewmodel(
         let mut model = assemble(def, &state.equipped);
         for (slot, installed) in state.mods.iter().enumerate() {
             if let Some((kind, _)) = installed {
-                model = model.cube(kind.paint(), [-0.07, 0.02 + 0.045 * slot as f32, -0.16], [0.025, 0.03, 0.1]);
+                model = model.cube(
+                    kind.paint(),
+                    [-0.07, 0.02 + 0.045 * slot as f32, -0.16],
+                    [0.025, 0.03, 0.1],
+                );
             }
         }
-        let shell = BlockModel::new().cylinder(Paint::Red, [0.0, 0.0, 0.0], [0.035, 0.09, 0.035]).rotated([90.0, 0.0, 0.0]).cylinder(Paint::Gold, [0.0, 0.0, 0.05], [0.037, 0.02, 0.037]).rotated([90.0, 0.0, 0.0]);
+        let shell = BlockModel::new()
+            .cylinder(Paint::Red, [0.0, 0.0, 0.0], [0.035, 0.09, 0.035])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Gold, [0.0, 0.0, 0.05], [0.037, 0.02, 0.037])
+            .rotated([90.0, 0.0, 0.0]);
         let pieces = [
-            (GunGroup::Body, model.filtered(|a| !matches!(a, Anim::Mag | Anim::Slide))),
+            (
+                GunGroup::Body,
+                model.filtered(|a| !matches!(a, Anim::Mag | Anim::Slide)),
+            ),
             (GunGroup::Mag, model.filtered(|a| a == Anim::Mag)),
             (GunGroup::Slide, model.filtered(|a| a == Anim::Slide)),
             (GunGroup::Shell, shell),
@@ -460,23 +746,47 @@ fn viewmodel(
         commands.entity(root).despawn_related::<Children>();
         for (group, piece) in pieces {
             let baked = art.bake(&piece, &mut meshes);
-            let holder = commands.spawn((group, Transform::IDENTITY, Visibility::Inherited, ChildOf(root))).id();
+            let holder = commands
+                .spawn((
+                    group,
+                    Transform::IDENTITY,
+                    Visibility::Inherited,
+                    ChildOf(root),
+                ))
+                .id();
             for (mesh, material) in [(&baked.lit, &art.lit), (&baked.unlit, &art.unlit)] {
                 if let Some(mesh) = mesh {
-                    commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), NotShadowCaster, ChildOf(holder)));
+                    commands.spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(material.clone()),
+                        NotShadowCaster,
+                        ChildOf(holder),
+                    ));
                 }
             }
         }
     }
 
     // A magnified scope fills the view: hide the gun behind the overlay.
-    *visibility = if health.alive() && view.scoped < 0.5 && (!spectate.enabled || subject.0.is_some()) && view.third < 0.4 { Visibility::Inherited } else { Visibility::Hidden };
+    *visibility = if health.alive()
+        && view.scoped < 0.5
+        && (!spectate.enabled || subject.0.is_some())
+        && view.third < 0.4
+    {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
     let t = time.elapsed_secs();
     let walking = (mover.speed / 5.4).min(1.6) * (1.0 - view.ads * 0.94);
 
     // Reload choreography, chosen by the weapon's reload style.
     let reloading = arsenal.reload > 0.0 && arsenal.reload_total > 0.0;
-    let p = if reloading { 1.0 - arsenal.reload / arsenal.reload_total } else { 0.0 };
+    let p = if reloading {
+        1.0 - arsenal.reload / arsenal.reload_total
+    } else {
+        0.0
+    };
     // The reload's mechanical beats, timed to the animation.
     let crossed = |at: f32| view.reload_p < at && p >= at;
     if reloading {
@@ -500,7 +810,8 @@ fn viewmodel(
         }
     }
     view.reload_p = p;
-    let (mut tilt, mut dip, mut roll, mut mag, mut mag_hidden, mut slide, mut shell) = (0.0, 0.0, 0.0, Vec3::ZERO, false, Vec3::ZERO, None);
+    let (mut tilt, mut dip, mut roll, mut mag, mut mag_hidden, mut slide, mut shell) =
+        (0.0, 0.0, 0.0, Vec3::ZERO, false, Vec3::ZERO, None);
     if reloading {
         match def.reload_style {
             ReloadStyle::Magazine | ReloadStyle::Belt => {
@@ -529,7 +840,11 @@ fn viewmodel(
                 dip = 0.05 + 0.04 * bump(p, 0.45, 0.85);
                 // A round travels from below into the loading port.
                 let k = ease((p - 0.1) / 0.6);
-                shell = Some(Vec3::new(0.06 * (1.0 - k), -0.22 + 0.17 * k, -0.18 + 0.05 * k));
+                shell = Some(Vec3::new(
+                    0.06 * (1.0 - k),
+                    -0.22 + 0.17 * k,
+                    -0.18 + 0.05 * k,
+                ));
             }
         }
     }
@@ -552,27 +867,137 @@ fn viewmodel(
         }
     }
     // Inspect: turn the gun to show it off, then flip it back.
-    let inspect = if view.inspect > 0.0 { 1.0 - view.inspect / 2.2 } else { 0.0 };
+    let inspect = if view.inspect > 0.0 {
+        1.0 - view.inspect / 2.2
+    } else {
+        0.0
+    };
     let show = bump(inspect, 0.0, 1.0);
     let flip = bump(inspect, 0.35, 0.75);
+
+    // The off hand: up with a cooking grenade, a big overarm throw, or back down with the pin in.
+    // The gun drops out of the way while the hand is busy; a melee shoves it forward, stock first.
+    let own = subject.0.is_none() && health.alive() && view.third < 0.4;
+    let throw_t = hands.since_throw / 0.45;
+    let cancel_t = hands.since_cancel / 0.3;
+    let (arm_pose, arm_shown, grenade_shown) = if !own {
+        (None, false, false)
+    } else if let Some(cooked) = hands.cooking {
+        // Raised beside the face, wound back a little more the longer it cooks.
+        let wind = ease(cooked / 0.35);
+        let shake = if hands.live && hands.fuse - cooked < 0.6 {
+            (t * 40.0).sin() * 0.006
+        } else {
+            0.0
+        };
+        (
+            Some((
+                Vec3::new(-0.22 + shake, -0.42 + 0.3 * wind, -0.42 + 0.06 * wind),
+                -0.5 * wind,
+            )),
+            true,
+            true,
+        )
+    } else if throw_t < 1.0 {
+        // Over the top and away; the grenade leaves the hand early in the swing.
+        let k = ease(throw_t);
+        let swing = Vec3::new(
+            -0.22 + 0.12 * k,
+            -0.12 + 0.12 * bump(throw_t, 0.0, 0.6) - 0.45 * ease((throw_t - 0.5) / 0.5),
+            -0.36 - 0.32 * bump(throw_t, 0.0, 0.8),
+        );
+        (Some((swing, -0.5 + 1.9 * k)), true, throw_t < 0.25)
+    } else if cancel_t < 1.0 {
+        (
+            Some((
+                Vec3::new(-0.22, -0.12 - 0.5 * ease(cancel_t), -0.42),
+                -0.5 + 0.5 * cancel_t,
+            )),
+            true,
+            true,
+        )
+    } else {
+        (None, false, false)
+    };
+    let busy = if hands.cooking.is_some() {
+        1.0
+    } else if throw_t < 1.0 {
+        1.0 - ease((throw_t - 0.6) / 0.4)
+    } else if cancel_t < 1.0 {
+        1.0 - cancel_t
+    } else {
+        0.0
+    };
+    let melee_t = hands.since_melee / 0.42;
+    let melee = if own && melee_t < 1.0 {
+        bump(melee_t, 0.0, 1.0)
+    } else {
+        0.0
+    };
+    if let Ok((mut arm_transform, mut arm_visibility)) = arm.single_mut() {
+        let wanted = if arm_shown {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *arm_visibility != wanted {
+            *arm_visibility = wanted;
+        }
+        if let Some((at, pitch)) = arm_pose {
+            arm_transform.translation = at;
+            arm_transform.rotation = Quat::from_rotation_x(pitch) * Quat::from_rotation_z(-0.25);
+        }
+    }
+    if let Ok(mut visibility) = nade.single_mut() {
+        let wanted = if grenade_shown {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
 
     let ads_pos = Vec3::new(0.0, -stats.sight * GUN_SCALE, -0.40);
     let sprint = view.sprint * (1.0 - view.ads);
     // Breathing: the gun drifts in a slow figure eight, much less down the sights.
-    let breath = Vec3::new((t * 0.9).sin() * 0.006, (t * 1.8).sin() * 0.004, 0.0) * (1.0 - view.ads * 0.7);
+    let breath =
+        Vec3::new((t * 0.9).sin() * 0.006, (t * 1.8).sin() * 0.004, 0.0) * (1.0 - view.ads * 0.7);
     transform.translation = GUN_POS.lerp(ads_pos, view.ads)
         + breath
         + Vec3::new(
             view.bob.sin() * 0.018 * walking + view.sway.x * 0.5 - 0.06 * show + 0.04 * sprint,
-            (view.bob * 2.0).sin() * 0.016 * walking - dip - view.swap * 0.22 - view.land * 0.05 - view.sway.y * 0.5 + (t * 1.3).sin() * 0.003 + 0.05 * show - 0.06 * sprint,
+            (view.bob * 2.0).sin() * 0.016 * walking
+                - dip
+                - view.swap * 0.22
+                - view.land * 0.05
+                - view.sway.y * 0.5
+                + (t * 1.3).sin() * 0.003
+                + 0.05 * show
+                - 0.06 * sprint,
             view.recoil * 0.085 + 0.04 * sprint,
         )
-        + Vec3::X * view.kick_side;
-    transform.rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint + view.kick_side * 2.0)
-        * Quat::from_rotation_x(view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip)
-        * Quat::from_rotation_z(roll + view.sway.x * 1.6 + 1.2 * flip + 0.25 * sprint + view.kick_roll + (t * 0.7).sin() * 0.012 * (1.0 - view.ads * 0.6));
+        + Vec3::X * view.kick_side
+        + Vec3::new(0.12, -0.32, 0.05) * busy
+        + Vec3::new(-0.08, 0.04, -0.2) * melee;
+    transform.rotation =
+        Quat::from_rotation_y(0.9 * show + 0.55 * sprint + view.kick_side * 2.0 + 0.6 * melee)
+            * Quat::from_rotation_x(
+                view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip
+                    - 0.5 * busy
+                    + 0.35 * melee,
+            )
+            * Quat::from_rotation_z(
+                roll + view.sway.x * 1.6
+                    + 1.2 * flip
+                    + 0.25 * sprint
+                    + view.kick_roll
+                    + (t * 0.7).sin() * 0.012 * (1.0 - view.ads * 0.6),
+            );
     // Tracers leave from here, sights up or not.
-    view.muzzle = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.05) * GUN_SCALE);
+    view.muzzle = transform.translation
+        + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.05) * GUN_SCALE);
 
     for (group, mut piece, mut seen) in &mut groups {
         let (offset, visible) = match group {
@@ -582,19 +1007,34 @@ fn viewmodel(
             GunGroup::Shell => (shell.unwrap_or(Vec3::ZERO), shell.is_some()),
         };
         piece.translation = offset;
-        let wanted = if visible { Visibility::Inherited } else { Visibility::Hidden };
+        let wanted = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
         if *seen != wanted {
             *seen = wanted;
         }
     }
 
     if let Ok((mut flash_transform, mut flash_visibility)) = flash.single_mut() {
-        let lit = view.flash > 0.0 && health.alive() && def.mag > 0 && view.scoped < 0.5 && !stats.quiet && !spectate.enabled;
-        *flash_visibility = if lit { Visibility::Inherited } else { Visibility::Hidden };
-        flash_transform.translation = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.08) * GUN_SCALE);
+        let lit = view.flash > 0.0
+            && health.alive()
+            && def.mag > 0
+            && view.scoped < 0.5
+            && !stats.quiet
+            && !spectate.enabled;
+        *flash_visibility = if lit {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        flash_transform.translation = transform.translation
+            + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.08) * GUN_SCALE);
         // A big, ragged star of flame that is different every shot.
         let size = 0.8 + view.flash * 18.0 * (1.0 + 0.3 * (view.shot_count as f32 * 1.7).sin());
         flash_transform.scale = Vec3::new(0.07, 0.07, 0.2) * size;
-        flash_transform.rotation = transform.rotation * Quat::from_rotation_z(view.shot_count as f32 * 2.399);
+        flash_transform.rotation =
+            transform.rotation * Quat::from_rotation_z(view.shot_count as f32 * 2.399);
     }
 }

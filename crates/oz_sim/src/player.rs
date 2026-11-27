@@ -36,8 +36,12 @@ pub mod buttons {
     pub const RELOAD: u8 = 4;
     pub const JUMP: u8 = 8;
     pub const SPRINT: u8 = 16;
-    /// Throw / use equipment.
+    /// Throw / use equipment. Held to cook a grenade, released to throw it.
     pub const GEAR: u8 = 32;
+    /// Melee strike (gun butt).
+    pub const MELEE: u8 = 64;
+    /// Firing blind from cover: only the gun shows past the edge; wild aim.
+    pub const BLIND: u8 = 128;
 }
 
 /// How a body is holding itself. Stored in [`PlayerInput::stance`].
@@ -48,7 +52,7 @@ pub mod stance {
 
     /// Eye height for a stance.
     pub fn eye(stance: u8) -> f32 {
-        [super::EYE, 1.12, 0.42][(stance as usize).min(2)]
+        [super::EYE, 1.02, 0.42][(stance as usize).min(2)]
     }
 
     /// Headroom a stance needs.
@@ -98,18 +102,113 @@ pub const LEAN_ROLL: f32 = 0.3;
 /// Where leaning puts the eye relative to standing straight: sideways,
 /// cut short by any wall in the way. Nothing while prone.
 pub fn lean_offset(statics: &StaticWorld, feet: Vec3, input: &PlayerInput) -> Vec3 {
-    if input.lean == 0 || input.stance == stance::PRONE {
+    // Blind fire keeps the body behind cover; only the gun goes out (see [`shot_origin`]).
+    if input.lean == 0 || input.stance == stance::PRONE || input.held(buttons::BLIND) {
         return Vec3::ZERO;
     }
     let side = Quat::from_rotation_y(input.yaw) * Vec3::X * input.lean.signum() as f32;
     let eye = feet + Vec3::Y * input.eye();
-    let reach = statics.raycast(eye, side, LEAN_REACH + 0.2).map_or(LEAN_REACH, |(d, _)| (d - 0.2).max(0.0)).min(LEAN_REACH);
+    let reach = statics
+        .raycast(eye, side, LEAN_REACH + 0.2)
+        .map_or(LEAN_REACH, |(d, _)| (d - 0.2).max(0.0))
+        .min(LEAN_REACH);
     side * reach - Vec3::Y * 0.08 * (reach / LEAN_REACH)
 }
 
 /// The point a player sees and shoots from.
 pub fn eye_point(statics: &StaticWorld, feet: Vec3, input: &PlayerInput) -> Vec3 {
     feet + Vec3::Y * input.eye() + lean_offset(statics, feet, input)
+}
+
+/// Where shots start. Normally the eye; when firing blind from cover, the gun
+/// held out round the corner (`lean` set) or up over the top of low cover.
+pub fn shot_origin(statics: &StaticWorld, feet: Vec3, input: &PlayerInput) -> Vec3 {
+    if !input.held(buttons::BLIND) {
+        return eye_point(statics, feet, input);
+    }
+    let eye = feet + Vec3::Y * input.eye();
+    if input.lean == 0 {
+        // Arms up over the top of low cover.
+        let up = statics
+            .raycast(eye, Vec3::Y, 0.75)
+            .map_or(0.6, |(d, _)| (d - 0.1).max(0.0));
+        return eye + Vec3::Y * up;
+    }
+    let side = Quat::from_rotation_y(input.yaw) * Vec3::X * input.lean.signum() as f32;
+    let reach = statics
+        .raycast(eye, side, 0.95)
+        .map_or(0.8, |(d, _)| (d - 0.1).max(0.0))
+        .min(0.8);
+    eye + side * reach - Vec3::Y * 0.12
+}
+
+/// Highest obstacle a body can vault (or climb onto), above the feet.
+pub const VAULT_HIGH: f32 = 1.4;
+const VAULT_LOW: f32 = 0.45;
+
+/// A vault in progress: hands on the obstacle, body over it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vault {
+    pub from: Vec3,
+    pub to: Vec3,
+    /// Height of the obstacle's top (the arc clears it).
+    pub top: f32,
+    pub t: f32,
+    pub duration: f32,
+}
+
+/// Is there something to vault over (or climb onto) straight ahead along `dir`?
+/// Returns where the body lands and the top of what it goes over: a low wall,
+/// a window sill, a crate, the lip of a ledge.
+pub fn vault_target(
+    map: &GameMap,
+    statics: &StaticWorld,
+    feet: Vec3,
+    dir: Vec3,
+) -> Option<(Vec3, f32)> {
+    let dir = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+    if dir == Vec3::ZERO {
+        return None;
+    }
+    // Something in front at knee height, close enough to put hands on.
+    let knee = feet + Vec3::Y * 0.35;
+    let (d, _) = statics.raycast(knee, dir, 1.3)?;
+    let probe = feet + dir * (d + 0.12);
+    let top = statics.support(probe.x, probe.z, feet.y + VAULT_HIGH + 0.05);
+    let rise = top - feet.y;
+    if !(VAULT_LOW..=VAULT_HIGH).contains(&rise) {
+        return None;
+    }
+    // Room for the body to go over the top (a window opening is tall enough).
+    if statics.blocked(probe.x, probe.z, top + 0.05, 0.85, 0.22) {
+        return None;
+    }
+    // Land on the far side as soon as there is somewhere to stand; failing that, on top.
+    let mut onto: Option<Vec3> = None;
+    let mut k = d + 0.25;
+    while k <= d + 2.2 {
+        let q = feet + dir * k;
+        if statics.blocked(q.x, q.z, top + 0.05, 0.85, 0.22) {
+            break;
+        }
+        let ground = ground_under(map, statics, q.x, q.z, top + 0.1);
+        let clear = map.in_bounds(q.x, q.z)
+            && !statics.blocked(
+                q.x,
+                q.z,
+                ground,
+                stance::height(stance::CROUCH),
+                BODY_RADIUS,
+            );
+        if clear && ground < top - 0.3 && ground > feet.y - 3.0 {
+            return Some((Vec3::new(q.x, ground, q.z), top));
+        }
+        if clear && (ground - top).abs() < 0.08 && k > d + 0.4 && onto.is_none() {
+            onto = Some(Vec3::new(q.x, ground, q.z));
+        }
+        k += 0.15;
+    }
+    onto.map(|at| (at, top))
 }
 
 #[derive(Component, Clone, Debug)]
@@ -148,14 +247,23 @@ pub struct Player {
     pub protect: f32,
     /// Kills since the last death (versus killstreaks).
     pub streak: u16,
-    /// Earned, unused killstreak rewards (bits of `killstreak::reward`).
-    pub rewards: u8,
+    /// Earned, unused killstreak rewards, oldest first (ids of `killstreak::reward`, 0 = empty).
+    pub rewards: [u8; crate::killstreak::STACK],
+    /// The killstreaks this player's class carries.
+    pub streaks: [u8; 3],
     /// Which part the hit being applied right now struck (see [`part`]), for kill credits.
     pub last_hit: u8,
     /// Health left in each limb: left arm, right arm, left leg, right leg.
     pub limb_hp: [f32; 4],
     /// Limbs shot off this life (see [`limb`]).
     pub lost: u8,
+    /// Seconds a grenade has been cooking in hand (pin pulled), if one is.
+    pub cooking: Option<f32>,
+    /// Seconds until the next melee strike, and the button state last frame.
+    pub melee: f32,
+    pub melee_latch: bool,
+    /// Reload was used to put the pin back: no reloading until it is let go.
+    pub reload_block: bool,
 }
 
 /// Where a hit landed.
@@ -191,7 +299,9 @@ pub mod limb {
 
     /// The limb bit for a [`super::part`], if it is a limb.
     pub fn of_part(part: u8) -> Option<u8> {
-        (super::part::LEFT_ARM..=super::part::RIGHT_LEG).contains(&part).then(|| 1 << (part - super::part::LEFT_ARM))
+        (super::part::LEFT_ARM..=super::part::RIGHT_LEG)
+            .contains(&part)
+            .then(|| 1 << (part - super::part::LEFT_ARM))
     }
 
     /// Spread multiplier from missing arms.
@@ -209,8 +319,16 @@ pub mod limb {
 pub const LIMB_HP: f32 = 45.0;
 
 /// Applies damage to a limb; returns true if it just came off.
-pub fn wound_limb(player: &mut Player, part: u8, amount: f32, by: u8, fx: &mut EventWriter<FxEvent>) -> bool {
-    let Some(bit) = limb::of_part(part) else { return false };
+pub fn wound_limb(
+    player: &mut Player,
+    part: u8,
+    amount: f32,
+    by: u8,
+    fx: &mut EventWriter<FxEvent>,
+) -> bool {
+    let Some(bit) = limb::of_part(part) else {
+        return false;
+    };
     let slot = (part - part::LEFT_ARM) as usize;
     if player.lost & bit != 0 {
         return false;
@@ -220,16 +338,47 @@ pub fn wound_limb(player: &mut Player, part: u8, amount: f32, by: u8, fx: &mut E
         return false;
     }
     player.lost |= bit;
-    fx.write(FxEvent::LimbLost { player: player.id, limb: bit, by });
+    fx.write(FxEvent::LimbLost {
+        player: player.id,
+        limb: bit,
+        by,
+    });
     true
 }
 
 impl Player {
     pub fn new(id: u8, name: impl Into<String>, team: u8) -> Self {
         Self {
-            id, name: name.into(), team, respawn: 0.0, calm: 0.0, life: 0.0, kills: 0, deaths: 0, ready: false, perk: 0, gear: 0, gear_left: 0,
-            gear_latch: false, loadout: None, burn: 0.0, burn_time: 0.0, burn_by: None, flags: 0, ping: 0, protect: 0.0,
-            streak: 0, rewards: 0, last_hit: part::TORSO, limb_hp: [LIMB_HP; 4], lost: 0,
+            id,
+            name: name.into(),
+            team,
+            respawn: 0.0,
+            calm: 0.0,
+            life: 0.0,
+            kills: 0,
+            deaths: 0,
+            ready: false,
+            perk: 0,
+            gear: 0,
+            gear_left: 0,
+            gear_latch: false,
+            loadout: None,
+            burn: 0.0,
+            burn_time: 0.0,
+            burn_by: None,
+            flags: 0,
+            ping: 0,
+            protect: 0.0,
+            streak: 0,
+            rewards: [0; crate::killstreak::STACK],
+            streaks: crate::killstreak::DEFAULT_STREAKS,
+            last_hit: part::TORSO,
+            limb_hp: [LIMB_HP; 4],
+            lost: 0,
+            cooking: None,
+            melee: 0.0,
+            melee_latch: false,
+            reload_block: false,
         }
     }
 
@@ -238,30 +387,64 @@ impl Player {
     }
 }
 
-/// A versus-mode class: two weapons, a perk and a piece of gear.
+/// A versus-mode class: two weapons with their attachments, a perk and a piece of gear.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Loadout {
     pub primary: u8,
     pub secondary: u8,
     pub perk: u8,
     pub gear: u8,
+    /// Attachments for the primary and secondary. `None` keeps whatever the weapons have fitted.
+    pub parts: Option<[[u8; oz_core::arsenal::SLOT_COUNT]; 2]>,
+    /// Up to three killstreaks (ids of `killstreak::reward`; zeros = the defaults).
+    pub streaks: [u8; 3],
 }
 
 /// Looks up the active perk's effect, if any.
 pub fn perk(catalog: &Catalog, player: &Player) -> Option<PerkEffect> {
-    catalog.perks.get(player.perk as usize).map(|perk| perk.effect)
+    catalog
+        .perks
+        .get(player.perk as usize)
+        .map(|perk| perk.effect)
 }
 
 /// Equips a loadout: exactly the two chosen weapons, full ammo, fresh gear.
-pub fn apply_loadout(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsenal, loadout: Loadout) {
+pub fn apply_loadout(
+    catalog: &Catalog,
+    player: &mut Player,
+    arsenal: &mut Arsenal,
+    loadout: Loadout,
+) {
     let valid = |index: u8| (index as usize) < catalog.weapons.len();
-    if !valid(loadout.primary) || !valid(loadout.secondary) || loadout.primary == loadout.secondary {
+    if !valid(loadout.primary) || !valid(loadout.secondary) || loadout.primary == loadout.secondary
+    {
         return;
     }
     for (index, weapon) in arsenal.weapons.iter_mut().enumerate() {
         weapon.owned = index as u8 == loadout.primary || index as u8 == loadout.secondary;
     }
-    player.perk = loadout.perk.min(catalog.perks.len().saturating_sub(1) as u8);
+    // Fit the class's parts; anything that does not fit that gun falls back to its default.
+    if let Some(parts) = loadout.parts {
+        for (which, index) in [loadout.primary, loadout.secondary].into_iter().enumerate() {
+            let (Some(def), Some(weapon)) = (
+                catalog.weapons.get(index as usize),
+                arsenal.weapons.get_mut(index as usize),
+            ) else {
+                continue;
+            };
+            for slot in 0..oz_core::arsenal::SLOT_COUNT {
+                let wanted = parts[which][slot];
+                let fits = oz_core::arsenal::options(def, &catalog.attachments, slot)
+                    .iter()
+                    .any(|(i, ..)| *i == wanted as usize);
+                weapon.equipped[slot] = if fits { wanted } else { def.defaults[slot] };
+            }
+        }
+    }
+    player.perk = loadout
+        .perk
+        .min(catalog.perks.len().saturating_sub(1) as u8);
+    player.streaks = crate::killstreak::chosen(loadout.streaks);
     player.gear = loadout.gear.min(catalog.gear.len().saturating_sub(1) as u8);
     arsenal.current = loadout.primary;
     refill(catalog, player, arsenal);
@@ -277,13 +460,26 @@ pub fn refill(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsenal) {
     }
     arsenal.reload = 0.0;
     arsenal.burst = 0;
-    player.gear_left = catalog.gear.get(player.gear as usize).map_or(0, |gear| gear.count);
+    player.gear_left = catalog
+        .gear
+        .get(player.gear as usize)
+        .map_or(0, |gear| gear.count);
 }
 
 /// Hurts a player and handles the kill: score, feed, hit marker. Returns true on a kill.
 /// `attacker` is (name, team, id).
-pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, attacker: Option<(&str, u8, u8)>, state: &mut MatchState, fx: &mut EventWriter<FxEvent>) -> bool {
-    if !health.alive() || state.phase == Phase::Lobby || (victim.protect > 0.0 && attacker.is_some()) {
+pub fn damage_player(
+    health: &mut Health,
+    victim: &mut Player,
+    amount: f32,
+    attacker: Option<(&str, u8, u8)>,
+    state: &mut MatchState,
+    fx: &mut EventWriter<FxEvent>,
+) -> bool {
+    if !health.alive()
+        || state.phase == Phase::Lobby
+        || (victim.protect > 0.0 && attacker.is_some())
+    {
         return false;
     }
     health.hp -= amount;
@@ -296,12 +492,21 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
         victim.streak = 0;
     }
     if let Some((name, team, id)) = attacker {
-        fx.write(FxEvent::HitMarker { player: id, kill: killed, head: victim.last_hit == part::HEAD });
+        fx.write(FxEvent::HitMarker {
+            player: id,
+            kill: killed,
+            head: victim.last_hit == part::HEAD,
+        });
         if killed && id != victim.id {
             state.scores[(team as usize).min(1)] += 1;
             state.credits.push(id);
             fx.write(FxEvent::notice(format!("{name}  >  {}", victim.name)));
-            fx.write(FxEvent::Killed { victim: victim.id, by: id, head: victim.last_hit == part::HEAD, blast: victim.last_hit == part::BLAST });
+            fx.write(FxEvent::Killed {
+                victim: victim.id,
+                by: id,
+                head: victim.last_hit == part::HEAD,
+                blast: victim.last_hit == part::BLAST,
+            });
         }
     }
     killed
@@ -353,6 +558,8 @@ pub struct Mover {
     pub grounded: bool,
     /// Horizontal speed last frame (for footsteps and view bob).
     pub speed: f32,
+    /// Going over an obstacle right now.
+    pub vault: Option<Vault>,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -371,7 +578,11 @@ impl Health {
     }
 
     pub fn fraction(&self) -> f32 {
-        if self.max > 0.0 { (self.hp / self.max).clamp(0.0, 1.0) } else { 0.0 }
+        if self.max > 0.0 {
+            (self.hp / self.max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
     }
 }
 
@@ -409,7 +620,15 @@ impl Arsenal {
 }
 
 /// Can a body of `height` with its feet at `feet` stand at (x, z)?
-pub fn can_stand(map: &GameMap, statics: &StaticWorld, solids: &Query<(&Transform, &Solid), Without<Player>>, x: f32, z: f32, feet: f32, height: f32) -> bool {
+pub fn can_stand(
+    map: &GameMap,
+    statics: &StaticWorld,
+    solids: &Query<(&Transform, &Solid), Without<Player>>,
+    x: f32,
+    z: f32,
+    feet: f32,
+    height: f32,
+) -> bool {
     let ground = map.height(x, z);
     // Walking further out to sea is blocked, walking back up the beach never is.
     if !map.in_bounds(x, z) || (ground < map.water - WADE_DEPTH && ground < feet - 0.02) {
@@ -429,7 +648,9 @@ pub fn can_stand(map: &GameMap, statics: &StaticWorld, solids: &Query<(&Transfor
 
 /// What a walker stands on at (x, z): terrain, shallow sea floor, or a floor / step / crate.
 pub fn ground_under(map: &GameMap, statics: &StaticWorld, x: f32, z: f32, feet: f32) -> f32 {
-    map.height(x, z).max(map.water - WADE_DEPTH).max(statics.support(x, z, feet))
+    map.height(x, z)
+        .max(map.water - WADE_DEPTH)
+        .max(statics.support(x, z, feet))
 }
 
 /// Moves every player this machine controls: its own (movement is
@@ -438,7 +659,15 @@ pub fn ground_under(map: &GameMap, statics: &StaticWorld, x: f32, z: f32, feet: 
 /// Standing up needs headroom: under a low ceiling, a stairway or a beam
 /// overhead in mid-jump you stay down until there is room.
 fn headroom(statics: &StaticWorld, feet: Vec3, input: &mut PlayerInput) {
-    let fits = |stance: u8| !statics.blocked(feet.x, feet.z, feet.y + 0.5, stance::height(stance) - 0.5, BODY_RADIUS * 0.7);
+    let fits = |stance: u8| {
+        !statics.blocked(
+            feet.x,
+            feet.z,
+            feet.y + 0.5,
+            stance::height(stance) - 0.5,
+            BODY_RADIUS * 0.7,
+        )
+    };
     if let Some(room) = (input.stance..=stance::PRONE).find(|s| fits(*s))
         && room != input.stance
     {
@@ -448,7 +677,10 @@ fn headroom(statics: &StaticWorld, feet: Vec3, input: &mut PlayerInput) {
 
 /// Applies [`headroom`] to stances chosen after movement (bots decide later
 /// in the tick), so nobody shoots or is drawn standing with their head in a ceiling.
-pub fn enforce_headroom(statics: Res<Statics>, mut players: Query<(&Transform, &mut PlayerInput, &Health)>) {
+pub fn enforce_headroom(
+    statics: Res<Statics>,
+    mut players: Query<(&Transform, &mut PlayerInput, &Health)>,
+) {
     for (transform, mut input, health) in &mut players {
         if health.alive() {
             headroom(&statics, transform.translation, &mut input);
@@ -461,22 +693,80 @@ pub fn move_players(
     map: Res<Map>,
     statics: Res<Statics>,
     content: Res<Content>,
-    mut players: Query<(&mut Transform, &mut PlayerInput, &mut Mover, &Health, &Player, &Arsenal), Or<(With<LocalPlayer>, With<Bot>)>>,
+    mut players: Query<
+        (
+            &mut Transform,
+            &mut PlayerInput,
+            &mut Mover,
+            &Health,
+            &Player,
+            &Arsenal,
+        ),
+        Or<(With<LocalPlayer>, With<Bot>)>,
+    >,
     solids: Query<(&Transform, &Solid), Without<Player>>,
 ) {
     let dt = sim_dt(&time);
     for (mut transform, mut input, mut mover, health, player, arsenal) in &mut players {
         if !health.alive() {
             mover.speed = 0.0;
+            mover.vault = None;
+            continue;
+        }
+        // Mid-vault: follow the arc over the obstacle, nothing else.
+        if let Some(mut vault) = mover.vault {
+            vault.t += dt;
+            let k = (vault.t / vault.duration).min(1.0);
+            let ease = k * k * (3.0 - 2.0 * k);
+            let mut pos = vault.from.lerp(vault.to, ease);
+            // An arc that clears the top in the middle of the move.
+            let lift = (vault.top + 0.12 - vault.from.y.max(vault.to.y)).max(0.0);
+            pos.y += (k * std::f32::consts::PI).sin() * lift;
+            // Never dip into the obstacle on the way over.
+            if (0.15..0.85).contains(&k) {
+                pos.y = pos.y.max(vault.top + 0.05);
+            }
+            mover.speed = (pos - transform.translation).xz().length() / dt.max(1e-4);
+            transform.translation = pos;
+            input.stance = stance::CROUCH;
+            mover.vertical = 0.0;
+            mover.grounded = true;
+            mover.vault = if k >= 1.0 { None } else { Some(vault) };
+            if mover.vault.is_none() {
+                input.stance = stance::STAND;
+            }
             continue;
         }
         headroom(&statics, transform.translation, &mut input);
+        // Jump at something low ahead (a wall, a sill, a crate): vault it instead.
+        if mover.grounded && input.held(buttons::JUMP) && input.stance != stance::PRONE {
+            let facing = Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z;
+            let wish = Quat::from_rotation_y(input.yaw)
+                * Vec3::new(input.movement.x, 0.0, -input.movement.y);
+            let dir = if wish.length() > 0.2 { wish } else { facing };
+            if let Some((to, top)) = vault_target(&map, &statics, transform.translation, dir) {
+                let distance = to.xz().distance(transform.translation.xz());
+                mover.vault = Some(Vault {
+                    from: transform.translation,
+                    to,
+                    top,
+                    t: 0.0,
+                    duration: 0.38 + distance * 0.12,
+                });
+                continue;
+            }
+        }
         let input = &*input;
         let wish = input.movement.clamp_length_max(1.0);
         let standing = input.stance == stance::STAND;
         let leaning = input.lean != 0;
         let limping = player.lost & limb::LEGS != 0;
-        let sprinting = standing && !leaning && !limping && input.held(buttons::SPRINT) && wish.y > 0.3 && !input.held(buttons::AIM);
+        let sprinting = standing
+            && !leaning
+            && !limping
+            && input.held(buttons::SPRINT)
+            && wish.y > 0.3
+            && !input.held(buttons::AIM);
         let perk_speed = match perk(&content, player) {
             Some(PerkEffect::Speed(multiplier)) => multiplier,
             _ => 1.0,
@@ -485,19 +775,48 @@ pub fn move_players(
             .weapons
             .get(arsenal.current as usize)
             .zip(arsenal.state())
-            .map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).mobility);
-        let gait = if sprinting { SPRINT_SPEED } else if input.held(buttons::AIM) { WALK_SPEED * 0.6 } else { WALK_SPEED };
-        let speed = gait * perk_speed * weapon_speed * stance::speed(input.stance) * if leaning { 0.5 } else { 1.0 } * limb::speed_penalty(player.lost);
+            .map_or(1.0, |(def, state)| {
+                resolve(def, state, &content.attachments).mobility
+            });
+        let gait = if sprinting {
+            SPRINT_SPEED
+        } else if input.held(buttons::AIM) {
+            WALK_SPEED * 0.6
+        } else {
+            WALK_SPEED
+        };
+        let speed = gait
+            * perk_speed
+            * weapon_speed
+            * stance::speed(input.stance)
+            * if leaning { 0.5 } else { 1.0 }
+            * limb::speed_penalty(player.lost);
         let step = Quat::from_rotation_y(input.yaw) * Vec3::new(wish.x, 0.0, -wish.y) * speed * dt;
         let height = stance::height(input.stance);
 
         let mut pos = transform.translation;
         let before = pos;
         // Axis-separated so the player slides along walls.
-        if can_stand(&map, &statics, &solids, pos.x + step.x, pos.z, pos.y, height) {
+        if can_stand(
+            &map,
+            &statics,
+            &solids,
+            pos.x + step.x,
+            pos.z,
+            pos.y,
+            height,
+        ) {
             pos.x += step.x;
         }
-        if can_stand(&map, &statics, &solids, pos.x, pos.z + step.z, pos.y, height) {
+        if can_stand(
+            &map,
+            &statics,
+            &solids,
+            pos.x,
+            pos.z + step.z,
+            pos.y,
+            height,
+        ) {
             pos.z += step.z;
         }
 
@@ -505,7 +824,10 @@ pub fn move_players(
         let facing = Vec2::new(-input.yaw.sin(), -input.yaw.cos());
         let ladder = map.ladders.iter().find(|l| {
             let near = Vec2::new(before.x - l.foot.x, before.z - l.foot.z).length() < 0.8;
-            near && before.y < l.top - 0.01 && before.y > l.foot.y - 0.6 && facing.dot(-l.out) > 0.35 && wish.y > 0.3
+            near && before.y < l.top - 0.01
+                && before.y > l.foot.y - 0.6
+                && facing.dot(-l.out) > 0.35
+                && wish.y > 0.3
         });
         if let Some(ladder) = ladder {
             // On the rungs: straight up a line clear of the wall and any ledge on it,
@@ -527,7 +849,11 @@ pub fn move_players(
             mover.grounded = false;
         }
         // Standing on the lip of a ledge counts as standing on it.
-        let ground = if mover.grounded { ground.max(statics.support_within(pos.x, pos.z, pos.y, BODY_RADIUS * 0.9)) } else { ground };
+        let ground = if mover.grounded {
+            ground.max(statics.support_within(pos.x, pos.z, pos.y, BODY_RADIUS * 0.9))
+        } else {
+            ground
+        };
         if mover.grounded && pos.y - ground < oz_core::collide::STEP {
             pos.y = ground; // Stick to slopes and stairs.
         } else {
@@ -536,21 +862,26 @@ pub fn move_players(
             mover.grounded = false;
             // Bump heads on ceilings.
             // Bump heads on ceilings, without poking into them.
-            if mover.vertical > 0.0 && statics.blocked(pos.x, pos.z, pos.y + 0.5, height - 0.5, BODY_RADIUS * 0.7) {
+            if mover.vertical > 0.0
+                && statics.blocked(pos.x, pos.z, pos.y + 0.5, height - 0.5, BODY_RADIUS * 0.7)
+            {
                 mover.vertical = 0.0;
                 pos.y = before.y;
             }
             // Land on whatever is under any part of the body, not just its centre:
             // coming down beside a ledge must not sink the body into it.
             let from = pos.y.max(before.y);
-            let landing = ground_under(&map, &statics, pos.x, pos.z, from).max(statics.support_within(pos.x, pos.z, from, BODY_RADIUS * 0.9));
+            let landing = ground_under(&map, &statics, pos.x, pos.z, from)
+                .max(statics.support_within(pos.x, pos.z, from, BODY_RADIUS * 0.9));
             if pos.y <= landing {
                 pos.y = landing;
                 mover.vertical = 0.0;
                 mover.grounded = true;
             }
             // Still overlapping a wall (drifted sideways into it in mid-air): undo the drift.
-            if statics.blocked(pos.x, pos.z, pos.y, height, BODY_RADIUS * 0.9) && !statics.blocked(before.x, before.z, pos.y, height, BODY_RADIUS * 0.9) {
+            if statics.blocked(pos.x, pos.z, pos.y, height, BODY_RADIUS * 0.9)
+                && !statics.blocked(before.x, before.z, pos.y, height, BODY_RADIUS * 0.9)
+            {
                 pos.x = before.x;
                 pos.z = before.z;
             }
@@ -596,12 +927,23 @@ pub fn vitals(
     rules: Res<Rules>,
     content: Res<Content>,
     mut state: ResMut<MatchState>,
-    mut players: Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput)>,
+    mut players: Query<(
+        &mut Player,
+        &mut Health,
+        &mut Transform,
+        &mut Arsenal,
+        &mut PlayerInput,
+    )>,
     mut fx: EventWriter<FxEvent>,
+    mut noises: ResMut<crate::bots::Noises>,
 ) {
     let dt = sim_dt(&time);
     // Where every living fighter is, so respawns can pick the safest spot.
-    let fighters: Vec<(u8, Vec3)> = players.iter().filter(|(_, h, ..)| h.alive()).map(|(p, _, t, ..)| (p.team, t.translation)).collect();
+    let fighters: Vec<(u8, Vec3)> = players
+        .iter()
+        .filter(|(_, h, ..)| h.alive())
+        .map(|(p, _, t, ..)| (p.team, t.translation))
+        .collect();
     for (mut player, mut health, mut transform, mut arsenal, mut input) in &mut players {
         if health.alive() {
             player.calm += dt;
@@ -611,9 +953,22 @@ pub fn vitals(
             if player.burn_time > 0.0 {
                 player.burn_time -= dt;
                 let by = player.burn_by;
-                let attacker = by.and_then(|id| state.roster.iter().find(|r| r.id == id).map(|r| (r.name.clone(), r.team, id)));
+                let attacker = by.and_then(|id| {
+                    state
+                        .roster
+                        .iter()
+                        .find(|r| r.id == id)
+                        .map(|r| (r.name.clone(), r.team, id))
+                });
                 let damage = player.burn * dt;
-                damage_player(&mut health, &mut player, damage, attacker.as_ref().map(|(n, t, i)| (n.as_str(), *t, *i)), &mut state, &mut fx);
+                damage_player(
+                    &mut health,
+                    &mut player,
+                    damage,
+                    attacker.as_ref().map(|(n, t, i)| (n.as_str(), *t, *i)),
+                    &mut state,
+                    &mut fx,
+                );
                 continue;
             }
             if player.calm > 5.0 && health.hp < health.max {
@@ -623,18 +978,50 @@ pub fn vitals(
         }
         if player.respawn <= 0.0 {
             player.respawn = rules.respawn_seconds.max(1.0);
+            // A robot hitting the floor carries: anyone nearby comes to look.
+            noises.0.push(crate::bots::Noise {
+                at: transform.translation,
+                radius: 12.0,
+                team: player.team,
+                shout: false,
+            });
+            if rules.hunt && player.team == 0 && state.phase == Phase::Live {
+                state.lives = state.lives.saturating_sub(1);
+            }
             if !rules.pvp {
                 fx.write(FxEvent::notice(format!("{} IS DOWN", player.name)));
-                fx.write(FxEvent::Sound { sfx: Sfx::Alarm, at: None });
+                fx.write(FxEvent::Sound {
+                    sfx: Sfx::Alarm,
+                    at: None,
+                });
             }
+            continue;
+        }
+        // Terrorist hunt: hostiles stay down, and the squad only has so many lives.
+        if rules.hunt && state.phase == Phase::Live && (player.team == 1 || state.lives == 0) {
+            player.respawn = player.respawn.max(0.5);
             continue;
         }
         player.respawn -= dt;
         if player.respawn <= 0.0 && !state.over() {
-            respawn(&content, &map, &rules, &state, &mut player, &mut health, &mut transform, &mut arsenal, &mut input);
+            respawn(
+                &content,
+                &map,
+                &rules,
+                &state,
+                &mut player,
+                &mut health,
+                &mut transform,
+                &mut arsenal,
+                &mut input,
+            );
             if rules.pvp {
                 // Pick the base spot furthest from any enemy, and shield the player briefly.
-                let enemies: Vec<Vec3> = fighters.iter().filter(|(team, _)| *team != player.team).map(|(_, at)| *at).collect();
+                let enemies: Vec<Vec3> = fighters
+                    .iter()
+                    .filter(|(team, _)| *team != player.team)
+                    .map(|(_, at)| *at)
+                    .collect();
                 transform.translation = safest_spawn(&map, player.team, &enemies);
                 player.protect = 2.5;
             }
@@ -644,10 +1031,21 @@ pub fn vitals(
 
 /// Brings a player back at their spawn with a fresh life.
 #[allow(clippy::too_many_arguments)]
-pub fn respawn(content: &Catalog, map: &GameMap, rules: &Rules, state: &MatchState, player: &mut Player, health: &mut Health, transform: &mut Transform, arsenal: &mut Arsenal, input: &mut PlayerInput) {
+pub fn respawn(
+    content: &Catalog,
+    map: &GameMap,
+    rules: &Rules,
+    state: &MatchState,
+    player: &mut Player,
+    health: &mut Health,
+    transform: &mut Transform,
+    arsenal: &mut Arsenal,
+    input: &mut PlayerInput,
+) {
     player.respawn = 0.0;
     player.life = 0.0;
     player.burn_time = 0.0;
+    player.cooking = None;
     // A fresh chassis.
     player.limb_hp = [LIMB_HP; 4];
     player.lost = 0;
@@ -669,7 +1067,12 @@ pub fn safest_spawn(map: &GameMap, team: u8, enemies: &[Vec3]) -> Vec3 {
         .iter()
         .map(|p| map.ground(p.x, p.y))
         .max_by(|a, b| {
-            let nearest = |at: &Vec3| enemies.iter().map(|e| e.distance(*at)).fold(f32::MAX, f32::min);
+            let nearest = |at: &Vec3| {
+                enemies
+                    .iter()
+                    .map(|e| e.distance(*at))
+                    .fold(f32::MAX, f32::min)
+            };
             nearest(a).total_cmp(&nearest(b))
         })
         .unwrap_or_else(|| spawn_point(map, 0, Some(team)))
@@ -685,7 +1088,10 @@ pub fn max_health(catalog: &Catalog, state: &MatchState, player: &Player) -> f32
 
 /// Spawn positions: a team base in versus modes, otherwise a fan around the map's spawn.
 pub fn spawn_point(map: &GameMap, id: u8, team: Option<u8>) -> Vec3 {
-    if let Some(spawns) = team.map(|team| &map.team_spawns[(team as usize).min(1)]).filter(|spawns| !spawns.is_empty()) {
+    if let Some(spawns) = team
+        .map(|team| &map.team_spawns[(team as usize).min(1)])
+        .filter(|spawns| !spawns.is_empty())
+    {
         let p = spawns[(id as usize / 2) % spawns.len()];
         return map.ground(p.x, p.y);
     }

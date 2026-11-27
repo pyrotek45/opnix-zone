@@ -15,8 +15,13 @@ use bevy::{
     prelude::*,
     render::{
         RenderApp,
-        extract_component::{ComponentUniforms, DynamicUniformIndex, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin},
-        render_graph::{NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel, ViewNode, ViewNodeRunner},
+        extract_component::{
+            ComponentUniforms, DynamicUniformIndex, ExtractComponent, ExtractComponentPlugin,
+            UniformComponentPlugin,
+        },
+        render_graph::{
+            NodeRunError, RenderGraphApp, RenderGraphContext, RenderLabel, ViewNode, ViewNodeRunner,
+        },
         render_resource::{
             binding_types::{sampler, texture_2d, uniform_buffer},
             *,
@@ -39,7 +44,12 @@ pub struct Retro {
 
 impl Default for Retro {
     fn default() -> Self {
-        Self { enabled: 1.0, levels: 8.0, strength: 0.85, _pad: 0.0 }
+        Self {
+            enabled: 1.0,
+            levels: 8.0,
+            strength: 0.85,
+            _pad: 0.0,
+        }
     }
 }
 
@@ -48,11 +58,21 @@ pub struct RetroPlugin;
 impl Plugin for RetroPlugin {
     fn build(&self, app: &mut App) {
         load_internal_asset!(app, RETRO_SHADER, "retro.wgsl", Shader::from_wgsl);
-        app.add_plugins((ExtractComponentPlugin::<Retro>::default(), UniformComponentPlugin::<Retro>::default()));
+        app.add_plugins((
+            ExtractComponentPlugin::<Retro>::default(),
+            UniformComponentPlugin::<Retro>::default(),
+        ));
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render
                 .add_render_graph_node::<ViewNodeRunner<RetroNode>>(Core3d, RetroLabel)
-                .add_render_graph_edges(Core3d, (Node3d::Tonemapping, RetroLabel, Node3d::EndMainPassPostProcessing));
+                .add_render_graph_edges(
+                    Core3d,
+                    (
+                        Node3d::Tonemapping,
+                        RetroLabel,
+                        Node3d::EndMainPassPostProcessing,
+                    ),
+                );
         }
     }
 
@@ -83,42 +103,82 @@ impl FromWorld for RetroPipeline {
             "retro-layout",
             &BindGroupLayoutEntries::sequential(
                 ShaderStages::FRAGMENT,
-                (texture_2d(TextureSampleType::Float { filterable: true }), sampler(SamplerBindingType::Filtering), uniform_buffer::<Retro>(true)),
+                (
+                    texture_2d(TextureSampleType::Float { filterable: true }),
+                    sampler(SamplerBindingType::Filtering),
+                    uniform_buffer::<Retro>(true),
+                ),
             ),
         );
         let sampler = device.create_sampler(&SamplerDescriptor::default());
-        let id = world.resource_mut::<PipelineCache>().queue_render_pipeline(RenderPipelineDescriptor {
-            label: Some("retro".into()),
-            layout: vec![layout.clone()],
-            vertex: fullscreen_shader_vertex_state(),
-            fragment: Some(FragmentState {
-                shader: RETRO_SHADER,
-                shader_defs: vec![],
-                entry_point: "fragment".into(),
-                targets: vec![Some(ColorTargetState { format: TextureFormat::bevy_default(), blend: None, write_mask: ColorWrites::ALL })],
-            }),
-            primitive: PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: MultisampleState::default(),
-            push_constant_ranges: vec![],
-            zero_initialize_workgroup_memory: false,
-        });
-        Self { layout, sampler, id }
+        let id =
+            world
+                .resource_mut::<PipelineCache>()
+                .queue_render_pipeline(RenderPipelineDescriptor {
+                    label: Some("retro".into()),
+                    layout: vec![layout.clone()],
+                    vertex: fullscreen_shader_vertex_state(),
+                    fragment: Some(FragmentState {
+                        shader: RETRO_SHADER,
+                        shader_defs: vec![],
+                        entry_point: "fragment".into(),
+                        targets: vec![Some(ColorTargetState {
+                            format: TextureFormat::bevy_default(),
+                            blend: None,
+                            write_mask: ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: MultisampleState::default(),
+                    push_constant_ranges: vec![],
+                    zero_initialize_workgroup_memory: false,
+                });
+        Self {
+            layout,
+            sampler,
+            id,
+        }
     }
 }
 
 impl ViewNode for RetroNode {
     type ViewQuery = (&'static ViewTarget, &'static DynamicUniformIndex<Retro>);
 
-    fn run(&self, _: &mut RenderGraphContext, ctx: &mut RenderContext, (target, index): QueryItem<Self::ViewQuery>, world: &World) -> Result<(), NodeRunError> {
+    fn run(
+        &self,
+        _: &mut RenderGraphContext,
+        ctx: &mut RenderContext,
+        (target, index): QueryItem<Self::ViewQuery>,
+        world: &World,
+    ) -> Result<(), NodeRunError> {
         let data = world.resource::<RetroPipeline>();
-        let Some(pipeline) = world.resource::<PipelineCache>().get_render_pipeline(data.id) else { return Ok(()) };
-        let Some(uniform) = world.resource::<ComponentUniforms<Retro>>().uniforms().binding() else { return Ok(()) };
+        let Some(pipeline) = world
+            .resource::<PipelineCache>()
+            .get_render_pipeline(data.id)
+        else {
+            return Ok(());
+        };
+        let Some(uniform) = world
+            .resource::<ComponentUniforms<Retro>>()
+            .uniforms()
+            .binding()
+        else {
+            return Ok(());
+        };
         let buffers = target.post_process_write();
-        let bindings = ctx.render_device().create_bind_group("retro-bindings", &data.layout, &BindGroupEntries::sequential((buffers.source, &data.sampler, uniform.clone())));
+        let bindings = ctx.render_device().create_bind_group(
+            "retro-bindings",
+            &data.layout,
+            &BindGroupEntries::sequential((buffers.source, &data.sampler, uniform.clone())),
+        );
         let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
             label: Some("retro-pass"),
-            color_attachments: &[Some(RenderPassColorAttachment { view: buffers.destination, resolve_target: None, ops: Operations::default() })],
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: buffers.destination,
+                resolve_target: None,
+                ops: Operations::default(),
+            })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
