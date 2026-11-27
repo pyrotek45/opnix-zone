@@ -1,4 +1,10 @@
 //! Front end: main menu, join screen, settings, pause and game over.
+//!
+//! The main menu only gets you into a game - PLAY SOLO, HOST GAME, JOIN GAME - and
+//! holds what is yours (name, settings, the model viewer). Both PLAY SOLO and HOST
+//! GAME open the lobby (see `lobby`), where the mode, map and every match setting
+//! are chosen. A game with no versus mode has no lobby, so its main menu keeps a
+//! small GAME section (mode, map, weather, threat) instead.
 
 use crate::{
     ClientSet, GameTitle,
@@ -113,6 +119,29 @@ fn seed() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64)
 }
 
+/// Does this game hold its matches in a lobby (it has a versus mode to hold one in)?
+fn has_lobby(modes: &Modes) -> bool {
+    !oz_sim::versus::versus_modes(modes).is_empty()
+}
+
+/// PLAY SOLO and HOST GAME open a lobby: on the mode and map this player last hosted, or
+/// the first versus mode on the default map.
+fn lobby_rules(modes: &Modes, settings: &Settings) -> Option<Rules> {
+    use oz_sim::versus::{MAPS, map_recipe, map_size, team_cap, versus_modes};
+    let choices = versus_modes(modes);
+    let mode = choices.iter().copied().find(|m| *m == settings.lobby_mode).or_else(|| choices.first().copied())?;
+    let seed = seed();
+    let mut rules = (modes.0[mode as usize].rules)(seed);
+    rules.mode = mode;
+    if settings.lobby_map != 0 && settings.lobby_map < MAPS && rules.recipe.layout.is_town() {
+        rules.recipe = map_recipe(settings.lobby_map, seed, rules.recipe.biome);
+        rules.map = if settings.lobby_map <= oz_core::worldgen::Theme::ALL.len() as u8 { settings.lobby_map } else { 0 };
+        rules.team_size = rules.team_size.min(team_cap(map_size(&rules)));
+    }
+    Some(rules)
+}
+
+/// The main menu's GAME section, for games without a lobby.
 fn make_rules(modes: &Modes, menu: &MenuState) -> Option<Rules> {
     let mode = modes.0.get(menu.mode).filter(|mode| mode.playable)?;
     let mut rules = (mode.rules)(seed());
@@ -246,7 +275,8 @@ fn menu_actions(
             Act::Difficulty(step) => menu.threat = cycle(menu.threat, *step, THREATS.len()),
             Act::TeamSize(step) => menu.team_size = cycle(menu.team_size as usize - 1, *step, 4) as u8 + 1,
             Act::Solo | Act::Host => {
-                let Some(rules) = make_rules(&modes, &menu) else {
+                let rules = if has_lobby(&modes) { lobby_rules(&modes, &settings) } else { make_rules(&modes, &menu) };
+                let Some(rules) = rules else {
                     menu.status = "THAT MODE IS PLANNED BUT NOT PLAYABLE YET".into();
                     dirty.0 = true;
                     continue;
@@ -356,40 +386,22 @@ fn build_menu(
     match &*screen {
         Screen::Main => {
             let mode = &modes.0[menu.mode % modes.0.len().max(1)];
+            let lobby = has_lobby(&modes);
             ui::root_left(&mut commands, 0.0).with_children(|root| {
                 ui::label(root, title.0.clone(), 44.0, ui::TEXT);
                 ui::label(root, "A MODULAR, FULLY PROCEDURAL SHOOTER", 15.0, ui::ACCENT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
-                    ui::button(panel, order, format!("NAME     {}", settings.callsign), Act::EditName);
+                    ui::label(panel, "PLAY", 14.0, ui::ACCENT);
                     ui::button(panel, order, "PLAY SOLO", Act::Solo);
                     ui::button(panel, order, format!("HOST GAME   (PORT {DEFAULT_PORT})"), Act::Host);
                     ui::button(panel, order, "JOIN GAME", Act::Go(Screen::Join));
-                    ui::stepper(panel, order, format!("MODE     <  {}  >", mode.name), Act::Mode(-1), Act::Mode(1));
-                    ui::label(panel, mode.blurb, 14.0, if mode.playable { ui::DIM } else { ui::WARN });
-                    ui::stepper(panel, order, format!("MAP      <  {}  >", Biome::ALL[menu.biome].look().title), Act::Biome(-1), Act::Biome(1));
-                    ui::label(panel, Biome::ALL[menu.biome].look().blurb, 14.0, ui::DIM);
-                    let weather = if menu.weather == 0 { "RANDOM".to_string() } else { oz_core::worldgen::Weather::ALL[(menu.weather - 1) % 4].name().to_string() };
-                    ui::stepper(panel, order, format!("WEATHER  <  {weather}  >"), Act::Weather(-1), Act::Weather(1));
-                    let versus = mode.playable && (mode.rules)(0).pvp;
-                    if mode.playable && (mode.rules)(0).horde {
-                        let layout = oz_core::worldgen::Layout::HORDE[menu.layout % oz_core::worldgen::Layout::HORDE.len()];
-                        ui::stepper(panel, order, format!("LAYOUT   <  {}  >", layout.title()), Act::Layout(-1), Act::Layout(1));
-                        ui::stepper(panel, order, format!("SQUAD    <  {}  >", menu.team_size), Act::TeamSize(-1), Act::TeamSize(1));
-                        ui::label(panel, "BOTS JOIN YOUR SQUAD FOR EVERY SEAT A HUMAN DOES NOT TAKE", 14.0, ui::DIM);
+                    if lobby {
+                        ui::label(panel, "SOLO AND HOST OPEN A LOBBY: MODES, MAPS AND MATCH SETTINGS ARE CHOSEN THERE.", 13.0, ui::DIM);
+                    } else {
+                        game_section(panel, order, &menu, mode);
                     }
-                    if versus {
-                        let layout = oz_core::worldgen::Layout::VERSUS[menu.layout % oz_core::worldgen::Layout::VERSUS.len()];
-                        ui::stepper(panel, order, format!("LAYOUT   <  {}  >", layout.title()), Act::Layout(-1), Act::Layout(1));
-                        let n = menu.team_size;
-                        if (mode.rules)(0).hunt {
-                            ui::stepper(panel, order, format!("SQUAD    <  {n}  >"), Act::TeamSize(-1), Act::TeamSize(1));
-                            ui::label(panel, "BOTS JOIN YOUR SQUAD FOR EVERY SEAT A HUMAN DOES NOT TAKE", 14.0, ui::DIM);
-                        } else {
-                            ui::stepper(panel, order, format!("TEAMS    <  {n} V {n}  >"), Act::TeamSize(-1), Act::TeamSize(1));
-                            ui::label(panel, "BOTS FILL EVERY SLOT A HUMAN DOES NOT TAKE", 14.0, ui::DIM);
-                        }
-                    }
-                    ui::stepper(panel, order, format!("{}   <  {}  >", if versus { "BOTS  " } else { "THREAT" }, THREATS[menu.threat].0), Act::Difficulty(-1), Act::Difficulty(1));
+                    ui::label(panel, "YOU", 14.0, ui::ACCENT);
+                    ui::button(panel, order, format!("NAME     {}", settings.callsign), Act::EditName);
                     ui::button(panel, order, "SETTINGS", Act::Go(Screen::Settings));
                     ui::button(panel, order, "MODEL VIEWER", Act::Go(Screen::Lineup));
                     ui::button(panel, order, "QUIT", Act::Quit);
@@ -474,6 +486,7 @@ fn build_menu(
                 NetLink::None => "SOLO - TIME IS FROZEN".into(),
             };
             let versus = state.as_deref().is_some_and(|s| matches!(s.phase, Phase::Live | Phase::Lobby | Phase::Won));
+            let back_to_lobby = can_go_back_to_lobby(&modes, rules.as_deref(), &link);
             ui::root(&mut commands, 0.6).with_children(|root| {
                 ui::label(root, "PAUSED", 34.0, ui::TEXT);
                 root.spawn(ui::panel(420.0)).with_children(|panel| {
@@ -483,6 +496,9 @@ fn build_menu(
                     }
                     ui::button(panel, order, if spectate.enabled { "STOP SPECTATING" } else { "SPECTATE" }, Act::ToggleSpectate);
                     ui::button(panel, order, "SETTINGS", Act::Go(Screen::Settings));
+                    if back_to_lobby {
+                        ui::button(panel, order, "END - BACK TO THE LOBBY", Act::Lobby(LobbyAction::BackToLobby));
+                    }
                     ui::button(panel, order, "LEAVE MATCH", Act::Leave);
                     ui::label(panel, net, 13.0, ui::DIM);
                 });
@@ -551,7 +567,11 @@ fn build_menu(
                         let seconds = state.as_deref().map_or(0.0, |s| s.timer.max(0.0)).ceil();
                         ui::label(root, format!("BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
                     }
+                    let back_to_lobby = can_go_back_to_lobby(&modes, rules.as_deref(), &link);
                     root.spawn(ui::panel(420.0)).with_children(|panel| {
+                        if back_to_lobby {
+                            ui::button(panel, order, "BACK TO THE LOBBY", Act::Lobby(LobbyAction::BackToLobby));
+                        }
                         ui::button(panel, order, "LEAVE MATCH", Act::Leave);
                         if !versus {
                             ui::button(panel, order, "KEEP WATCHING", Act::Go(Screen::None));
@@ -632,4 +652,29 @@ fn search_lan(mut commands: Commands, search: Option<ResMut<Search>>, mut menu: 
         menu.searching = false;
         dirty.0 = true;
     }
+}
+
+/// The host (or a solo player) of a co-op match can take everyone back to the lobby.
+fn can_go_back_to_lobby(modes: &Modes, rules: Option<&Rules>, link: &NetLink) -> bool {
+    rules.is_some_and(|r| !r.pvp) && has_lobby(modes) && !matches!(link, NetLink::Client(_))
+}
+
+/// The main menu's GAME section, only for games with no lobby (no versus mode): the mode,
+/// the map, the weather and the threat, chosen before starting.
+fn game_section(panel: &mut bevy::ecs::hierarchy::ChildSpawnerCommands, order: &mut Order, menu: &MenuState, mode: &ModeDef) {
+    use oz_core::worldgen::{Layout, Weather};
+    ui::label(panel, "GAME", 14.0, ui::ACCENT);
+    ui::stepper(panel, order, format!("MODE     <  {}  >", mode.name), Act::Mode(-1), Act::Mode(1));
+    ui::label(panel, mode.blurb, 14.0, if mode.playable { ui::DIM } else { ui::WARN });
+    ui::stepper(panel, order, format!("MAP      <  {}  >", Biome::ALL[menu.biome].look().title), Act::Biome(-1), Act::Biome(1));
+    ui::label(panel, Biome::ALL[menu.biome].look().blurb, 14.0, ui::DIM);
+    let weather = if menu.weather == 0 { "RANDOM".to_string() } else { Weather::ALL[(menu.weather - 1) % Weather::ALL.len()].name().to_string() };
+    ui::stepper(panel, order, format!("WEATHER  <  {weather}  >"), Act::Weather(-1), Act::Weather(1));
+    if mode.playable && (mode.rules)(0).horde {
+        let layout = Layout::HORDE[menu.layout % Layout::HORDE.len()];
+        ui::stepper(panel, order, format!("LAYOUT   <  {}  >", layout.title()), Act::Layout(-1), Act::Layout(1));
+        ui::stepper(panel, order, format!("SQUAD    <  {}  >", menu.team_size), Act::TeamSize(-1), Act::TeamSize(1));
+        ui::label(panel, "BOTS JOIN YOUR SQUAD FOR EVERY SEAT A HUMAN DOES NOT TAKE", 14.0, ui::DIM);
+    }
+    ui::stepper(panel, order, format!("THREAT   <  {}  >", THREATS[menu.threat].0), Act::Difficulty(-1), Act::Difficulty(1));
 }

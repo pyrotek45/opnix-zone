@@ -673,10 +673,11 @@ fn local_player(app: &mut App) -> (u8, String, u8) {
     (player.id, player.name.clone(), player.team)
 }
 
-/// The map choice for a fixed layout (see `versus::MAPS`).
-fn fixed_map(layout: oz_core::worldgen::Layout) -> u8 {
-    let themes = oz_core::worldgen::Theme::ALL.len();
-    (themes + oz_core::worldgen::Layout::VERSUS.iter().position(|l| *l == layout).unwrap()) as u8
+/// Steps the lobby's mode `steps` times (negative: backwards).
+fn step_mode(app: &mut App, steps: i32) {
+    for _ in 0..steps.abs() {
+        lobby(app, LobbyAction::Mode(steps.signum() as i8));
+    }
 }
 
 #[test]
@@ -690,11 +691,9 @@ fn the_host_switches_mode_and_map_from_the_lobby() {
     run_for(&mut app, 1.0);
     assert_eq!(teams(&mut app), [(1, 1), (0, 2)]);
 
-    // Terrorist hunt, one step back from team deathmatch: the same town, held by hostiles.
-    // Domination and search and destroy sit between terrorist hunt and team deathmatch.
-    lobby(&mut app, LobbyAction::Mode(-1));
-    lobby(&mut app, LobbyAction::Mode(-1));
-    lobby(&mut app, LobbyAction::Mode(-1));
+    // Terrorist hunt, back from team deathmatch: the same town, held by hostiles.
+    // Horde (co-op, last in the list), search and destroy and domination sit between.
+    step_mode(&mut app, -4);
     assert_eq!(app.world().resource::<MatchState>().next_mode, 3, "the pick shows at once");
     assert_eq!(rules_of(&app).mode, 0, "and applies once it settles");
     run_for(&mut app, 3.0);
@@ -709,24 +708,22 @@ fn the_host_switches_mode_and_map_from_the_lobby() {
     assert_eq!((humans, squad_bots), (1, squad as usize - 1));
     assert_eq!(hostiles, oz_sim::versus::hunt_hostiles(&hunt, squad), "hostiles hold the town");
 
-    // The office tower: stepping through the maps only loads the one the host stops on.
-    for _ in 0..fixed_map(Layout::OfficeTower) {
-        lobby(&mut app, LobbyAction::Map(1));
-    }
+    // The office tower: a medium map. Stepping the size and the maps only loads the one
+    // the host stops on.
+    lobby(&mut app, LobbyAction::MapSize(-1));
+    assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::MediumTown, "a size starts on its random town");
+    lobby(&mut app, LobbyAction::Map(1));
     run_for(&mut app, 3.0);
     let tower = rules_of(&app);
     assert_eq!(tower.recipe.layout, Layout::OfficeTower);
     assert_eq!(app.world().resource::<Map>().recipe, tower.recipe, "the world is rebuilt from the new recipe");
     assert!(tower.hunt, "changing the map keeps the mode");
 
-    // Back to team deathmatch in the suburbs: the hostiles are gone, bots fill two teams again.
-    // Domination and search and destroy sit between terrorist hunt and team deathmatch.
-    lobby(&mut app, LobbyAction::Mode(1));
-    lobby(&mut app, LobbyAction::Mode(1));
-    lobby(&mut app, LobbyAction::Mode(1));
-    for _ in 0..fixed_map(Layout::OfficeTower) - 1 {
-        lobby(&mut app, LobbyAction::Map(-1));
-    }
+    // Back to team deathmatch in the suburbs (large): the hostiles are gone, bots fill two
+    // teams again. Domination, search and destroy and horde sit between.
+    step_mode(&mut app, 4);
+    lobby(&mut app, LobbyAction::MapSize(1));
+    lobby(&mut app, LobbyAction::Map(1));
     run_for(&mut app, 3.0);
     let tdm = rules_of(&app);
     assert!(!tdm.hunt && tdm.mode == 0);
@@ -748,6 +745,86 @@ fn the_host_switches_mode_and_map_from_the_lobby() {
     run_for(&mut app, 3.0);
     assert!(rules_of(&app).ranked);
     assert_eq!(rules_of(&app).recipe, rolled.recipe);
+}
+
+#[test]
+fn the_map_size_setting_brings_back_the_small_maps() {
+    use oz_core::worldgen::{Layout, MapSize};
+    let mut app = app();
+    let mut rules = deathmatch_rules(21);
+    rules.team_size = 6;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    run_for(&mut app, 1.0);
+    assert_eq!(oz_sim::versus::map_size(&rules_of(&app)), MapSize::Large, "large by default");
+
+    // Large wraps round to small: the small random town, with teams cut to fit it.
+    lobby(&mut app, LobbyAction::MapSize(1));
+    run_for(&mut app, 3.0);
+    let small = rules_of(&app);
+    assert_eq!(small.recipe.layout, Layout::SmallTown);
+    assert_eq!(app.world().resource::<Map>().recipe, small.recipe, "the world is rebuilt small");
+    assert!(app.world().resource::<Map>().arena < 60.0);
+    assert_eq!(small.team_size, oz_sim::versus::team_cap(MapSize::Small));
+    let size = small.team_size as usize;
+    assert_eq!(teams(&mut app), [(1, size - 1), (0, size)]);
+
+    // The map list now holds the small maps only: the town, Crossroads, Dockyard, and round.
+    lobby(&mut app, LobbyAction::Map(1));
+    assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::Crossroads);
+    lobby(&mut app, LobbyAction::Map(1));
+    lobby(&mut app, LobbyAction::Map(1));
+    assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::SmallTown);
+    run_for(&mut app, 2.0);
+    // A new roll of the small town is new streets, still small.
+    lobby(&mut app, LobbyAction::NewMap);
+    run_for(&mut app, 2.0);
+    let rolled = rules_of(&app);
+    assert_eq!(rolled.recipe.layout, Layout::SmallTown);
+    assert_ne!(rolled.recipe.seed, small.recipe.seed);
+    // And the rematch stays on it.
+    lobby(&mut app, LobbyAction::Start);
+    run_for(&mut app, 6.0);
+    assert_eq!(phase(&app), Phase::Live);
+    assert_eq!(app.world().resource::<Map>().recipe, rolled.recipe);
+}
+
+#[test]
+fn a_coop_mode_starts_from_the_lobby_and_comes_back_to_it() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(23);
+    rules.team_size = 3;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    run_for(&mut app, 1.0);
+    let lobby_rules = rules_of(&app);
+
+    // Horde sits at the end of the lobby's mode list; picking it waits in the lobby.
+    lobby(&mut app, LobbyAction::Mode(-1));
+    lobby(&mut app, LobbyAction::Map(1));
+    lobby(&mut app, LobbyAction::TeamSize(1));
+    run_for(&mut app, 2.0);
+    let state = app.world().resource::<MatchState>().clone();
+    assert_eq!(state.next_mode, 6);
+    assert_eq!(state.next_map, 1);
+    assert_eq!(phase(&app), Phase::Lobby);
+    assert_eq!(rules_of(&app).mode, 0, "the lobby itself does not reload on a co-op pick");
+
+    // Start: a countdown, then the horde match on the chosen map with the chosen squad.
+    lobby(&mut app, LobbyAction::Start);
+    run_for(&mut app, 6.5);
+    let horde = rules_of(&app);
+    assert!(horde.horde && horde.mode == 6, "{horde:?}");
+    assert_eq!(horde.recipe.layout, oz_core::worldgen::Layout::Blackfen);
+    assert_eq!(horde.team_size, 4);
+    assert_eq!(local_player(&mut app), (0, "TEST".to_string(), 0));
+
+    // The host takes everyone back to the lobby they left.
+    lobby(&mut app, LobbyAction::BackToLobby);
+    run_for(&mut app, 1.0);
+    assert_eq!(phase(&app), Phase::Lobby);
+    let back = rules_of(&app);
+    assert_eq!(back.mode, lobby_rules.mode);
+    assert_eq!(back.recipe, lobby_rules.recipe);
+    assert_eq!(local_player(&mut app).1, "TEST");
 }
 
 #[test]
@@ -855,9 +932,9 @@ fn host_and_guest_change_maps_modes_and_names_together() {
     pump(&mut host, &mut client, "the guest sees the new limits", |host, client| rules_of(client) == rules_of(host) && rules_of(client).time_limit > 0.0);
 
     // The space station: both machines build it, and everyone keeps their seat.
-    for _ in 0..fixed_map(Layout::SpaceStation) {
-        lobby(&mut host, LobbyAction::Map(1));
-    }
+    lobby(&mut host, LobbyAction::MapSize(-1));
+    lobby(&mut host, LobbyAction::Map(1));
+    lobby(&mut host, LobbyAction::Map(1));
     pump(&mut host, &mut client, "both rebuild on the new map", |host, client| {
         let (h, c) = (host.world().resource::<Map>().recipe, client.world().resource::<Map>().recipe);
         h.layout == Layout::SpaceStation && c == h && *client.world().resource::<State<MatchPhase>>().get() == MatchPhase::Active && count_players(client) == 4 && client.world().resource::<MatchState>().phase == Phase::Lobby
@@ -869,10 +946,8 @@ fn host_and_guest_change_maps_modes_and_names_together() {
     assert!(matches!(client.world().resource::<NetLink>(), NetLink::Client(_)), "the guest stays connected");
 
     // Terrorist hunt: every human joins the squad, hostiles hold the station.
-    // Domination and search and destroy sit between terrorist hunt and team deathmatch.
-    lobby(&mut host, LobbyAction::Mode(-1));
-    lobby(&mut host, LobbyAction::Mode(-1));
-    lobby(&mut host, LobbyAction::Mode(-1));
+    // Horde, search and destroy and domination sit between terrorist hunt and team deathmatch.
+    step_mode(&mut host, -4);
     pump(&mut host, &mut client, "both switch to the hunt", |host, client| {
         rules_of(host).hunt && rules_of(client) == rules_of(host) && client.world().resource::<Map>().recipe == host.world().resource::<Map>().recipe && local_player(client).2 == 0
     });

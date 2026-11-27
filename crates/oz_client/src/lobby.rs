@@ -1,10 +1,12 @@
 //! The versus lobby and the scoreboard.
 //!
-//! The lobby shows both teams as roster cards around your squad standing on
-//! the showroom stage, with ready / start, team switching, your name, the
-//! class editor, and for the host the mode, the map and a MATCH SETTINGS page
-//! (team size, score and time limits, bots, respawn, time of day, weather);
-//! guests see the same page read-only. Everything is a `LobbyAction` command,
+//! The lobby is where every game choice is made (the main menu only hosts, joins
+//! and names you). It shows both teams as roster cards around your squad standing
+//! on the showroom stage, with ready / start, team switching, your name, the
+//! class editor, and for the host the mode (versus and co-op), the map size, the
+//! map and a MATCH SETTINGS page (team size, score and time limits, bots, respawn,
+//! time of day, weather); guests see the same values read-only. A co-op pick
+//! (horde) starts its own match from here and comes back here afterwards. Everything is a `LobbyAction` command,
 //! so it works the same for the host, for guests and offline. Holding Tab
 //! (Back on a pad) during a match shows the scoreboard.
 
@@ -46,6 +48,7 @@ pub struct LobbyPlugin;
 impl Plugin for LobbyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LobbyPage>()
+            .add_systems(Update, remember_lobby.run_if(in_state(MatchPhase::Active)))
             .add_systems(Update, lobby_actions.in_set(ClientSet::Input).after(crate::input::ReadDevices).before(crate::menu::MenuActions).run_if(in_state(MatchPhase::Active)))
             .add_systems(Update, (refresh_lobby.before(crate::menu::BuildScreens), scoreboard).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
@@ -62,7 +65,8 @@ fn lobby_actions(
     mut request: ResMut<FocusRequest>,
     mut dirty: ResMut<UiDirty>,
 ) {
-    if !matches!(*screen, Screen::Lobby | Screen::GameOver) {
+    // The pause menu and the results carry BACK TO LOBBY in a co-op match.
+    if !matches!(*screen, Screen::Lobby | Screen::GameOver | Screen::Pause) {
         return;
     }
     let Ok(player) = players.single() else { return };
@@ -88,6 +92,19 @@ fn lobby_actions(
             }
             _ => {}
         }
+    }
+}
+
+/// The host's lobby choices (mode, map) are kept for the next PLAY SOLO or HOST GAME.
+fn remember_lobby(rules: Res<Rules>, role: Res<NetRole>, mut settings: ResMut<crate::settings::Settings>) {
+    if !rules.is_changed() || *role == NetRole::Client || !rules.pvp {
+        return;
+    }
+    let map = oz_sim::versus::map_choice(&rules);
+    if settings.lobby_mode != rules.mode || settings.lobby_map != map {
+        settings.lobby_mode = rules.mode;
+        settings.lobby_map = map;
+        settings.save();
     }
 }
 
@@ -216,6 +233,7 @@ fn place(rules: &Rules) -> String {
     use oz_core::worldgen::{Layout, Theme};
     match rules.recipe.layout {
         Layout::Town => format!("{} {}", rules.recipe.biome.look().title, Theme::from_seed(rules.recipe.seed).title()),
+        Layout::SmallTown | Layout::MediumTown => format!("{} {}", rules.recipe.biome.look().title, rules.recipe.layout.title()),
         Layout::Archipelago => rules.recipe.biome.look().title.to_string(),
         layout => format!("{} {}", layout.title(), rules.recipe.biome.look().title),
     }
@@ -249,6 +267,20 @@ impl List<'_> {
             ui::disabled(list, format!("{name:<13}{shown}"), Val::Px(WIDTH));
         }
     }
+
+    /// A host's setting with a button beside it on the same row (the map and NEW MAP).
+    fn value_and(&mut self, list: &mut ChildSpawnerCommands, name: &str, shown: String, step: fn(i8) -> LobbyAction, side: &str, act: Act) {
+        if !self.host {
+            return self.value(list, name, shown, step);
+        }
+        const SIDE: f32 = 132.0;
+        list.spawn(Node { column_gap: Val::Px(6.0), ..default() }).with_children(|row| {
+            let main = Val::Px(WIDTH - SIDE - 6.0);
+            ui::grid_button(row, self.order, format!("{name:<13}<  {shown}  >"), Act::Lobby(step(1)), Some(Act::Lobby(step(-1))), main, 0, self.at);
+            ui::grid_button(row, self.order, side, act, None, Val::Px(SIDE), 1, self.at);
+        });
+        self.at += 1;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -268,11 +300,14 @@ pub fn build_lobby(
     let (Screen::Lobby, true, Some(rules), Some(state), Ok(me)) = (&*screen, dirty.0, rules, state, players.single()) else {
         return;
     };
-    use oz_sim::versus::{map_choice, map_title, skill_name};
+    use oz_sim::versus::{choice_size, coop_map_title, coop_mode, map_choice, map_title, skill_name};
     let host = *role != NetRole::Client;
     let mode_name = |index: u8| modes.0.get(index as usize).map_or("VERSUS", |m| m.name);
+    // A co-op pick (horde) waits here until the host starts it.
+    let coop = coop_mode(&modes, state.next_mode);
     // The host's pick shows at once; the lobby reloads on it a moment later.
-    let switching = state.next_mode != rules.mode || state.next_map != map_choice(&rules) || state.reroll;
+    let switching = coop.is_none() && (state.next_mode != rules.mode || state.next_map != map_choice(&rules) || state.reroll);
+    let next_map_name = coop.map_or_else(|| map_title(state.next_map), |def| coop_map_title(def, state.next_map));
     let mut order = Order::default();
     let n = state.team_size;
     let time = oz_sim::versus::TIME_MODES[(state.time_mode as usize).min(3)];
@@ -295,6 +330,11 @@ pub fn build_lobby(
             ..default()
         })
         .with_children(|top| {
+            if let Some(def) = coop {
+                ui::label(top, def.name, 36.0, ui::TEXT);
+                ui::label(top, format!("CO-OP   |   {next_map_name}   |   SQUAD OF {n}   |   THREAT {skill}"), 15.0, ui::ACCENT);
+                return;
+            }
             ui::label(top, mode_name(rules.mode), 36.0, ui::TEXT);
             let limits = match (rules.score_limit, rules.time_limit > 0.0) {
                 _ if rules.hunt => format!("SQUAD OF {n}   |   {} HOSTILES   |   {} LIVES", oz_sim::versus::hunt_hostiles(&rules, n), oz_sim::versus::HUNT_LIVES),
@@ -317,7 +357,7 @@ pub fn build_lobby(
         })
         .with_children(|teams| {
             roster_panel(teams, 0, &state, me.id, false, None);
-            if !rules.hunt {
+            if !rules.hunt && coop.is_none() {
                 roster_panel(teams, 1, &state, me.id, false, None);
             }
         });
@@ -336,7 +376,9 @@ pub fn build_lobby(
             let status = if switching {
                 format!("LOADING {}  -  {}...", mode_name(state.next_mode), map_title(state.next_map))
             } else if state.countdown > 0.0 {
-                format!("MATCH STARTS IN {}", state.countdown.ceil() as u32)
+                format!("{} STARTS IN {}", if coop.is_some() { mode_name(state.next_mode) } else { "MATCH" }, state.countdown.ceil() as u32)
+            } else if coop.is_some() {
+                if host { "CO-OP: START TAKES EVERYONE IN. THE LOBBY WAITS FOR YOU.".to_string() } else { "CO-OP: WAITING FOR THE HOST TO START".to_string() }
             } else if page.0 == 1 {
                 if host { "MATCH SETTINGS".to_string() } else { "MATCH SETTINGS  (THE HOST CHANGES THESE)".to_string() }
             } else if rules.hunt && host {
@@ -370,18 +412,24 @@ pub fn build_lobby(
                 let first = if host { ("START MATCH", LobbyAction::Start) } else { (if ready { "NOT READY" } else { "READY UP" }, LobbyAction::ToggleReady) };
                 rows.item(list, first.0.to_string(), Act::Lobby(first.1));
                 rows.item(list, "ARMORY".to_string(), Act::Go(Screen::Loadout));
-                if !rules.hunt {
+                if !rules.hunt && coop.is_none() {
                     rows.item(list, "SWITCH TEAM".to_string(), Act::Lobby(LobbyAction::SwitchTeam));
                 }
                 rows.item(list, format!("{:<13}{my_name}", "NAME"), Act::EditName);
+                // The game: what to play, where, and how many a side.
                 rows.value(list, "MODE", mode_name(state.next_mode).to_string(), LobbyAction::Mode);
-                rows.value(list, "MAP", map_title(state.next_map).to_string(), LobbyAction::Map);
-                // Team size up front too (it is also on the settings page).
                 let n = state.team_size;
-                rows.value(list, if rules.hunt { "SQUAD" } else { "TEAMS" }, if rules.hunt { format!("{n}") } else { format!("{n} V {n}") }, LobbyAction::TeamSize);
-                if host {
-                    rows.item(list, "NEW MAP".to_string(), Act::Lobby(LobbyAction::NewMap));
+                if coop.is_some() {
+                    rows.value(list, "MAP", next_map_name.to_string(), LobbyAction::Map);
+                    rows.value(list, "SQUAD", format!("{n}"), LobbyAction::TeamSize);
+                    rows.value(list, "THREAT", skill.to_string(), LobbyAction::BotSkill);
+                    rows.item(list, "LEAVE".to_string(), Act::Leave);
+                    return;
                 }
+                rows.value(list, "MAP SIZE", choice_size(state.next_map).title().to_string(), LobbyAction::MapSize);
+                rows.value_and(list, "MAP", next_map_name.to_string(), LobbyAction::Map, "NEW MAP", Act::Lobby(LobbyAction::NewMap));
+                // Team size up front too (it is also on the settings page).
+                rows.value(list, if rules.hunt { "SQUAD" } else { "TEAMS" }, if rules.hunt { format!("{n}") } else { format!("{n} V {n}") }, LobbyAction::TeamSize);
                 rows.item(list, if host { "MATCH SETTINGS".to_string() } else { "VIEW MATCH SETTINGS".to_string() }, Act::LobbyPage(1));
                 rows.item(list, "LEAVE".to_string(), Act::Leave);
             });

@@ -138,10 +138,10 @@ pub fn relaunch(
     }
     humans.sort_by_key(|h| h.0);
     for (index, human) in humans.iter_mut().enumerate() {
-        // Hunt puts every human on the squad; leaving a hunt deals them out to both teams.
-        human.2 = if rules.hunt {
+        // Hunt and co-op put every human on the squad; leaving one deals them out to both teams.
+        human.2 = if rules.hunt || !rules.pvp {
             0
-        } else if old.hunt {
+        } else if old.hunt || !old.pvp {
             (index % 2) as u8
         } else {
             human.2.min(1)
@@ -168,7 +168,7 @@ pub fn relaunch(
 pub fn new_arsenal(catalog: &Catalog, rules: &Rules) -> Arsenal {
     let mut arsenal = Arsenal { weapons: catalog.weapons.iter().map(WeaponState::fresh).collect(), ..default() };
     for index in 0..catalog.weapons.len() {
-        if rules.starter_weapons & (1 << index) != 0 {
+        if 1u32.checked_shl(index as u32).is_some_and(|bit| rules.starter_weapons & bit != 0) {
             grant_weapon(&mut arsenal, &catalog.weapons, index);
         }
     }
@@ -282,8 +282,9 @@ pub fn start_pending_match(
         objective_max: rules.objective_hp,
         stock: rules.start_stock,
         upgrades: vec![0; catalog.upgrades.len()],
+        // The lobby's weather setting is for versus; co-op maps keep their own look.
         weather: match carry.weather_mode {
-            n @ 1..=4 => oz_core::worldgen::Weather::ALL[(n - 1) as usize],
+            n @ 1..=4 if rules.pvp => oz_core::worldgen::Weather::ALL[(n - 1) as usize],
             _ => rules.recipe.weather,
         },
         time_mode: carry.time_mode,
