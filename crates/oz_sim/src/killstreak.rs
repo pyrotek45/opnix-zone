@@ -267,7 +267,7 @@ pub fn use_streaks(
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
     mut players: Query<(&mut Player, &Transform, &PlayerInput, &mut Health, &mut Arsenal)>,
-    content: Res<Content>,
+    _content: Res<Content>,
     mut fx: EventWriter<FxEvent>,
 ) {
     for order in orders.read() {
