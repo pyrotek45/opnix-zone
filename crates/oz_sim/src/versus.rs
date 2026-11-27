@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use oz_core::synth::Sfx;
 
 const COUNTDOWN: f32 = 5.0;
-const POST_MATCH: f32 = 9.0;
+const POST_MATCH: f32 = 14.0;
 pub const MAX_TEAM: u8 = 6;
 /// A full day and night, in seconds.
 const DAY_CYCLE: f32 = 480.0;

@@ -318,7 +318,7 @@ fn build_menu(
     phase: Res<State<MatchPhase>>,
     spectate: Res<crate::spectate::Spectate>,
     reconnect: Res<crate::reconnect::Reconnect>,
-    rules: Option<Res<Rules>>,
+    (rules, killcam): (Option<Res<Rules>>, Res<crate::killcam::KillCam>),
 ) {
     if !dirty.0 {
         return;
@@ -467,21 +467,54 @@ fn build_menu(
                 Some(state) => ("THE LINE HAS FALLEN".to_string(), ui::WARN, format!("REACHED NIGHT {}   |   {} KILLS", state.day, state.kills)),
                 None => (String::new(), ui::WARN, String::new()),
             };
-            ui::root(&mut commands, 0.7).with_children(|root| {
-                ui::label(root, headline, 40.0, tint);
-                ui::label(root, summary, 18.0, ui::TEXT);
-                let versus = state.as_deref().is_some_and(|s| s.phase == Phase::Won);
-                if versus {
-                    let seconds = state.as_deref().map_or(0.0, |s| s.timer.max(0.0)).ceil();
-                    ui::label(root, format!("BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
-                }
-                root.spawn(ui::panel(420.0)).with_children(|panel| {
-                    ui::button(panel, order, "LEAVE MATCH", Act::Leave);
-                    if !versus {
-                        ui::button(panel, order, "KEEP WATCHING", Act::Go(Screen::None));
-                    }
+            let versus = state.as_deref().is_some_and(|s| s.phase == Phase::Won);
+            if versus && !hunt {
+                // The play of the match runs behind this (see `killcam`): results on the left.
+                let state = state.as_deref().expect("versus");
+                let name = |id: u8| state.roster.iter().find(|r| r.id == id).map_or("?".to_string(), |r| r.name.clone());
+                ui::root_left(&mut commands, 0.0).with_children(|root| {
+                    root.spawn((
+                        Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), padding: UiRect::all(Val::Px(16.0)), width: Val::Px(470.0), ..default() },
+                        BackgroundColor(Color::srgba(0.02, 0.04, 0.06, 0.85)),
+                    ))
+                    .with_children(|panel| {
+                        ui::label(panel, headline, 38.0, tint);
+                        ui::label(panel, summary, 18.0, ui::TEXT);
+                        if let Some((id, title)) = killcam.best_play() {
+                            ui::label(panel, format!("PLAY OF THE MATCH:  {}  -  {title}", name(id)), 15.0, ui::ACCENT);
+                        }
+                        ui::label(panel, "AWARDS", 20.0, ui::ACCENT);
+                        let awards = killcam.awards();
+                        if awards.is_empty() {
+                            ui::label(panel, "NO AWARDS THIS TIME", 15.0, ui::DIM);
+                        }
+                        for (award, id, why) in awards {
+                            panel.spawn(Node { flex_direction: FlexDirection::Column, padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)), border: UiRect::left(Val::Px(3.0)), ..default() }).insert(BorderColor(ui::ACCENT)).with_children(|row| {
+                                ui::label(row, format!("{award}   {}", name(id)), 17.0, ui::TEXT);
+                                ui::label(row, why, 13.0, ui::DIM);
+                            });
+                        }
+                        let seconds = state.timer.max(0.0).ceil();
+                        ui::label(panel, format!("BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
+                        ui::button(panel, order, "LEAVE MATCH", Act::Leave);
+                    });
                 });
-            });
+            } else {
+                ui::root(&mut commands, 0.7).with_children(|root| {
+                    ui::label(root, headline, 40.0, tint);
+                    ui::label(root, summary, 18.0, ui::TEXT);
+                    if versus {
+                        let seconds = state.as_deref().map_or(0.0, |s| s.timer.max(0.0)).ceil();
+                        ui::label(root, format!("BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
+                    }
+                    root.spawn(ui::panel(420.0)).with_children(|panel| {
+                        ui::button(panel, order, "LEAVE MATCH", Act::Leave);
+                        if !versus {
+                            ui::button(panel, order, "KEEP WATCHING", Act::Go(Screen::None));
+                        }
+                    });
+                });
+            }
         }
         Screen::Lineup => {
             ui::root(&mut commands, 0.0).with_children(|root| {
