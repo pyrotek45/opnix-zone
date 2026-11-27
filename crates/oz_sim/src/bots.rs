@@ -19,7 +19,10 @@ use crate::{
     weapons::obstruction,
 };
 use bevy::prelude::*;
-use oz_core::arsenal::{GunClass, SLOT_COUNT, options, slot};
+use oz_core::{
+    arsenal::{GunClass, SLOT_COUNT, options, slot},
+    collide::StaticWorld,
+};
 use std::f32::consts::{PI, TAU};
 
 /// What a versus bot is up to when it has no one in its sights.
@@ -94,6 +97,193 @@ pub struct Bot {
     pub objective: Option<(u8, bool)>,
     /// Holding Use (planting or defusing).
     pub hold_use: bool,
+    /// Cover for the fight in hand, re-chosen whenever `cover_time` runs out.
+    cover: Option<Cover>,
+    cover_time: f32,
+    /// Peek cycle at cover: out shooting, or tucked in, for `peek` more seconds.
+    exposed: bool,
+    peek: f32,
+    /// Where the target last stood (and how), and until when to keep fighting from cover
+    /// after it ducks out of sight.
+    foe: Vec3,
+    foe_stance: u8,
+    engaged_until: f32,
+    /// A camp spot moved into cover: (spot the plan asked for, spot taken, crouch there).
+    camp_spot: Option<(Vec3, Vec3, bool)>,
+    /// In a narrow passage (doorway, alley, gap); `glance` sweeps the view across its corners.
+    choke: bool,
+    glance: f32,
+}
+
+/// Where to fight or hold from. Fighting, `spot` is tucked in (crouched) and `peek` is
+/// where to stand to shoot (the same spot when shooting over low cover); without a `shot`
+/// it is only somewhere to hide and reload. Holding, the bot waits at `spot`, crouched if `low`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cover {
+    spot: Vec3,
+    peek: Vec3,
+    low: bool,
+    shot: bool,
+}
+
+/// What a cover search is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seek {
+    /// Trading shots: the nearest spot that hides a crouched body and lets it shoot.
+    Fight,
+    /// Out of range: only spots that close the distance, so the bot bounds cover to cover.
+    Push,
+    /// Watching an approach: a concealed spot that sees it, best overlooking a choke point.
+    Hold,
+}
+
+/// Someone (or somewhere) to take cover from: feet, eye and chest.
+#[derive(Clone, Copy, Debug)]
+struct Contact {
+    feet: Vec3,
+    eye: Vec3,
+    chest: Vec3,
+}
+
+impl Contact {
+    fn at(feet: Vec3, stance_now: u8) -> Self {
+        let eye = stance::eye(stance_now);
+        Self { feet, eye: feet + Vec3::Y * eye, chest: feet + Vec3::Y * (eye - 0.45) }
+    }
+}
+
+/// Line-of-sight rays one cover search may cast (the finalists' choke checks come on top).
+const COVER_RAYS: u32 = 96;
+/// A crouched body's head and torso: what fighting cover has to hide.
+const TUCKED: [f32; 2] = [0.95, 0.6];
+/// Seconds a bot keeps fighting from cover after the target ducks out of sight.
+const ENGAGED: f32 = 2.5;
+
+/// Walls close on both sides across one axis but open along the other: a doorway, an
+/// alley, a gap between buildings.
+fn narrow(statics: &StaticWorld, feet: Vec3) -> bool {
+    let chest = feet + Vec3::Y * 1.1;
+    let room = |dir: Vec3| statics.raycast(chest, dir, 6.0).map_or(6.0, |(d, _)| d);
+    let across_x = room(Vec3::X) + room(Vec3::NEG_X);
+    let across_z = room(Vec3::Z) + room(Vec3::NEG_Z);
+    across_x.min(across_z) < 4.5 && across_x.max(across_z) > 8.0
+}
+
+/// Picks a spot near `feet` to fight `threat` from (or, for [`Seek::Hold`], to watch it
+/// from). `clear` tests a line of sight, `stand` finds the standing point near a column
+/// (at about a height) if a body fits there, and `reach` says whether the bot can walk
+/// straight to a spot. Near spots, real cover, keeping out of sight of `others` and the
+/// weapon's `range` score higher; spots inside a narrow passage score lower; holding,
+/// spots whose view crosses a choke point or a ladder score higher. `current` keeps the
+/// choice steady from one search to the next.
+#[allow(clippy::too_many_arguments)]
+fn find_cover(
+    feet: Vec3,
+    threat: Contact,
+    others: &[Contact],
+    seek: Seek,
+    range: (f32, f32),
+    current: Option<Vec3>,
+    ladders: &[Vec3],
+    statics: &StaticWorld,
+    clear: &mut impl FnMut(Vec3, Vec3) -> bool,
+    stand: &impl Fn(Vec2, f32) -> Option<Vec3>,
+    reach: &impl Fn(Vec3, Vec3) -> bool,
+) -> Option<Cover> {
+    let rays = std::cell::Cell::new(0u32);
+    let mut look = |a: Vec3, b: Vec3| {
+        rays.set(rays.get() + 1);
+        clear(a, b)
+    };
+    let away = (feet.xz() - threat.feet.xz()).normalize_or(Vec2::X);
+    let now = feet.xz().distance(threat.feet.xz());
+    let mut finalists: Vec<(f32, Cover)> = Vec::new();
+    'search: for radius in [0.0f32, 1.5, 3.0, 4.5, 6.5, 9.0] {
+        let count = if radius == 0.0 { 1 } else { 8 };
+        for i in 0..count {
+            if rays.get() >= COVER_RAYS {
+                break 'search;
+            }
+            let xz = feet.xz() + Vec2::from_angle(i as f32 * TAU / count as f32).rotate(away) * radius;
+            let distance = xz.distance(threat.feet.xz());
+            if seek == Seek::Push && distance > now - 2.5 {
+                continue;
+            }
+            let Some(spot) = stand(xz, feet.y) else { continue };
+            let mut score = -radius * if seek == Seek::Hold { 0.6 } else { 0.8 };
+            if current.is_some_and(|c| c.distance(spot) < 1.2) {
+                score += 1.5;
+            }
+            let cover = if seek == Seek::Hold {
+                // Somewhere to watch from, crouched if that still sees, with something in front.
+                let low = look(spot + Vec3::Y * stance::eye(stance::CROUCH), threat.chest);
+                if !low && !look(spot + Vec3::Y * stance::eye(stance::STAND), threat.chest) {
+                    continue;
+                }
+                if !look(threat.eye, spot + Vec3::Y * 0.6) {
+                    score += 3.0;
+                }
+                score += if low { 1.0 } else { 0.0 };
+                Cover { spot, peek: spot, low, shot: true }
+            } else {
+                // Hidden crouched; shooting either standing up over the top or a step out to the side.
+                if TUCKED.iter().any(|h| look(threat.eye, spot + Vec3::Y * *h)) {
+                    continue;
+                }
+                let side = (xz - threat.feet.xz()).normalize_or(Vec2::X).perp();
+                let peek = std::iter::once(xz).chain([1.2, -1.2, 2.2, -2.2].map(|step| xz + side * step)).find_map(|p| {
+                    let at = if p == xz { Some(spot) } else { stand(p, spot.y) };
+                    at.filter(|at| rays.get() < COVER_RAYS && look(*at + Vec3::Y * stance::eye(stance::STAND), threat.chest))
+                });
+                score += if peek.is_some() { 4.0 } else { 0.0 };
+                score -= (range.0 - distance).max(0.0) * 1.0 + (distance - range.1).max(0.0) * 0.3;
+                for other in others.iter().take(3) {
+                    if look(other.eye, spot + Vec3::Y * TUCKED[0]) {
+                        score -= 4.0;
+                    }
+                }
+                Cover { spot, peek: peek.unwrap_or(spot), low: true, shot: peek.is_some() }
+            };
+            finalists.push((score, cover));
+        }
+    }
+    finalists.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut best: Option<(f32, Cover)> = None;
+    for (mut score, cover) in finalists.into_iter().take(4) {
+        if cover.spot.xz().distance(feet.xz()) > 0.5 && !reach(feet, cover.spot) {
+            continue;
+        }
+        if narrow(statics, cover.spot) {
+            score -= 2.5;
+        }
+        if seek == Seek::Hold {
+            // Overlooking a doorway, an alley or a ladder the enemy has to come through.
+            let watched = cover.spot.lerp(threat.feet, 0.5);
+            if narrow(statics, watched) || narrow(statics, cover.spot.lerp(threat.feet, 0.8)) {
+                score += 2.5;
+            }
+            let (a, b) = (cover.spot.xz(), threat.feet.xz());
+            let near_line = |p: Vec3| {
+                let t = ((p.xz() - a).dot(b - a) / (b - a).length_squared().max(1e-4)).clamp(0.0, 1.0);
+                (a + (b - a) * t).distance(p.xz()) < 2.5
+            };
+            if ladders.iter().any(|l| near_line(*l)) {
+                score += 2.0;
+            }
+        }
+        if best.is_none_or(|(s, _)| score > s) {
+            best = Some((score, cover));
+        }
+    }
+    best.filter(|(score, _)| *score > -8.0).map(|(_, cover)| cover)
+}
+
+/// Seeks `point`, slowing on arrival; once there keeps shuffling along `across` so the bot
+/// never stands stock still.
+fn approach(feet: Vec3, point: Vec3, across: Vec2) -> Vec2 {
+    let to = point.xz() - feet.xz();
+    let distance = to.length();
+    if distance > 0.3 { to / distance * (distance / 0.8).min(1.0) } else { across * 0.25 }
 }
 
 impl Bot {
@@ -637,7 +827,9 @@ pub fn drive_bots(
         intel.0[(1 - noise.team.min(1)) as usize] = Some((noise.at, now));
     }
 
-    for (_, bot, me, transform, mut input, health, arsenal, stunned, _) in &mut players {
+    // Ladder ends, for holding bots to watch.
+    let ladders: Vec<Vec3> = map.ladders.iter().flat_map(|l| [l.foot, Vec3::new(l.foot.x, l.top, l.foot.z)]).collect();
+    for (_, bot, me, transform, mut input, health, arsenal, stunned, mover) in &mut players {
         let Some(mut bot) = bot else { continue };
         if bot.sentry && health.alive() {
             bot.alert = (bot.alert - dt).max(0.0);
@@ -729,6 +921,9 @@ pub fn drive_bots(
             bot.hold_use = false;
             bot.target = None;
             bot.path.clear();
+            bot.cover = None;
+            bot.camp_spot = None;
+            bot.engaged_until = 0.0;
             continue;
         }
         let feet = transform.translation;
@@ -737,6 +932,18 @@ pub fn drive_bots(
         bot.last = feet;
         let class = content.weapons.get(arsenal.current as usize).map_or(GunClass::Rifle, |w| w.class);
         let (near, far) = engagement(class);
+        // Senses for choosing cover: sight lines, places to stand, and walkable straight lines.
+        let mut clear = |a: Vec3, b: Vec3| {
+            let d = a.distance(b);
+            d < 1e-3 || obstruction(&map, &statics, &solids, a, (b - a) / d, d) >= d - 0.3
+        };
+        let stand = |xz: Vec2, near: f32| {
+            let y = crate::player::ground_under(&map, &statics, xz.x, xz.y, near + 0.5);
+            let at = Vec3::new(xz.x, y, xz.y);
+            let fits = map.in_bounds(xz.x, xz.y) && (y - near).abs() < 1.0 && !statics.blocked(xz.x, xz.y, y, stance::height(stance::STAND), 0.3);
+            (fits && nav.as_deref().is_none_or(|n| n.walkable(at))).then_some(at)
+        };
+        let reach = |a: Vec3, b: Vec3| nav.as_deref().is_none_or(|n| n.line_clear(a, b));
 
         bot.think -= dt;
         if bot.think <= 0.0 {
@@ -801,6 +1008,11 @@ pub fn drive_bots(
                 shouts.push(Noise { at: chest, radius: 22.0, team: me.team, shout: true });
             }
             bot.target = target;
+            let choke = narrow(&statics, feet);
+            if choke != bot.choke {
+                bot.glance = 1.0;
+            }
+            bot.choke = choke;
             let miss = 0.07 / rules.difficulty.max(0.25);
             bot.aim_error = Vec2::new(rng.0.range(-miss, miss), rng.0.range(-miss, miss) * 0.6);
             if bot.sentry && rules.hunt && feet.xz().distance(crate::versus::hunt_base(&map)) < crate::versus::HUNT_SAFE + 2.0 {
@@ -862,6 +1074,36 @@ pub fn drive_bots(
                     plan_versus(&mut bot, me, feet, hurt, &map, &mut rng, &bodies, known, now);
                 }
             }
+            // Camping in versus: not out in the open or in a doorway, but tucked in nearby
+            // with something in front, watching the approach (best one that funnels through
+            // a choke point). Objective modes keep their exact spots.
+            match bot.plan {
+                Plan::Camp { face } if bot.target.is_none() && !bot.sentry && state.obj.kind == crate::objective::kind::NONE => {
+                    let asked = bot.goal;
+                    match bot.camp_spot.filter(|(a, taken, _)| a.distance(asked) < 0.5 || taken.distance(asked) < 0.5) {
+                        Some((_, taken, _)) => {
+                            if bot.goal.distance(taken) > 0.1 {
+                                bot.goal = taken;
+                                bot.path.clear();
+                            }
+                        }
+                        None => {
+                            let ahead = Vec2::new(-face.sin(), -face.cos()) * 14.0;
+                            let watch = Vec3::new(asked.x + ahead.x, asked.y, asked.z + ahead.y);
+                            let pick = find_cover(asked, Contact::at(watch, stance::STAND), &[], Seek::Hold, (near, far), None, &ladders, &statics, &mut clear, &stand, &reach);
+                            let (taken, low) = pick.map_or((asked, true), |c| (c.spot, c.low));
+                            bot.camp_spot = Some((asked, taken, low));
+                            if taken.distance(asked) > 0.1 {
+                                bot.goal = taken;
+                                bot.path.clear();
+                                bot.plan = Plan::Camp { face: yaw_to((watch - taken).xz()) };
+                            }
+                        }
+                    }
+                }
+                Plan::Camp { .. } => {}
+                _ => bot.camp_spot = None,
+            }
         }
         bot.strafe_time -= dt;
         if bot.strafe_time <= 0.0 {
@@ -870,6 +1112,34 @@ pub fn drive_bots(
         }
 
         let target = bot.target.and_then(|entity| fighters.iter().find(|(e, ..)| *e == entity).copied());
+        if let Some((_, _, enemy, enemy_stance)) = target {
+            bot.foe = enemy;
+            bot.foe_stance = enemy_stance;
+            bot.engaged_until = now + ENGAGED;
+        }
+        // Lost sight of the target from cover (ducked, or it did): keep at it from there for
+        // a moment rather than wander off - unless falling back or on the bomb.
+        let engaged = target.is_some() || (now < bot.engaged_until && bot.cover.is_some() && bot.plan != Plan::Retreat && !bot.hold_use);
+        bot.cover_time -= dt;
+        if !engaged {
+            bot.cover = None;
+        } else if bot.cover_time <= 0.0 {
+            let seek = if target.is_some() && bot.foe.distance(feet) > far { Seek::Push } else { Seek::Fight };
+            // Pushing, it takes a few shots from each spot before bounding on to the next.
+            bot.cover_time = if seek == Seek::Push { rng.0.range(1.8, 3.0) } else { rng.0.range(0.6, 0.9) };
+            // Cover must not leave it in the open to the target's friends close by.
+            let mut others: Vec<Contact> =
+                fighters.iter().filter(|f| f.1 != me.team && Some(f.0) != bot.target && f.2.distance(feet) < 40.0).map(|f| Contact::at(f.2, f.3)).collect();
+            others.sort_by(|a, b| a.feet.distance(feet).total_cmp(&b.feet.distance(feet)));
+            others.truncate(2);
+            let current = bot.cover.map(|c| c.spot);
+            let foe = Contact::at(bot.foe, bot.foe_stance);
+            bot.cover = find_cover(feet, foe, &others, seek, (near, far), current, &ladders, &statics, &mut clear, &stand, &reach);
+            // Nothing further forward, and under fire: get behind what is here before pushing on.
+            if bot.cover.is_none() && seek == Seek::Push && bot.threat.is_some_and(|(_, at)| now - at < 2.0) {
+                bot.cover = find_cover(feet, foe, &others, Seek::Fight, (near, far), current, &ladders, &statics, &mut clear, &stand, &reach);
+            }
+        }
         // No leaning in this game: bots shoot from where they stand.
         input.lean = 0;
         let mut held = 0;
@@ -894,9 +1164,11 @@ pub fn drive_bots(
                 held |= buttons::AIM;
             }
             let facing = to.xz() / to.xz().length().max(1e-3);
+            // In the open (no cover in reach): never stand still. Close in from out of range,
+            // keep the weapon's distance, and don't trade shots from a doorway: back out of it.
             let forward = if distance > far {
                 1.0
-            } else if distance < near {
+            } else if distance < near || bot.choke {
                 -1.0
             } else {
                 0.0
@@ -906,13 +1178,18 @@ pub fn drive_bots(
                 // Peeking: hold the corner instead of strafing out of it.
                 wish *= 0.15;
             }
-            // Hunker down for long shots.
-            if bot.crouch_at_range && distance > 18.0 {
-                wanted_stance = if class == GunClass::Sniper && distance > 35.0 { stance::PRONE } else { stance::CROUCH };
+            // Only a sniper settles down for a long shot in the open; everyone else keeps moving.
+            if bot.crouch_at_range && distance > 18.0 && class == GunClass::Sniper {
+                wanted_stance = if distance > 35.0 { stance::PRONE } else { stance::CROUCH };
                 wish *= 0.4;
             }
             bot.goal = enemy;
             bot.path.clear();
+        } else if engaged {
+            // Tucked in out of sight: keep the gun on where the target was.
+            let to = Contact::at(bot.foe, bot.foe_stance).chest - crate::player::eye_point(&statics, feet, &input);
+            input.yaw = turn(input.yaw, yaw_to(to.xz()), 6.5 * dt);
+            input.pitch += ((to.y / to.length().max(1e-3)).asin() - input.pitch).clamp(-5.0 * dt, 5.0 * dt);
         } else if let Some(nav) = nav.as_deref() {
             // Travel along a path; search again when it runs out or goes stale.
             bot.repath -= dt;
@@ -926,10 +1203,13 @@ pub fn drive_bots(
             }
             if let Some(next) = bot.path.first() {
                 wish = (next.xz() - feet.xz()).normalize_or_zero();
-                input.yaw = turn(input.yaw, yaw_to(wish), 6.0 * dt);
+                // Into or out of a narrow passage: sweep the view across both corners on the move.
+                let glance = 0.75 * (bot.glance * 9.0).sin() * (bot.glance * 2.0).min(1.0);
+                bot.glance = (bot.glance - dt).max(0.0);
+                input.yaw = turn(input.yaw, yaw_to(wish) + glance, 6.0 * dt);
                 input.pitch *= 1.0 - (4.0 * dt).min(1.0);
-                if bot.sentry && bot.alert <= 0.0 {
-                    // An unhurried patrol.
+                if bot.sentry && bot.alert <= 0.0 && !bot.choke {
+                    // An unhurried patrol (but never loitering in a doorway).
                     wish *= 0.45;
                 } else {
                     held |= buttons::SPRINT;
@@ -952,15 +1232,36 @@ pub fn drive_bots(
             }
         }
 
-        // Camping: settle in at the spot, low, watching the approach.
+        // Fighting from cover: tucked in crouched, standing up (or stepping out) to shoot,
+        // back in to reload. Moving between the two upright, never sprinting.
+        if let Some(cover) = bot.cover.filter(|_| engaged) {
+            bot.peek -= dt;
+            if bot.peek <= 0.0 {
+                bot.exposed = !bot.exposed;
+                bot.peek = if bot.exposed { rng.0.range(1.2, 2.4) } else { rng.0.range(0.6, 1.2) };
+            }
+            let out = bot.exposed && cover.shot && arsenal.reload <= 0.0;
+            let point = if out { cover.peek } else { cover.spot };
+            let across = (bot.foe - feet).xz().normalize_or(Vec2::X).perp() * bot.strafe;
+            wish = approach(feet, point, across);
+            let there = point.xz().distance(feet.xz()) < 0.6;
+            wanted_stance = if out || !there { stance::STAND } else { stance::CROUCH };
+            held &= !buttons::SPRINT;
+            let mag = content.weapons.get(arsenal.current as usize).map_or(0, |w| w.mag);
+            if !out && target.is_none() && arsenal.state().is_some_and(|w| w.ammo * 2 < mag) {
+                held |= buttons::RELOAD;
+            }
+        }
+        // Camping: settle in at the spot (low, unless it has to stand to see), watching the approach.
         if let Plan::Camp { face } = bot.plan
             && bot.target.is_none()
+            && !engaged
             && !bot.sentry
             && bot.goal.xz().distance(feet.xz()) < 1.5
         {
             wish = Vec2::ZERO;
             held &= !buttons::SPRINT;
-            wanted_stance = stance::CROUCH;
+            wanted_stance = if bot.camp_spot.is_some_and(|(.., low)| !low) { stance::STAND } else { stance::CROUCH };
             let scan = (now * 0.5 + me.id as f32).sin() * 0.7;
             input.yaw = turn(input.yaw, face + scan, 2.0 * dt);
             input.pitch *= 1.0 - (3.0 * dt).min(1.0);
@@ -978,26 +1279,40 @@ pub fn drive_bots(
             wish = -ahead * 0.8 + ahead.perp() * bot.strafe * 0.4;
             wanted_stance = stance::CROUCH;
         }
-        // Stuck against something: jump, and look for a fresh route.
+        // Stuck against something: stand up, jump (or vault) once upright, and look for a
+        // fresh route. Low or lying down, it gets up first; a body that cannot stand never tries.
+        let legs = me.lost & crate::player::limb::LEGS;
         if wish != Vec2::ZERO && moved < 0.5 {
             bot.stuck += dt;
             if bot.stuck > 0.6 {
-                held |= buttons::JUMP;
                 bot.repath = 0.0;
                 bot.strafe = -bot.strafe;
+                if legs == 0 {
+                    wanted_stance = stance::STAND;
+                    held |= buttons::JUMP;
+                }
             }
         } else {
             bot.stuck = (bot.stuck - dt).max(0.0);
         }
-        // Stand up to jump or sprint.
-        if held & (buttons::JUMP | buttons::SPRINT) != 0 {
+        // Stand up to sprint.
+        if held & buttons::SPRINT != 0 {
             wanted_stance = stance::STAND;
         }
         // Legs shot off: crawl (both) or stay low (one).
-        if me.lost & crate::player::limb::LEGS == crate::player::limb::LEGS {
+        if legs == crate::player::limb::LEGS {
             wanted_stance = stance::PRONE;
-        } else if me.lost & crate::player::limb::LEGS != 0 && wanted_stance == stance::STAND {
+        } else if legs != 0 && wanted_stance == stance::STAND {
             wanted_stance = stance::CROUCH;
+        }
+        // In the air or going over something: no getting down (or up) until it lands.
+        if mover.vault.is_some() || (!mover.grounded && !mover.climbing) {
+            wanted_stance = input.stance;
+        }
+        // Jump only from a settled, upright stance on the ground: never from a crouch, prone, or mid-change.
+        let upright = input.stance == stance::STAND && mover.stance_was == stance::STAND && mover.stance_age > 0.15 && mover.grounded && mover.vault.is_none();
+        if wanted_stance != stance::STAND || !upright {
+            held &= !buttons::JUMP;
         }
         input.stance = wanted_stance;
 
@@ -1017,4 +1332,88 @@ pub fn drive_bots(
         }
     }
     noises.0 = shouts;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::EYE;
+    use oz_core::{collide::Aabb, worldgen::COVER_HEIGHT};
+
+    /// Flat open ground holding only `boxes` (centre on the ground, half extents).
+    fn ground(boxes: &[(Vec2, Vec3)]) -> StaticWorld {
+        let mut statics = StaticWorld::new(64.0);
+        for (at, half) in boxes {
+            statics.add(Aabb::new(Vec3::new(at.x, half.y, at.y), *half));
+        }
+        statics
+    }
+
+    fn search(statics: &StaticWorld, feet: Vec3, threat: Vec3, seek: Seek) -> (Option<Cover>, u32) {
+        let mut rays = 0;
+        let mut clear = |a: Vec3, b: Vec3| {
+            rays += 1;
+            let d = a.distance(b);
+            statics.raycast(a, (b - a) / d, d).is_none_or(|(hit, _)| hit >= d - 0.3)
+        };
+        let stand = |xz: Vec2, _: f32| (!statics.blocked(xz.x, xz.y, 0.0, stance::height(stance::STAND), 0.3)).then_some(Vec3::new(xz.x, 0.0, xz.y));
+        let cover = find_cover(feet, Contact::at(threat, stance::STAND), &[], seek, (9.0, 28.0), None, &[], statics, &mut clear, &stand, &|_, _| true);
+        (cover, rays)
+    }
+
+    fn sees(statics: &StaticWorld, a: Vec3, b: Vec3) -> bool {
+        let d = a.distance(b);
+        statics.raycast(a, (b - a) / d, d).is_none_or(|(hit, _)| hit >= d - 0.3)
+    }
+
+    /// A waist-high wall along X at the origin, an enemy 18 m north of it, the bot out in the open beside it.
+    fn wall() -> (StaticWorld, Vec3, Vec3) {
+        (ground(&[(Vec2::ZERO, Vec3::new(1.6, COVER_HEIGHT * 0.5, 0.25))]), Vec3::new(3.5, 0.0, -2.0), Vec3::new(0.0, 0.0, 18.0))
+    }
+
+    #[test]
+    fn exposed_bot_tucks_in_behind_low_cover_and_shoots_over_it() {
+        let (statics, bot, enemy) = wall();
+        let threat = Contact::at(enemy, stance::STAND);
+        assert!(sees(&statics, threat.eye, bot + Vec3::Y * TUCKED[0]), "the test bot should start in the open");
+        let (cover, rays) = search(&statics, bot, enemy, Seek::Fight);
+        let cover = cover.expect("a spot behind the wall");
+        assert!(cover.spot.z < 0.0 && cover.spot.x.abs() < 2.0, "{cover:?} is not behind the wall");
+        assert!(TUCKED.iter().all(|h| !sees(&statics, threat.eye, cover.spot + Vec3::Y * *h)), "{cover:?}: a crouched body there is still seen");
+        assert!(cover.shot && sees(&statics, cover.peek + Vec3::Y * EYE, threat.chest), "{cover:?}: no shot from it");
+        assert!(rays <= COVER_RAYS + 8, "search cost {rays} rays");
+    }
+
+    #[test]
+    fn far_off_bots_only_take_cover_that_closes_the_distance() {
+        let (statics, _, enemy) = wall();
+        // Already tucked behind the wall, but well out of range: pushing finds nothing closer here.
+        let (cover, _) = search(&statics, Vec3::new(0.0, 0.0, -1.0), enemy + Vec3::Z * 20.0, Seek::Push);
+        assert_eq!(cover, None);
+    }
+
+    #[test]
+    fn open_ground_offers_no_cover() {
+        let (cover, _) = search(&ground(&[]), Vec3::ZERO, Vec3::new(0.0, 0.0, 18.0), Seek::Fight);
+        assert_eq!(cover, None);
+    }
+
+    #[test]
+    fn holding_bots_watch_from_behind_something() {
+        let (statics, bot, enemy) = wall();
+        let cover = search(&statics, bot, enemy, Seek::Hold).0.expect("somewhere to watch from");
+        let threat = Contact::at(enemy, stance::STAND);
+        assert!(!sees(&statics, threat.eye, cover.spot + Vec3::Y * 0.6), "{cover:?}: the body is in plain view");
+        // The wall is too tall to see over crouched, so it watches standing.
+        assert!(!cover.low && sees(&statics, cover.spot + Vec3::Y * EYE, threat.chest), "{cover:?}");
+    }
+
+    #[test]
+    fn gaps_between_buildings_are_narrow_and_streets_are_not() {
+        // Two buildings 3 m apart along X leave a north-south alley at the origin.
+        let statics = ground(&[(Vec2::new(-4.5, 0.0), Vec3::new(3.0, 3.0, 4.0)), (Vec2::new(4.5, 0.0), Vec3::new(3.0, 3.0, 4.0))]);
+        assert!(narrow(&statics, Vec3::ZERO));
+        assert!(!narrow(&statics, Vec3::new(0.0, 0.0, 12.0)));
+        assert!(!narrow(&statics, Vec3::new(20.0, 0.0, 0.0)));
+    }
 }
