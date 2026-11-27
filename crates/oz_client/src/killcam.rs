@@ -338,7 +338,7 @@ fn run(
     controls: Res<Controls>,
     settings: Res<crate::settings::Settings>,
     death: Res<crate::fx::DeathInfo>,
-    (art, parts, content, statics, state): (Res<Art>, Res<RobotParts>, Res<Content>, Res<Statics>, Res<MatchState>),
+    (art, parts, content, state): (Res<Art>, Res<RobotParts>, Res<Content>, Res<MatchState>),
     mut guns: ResMut<GunCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut cam: ResMut<KillCam>,

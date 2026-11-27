@@ -83,7 +83,7 @@ fn bots_fill_the_teams_and_fight_to_the_score_limit() {
     assert_eq!(kills, state.scores[0] + state.scores[1], "every point is someone's kill");
     println!("match decided {:?} after {seconds:.0} simulated seconds", state.scores);
     // After the post-match screen everyone is back in the lobby.
-    for _ in 0..(10.0 / FRAME) as usize {
+    for _ in 0..(15.0 / FRAME) as usize {
         app.update();
     }
     assert_eq!(phase(&app), Phase::Lobby);

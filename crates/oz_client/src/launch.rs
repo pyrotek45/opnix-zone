@@ -33,6 +33,9 @@ pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res
         if let Some(weather) = value("--weather").and_then(|w| oz_core::worldgen::Weather::ALL.into_iter().find(|x| x.name().eq_ignore_ascii_case(&w))) {
             rules.recipe.weather = weather;
         }
+        if let Some(limit) = value("--score").and_then(|t| t.parse::<u32>().ok()) {
+            rules.score_limit = limit.max(1);
+        }
         if let Some(size) = value("--teams").and_then(|t| t.parse::<u8>().ok()) {
             rules.team_size = size.clamp(1, 6);
         }
