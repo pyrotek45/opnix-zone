@@ -168,7 +168,8 @@ pub fn relaunch(
 pub fn new_arsenal(catalog: &Catalog, rules: &Rules) -> Arsenal {
     let mut arsenal = Arsenal { weapons: catalog.weapons.iter().map(WeaponState::fresh).collect(), ..default() };
     for index in 0..catalog.weapons.len() {
-        if rules.starter_weapons & (1 << index) != 0 {
+        // Only the first 32 weapons can be starters (a catalog may hold more).
+        if rules.starter_weapons.checked_shr(index as u32).is_some_and(|bits| bits & 1 != 0) {
             grant_weapon(&mut arsenal, &catalog.weapons, index);
         }
     }
@@ -219,10 +220,7 @@ pub fn start_pending_match(
     let mut ids = NetIds::default();
 
     // Static collision is rebuilt from the recipe on every machine; it is never replicated.
-    let mut statics = StaticWorld::new(rules.recipe.half_extent);
-    for aabb in map.solids() {
-        statics.add(aabb);
-    }
+    let mut statics = map.statics();
     let standing = |at: Vec3, half: Vec3| Aabb::new(at + Vec3::Y * half.y, half);
     for (index, pad) in map.pads.iter().enumerate().take(catalog.stations.len()) {
         let facing = Quat::from_rotation_y(f32::atan2(pad.x - map.core.x, pad.y - map.core.y));

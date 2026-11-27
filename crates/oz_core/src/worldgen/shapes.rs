@@ -10,7 +10,7 @@
 //! eleven 0.29 m steps of 0.42 m.
 
 use super::{COVER_HEIGHT, ClutterKind, Clutter, DOOR_WIDTH, Ladder, Prop, PropKind, World};
-use crate::{collide::Aabb, model::{Anim, Hull, Paint}, rng::Rng};
+use crate::{collide::{Aabb, Ramp}, model::{Anim, Hull, Paint}, rng::Rng};
 use glam::{Vec2, Vec3};
 
 /// How a map's buildings look: what their walls and roofs are painted, and how often roofs are pitched.
@@ -196,6 +196,21 @@ impl World {
         let at = |u: f32, h: f32, v: f32| if along_x { foot + Vec3::new(v, h, u) } else { foot + Vec3::new(u, h, v) };
         let (a0, a1, h1) = (base.0 + eave, ridge.0, height + lift);
         let h0 = -eave * slope + lift;
+        // Walked as drawn: the slopes over the steps' footprint, up to the ridge.
+        let (u_axis, v_axis) = if along_x { (Vec2::Y, Vec2::X) } else { (Vec2::X, Vec2::Y) };
+        let centre = Vec2::new(foot.x, foot.z);
+        let extent = u_axis * base.0 + v_axis * base.1;
+        // A plane rising `rise` per metre inward from the edge `edge` metres out along `axis`.
+        let plane = |axis: Vec2, edge: f32, rise: f32| {
+            let k = -axis * rise;
+            Vec3::new(k.x, k.y, foot.y + lift + rise * (edge + axis.dot(centre)))
+        };
+        let mut planes = vec![plane(u_axis, base.0, slope), plane(-u_axis, base.0, slope)];
+        if hip {
+            let slope = height / (base.1 - ridge.1).max(0.01);
+            planes.extend([plane(v_axis, base.1, slope), plane(-v_axis, base.1, slope)]);
+        }
+        self.ramps.push(Ramp { min: centre - extent, max: centre + extent, bottom: foot.y, top: foot.y + h1, planes });
         if hip {
             // One solid: the eave rectangle and the ridge strip, the overhang all round.
             let l0 = base.1 + eave;

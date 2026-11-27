@@ -94,6 +94,10 @@ pub struct ViewState {
     shown: Option<(u8, [u8; SLOT_COUNT])>,
     /// Smoothed eye height (crouching and going prone glide).
     eye: f32,
+    /// How far the eye still trails the feet after a stair step snapped them up or down
+    /// (it glides after them instead), and where the feet were last frame.
+    stair: f32,
+    feet: Option<Vec3>,
     /// Smoothed peek offset out of cover.
     lean: Vec3,
     /// 0 = first person, 1 = over the shoulder (in cover).
@@ -480,6 +484,17 @@ fn follow_player(
         view.eye = wanted_eye;
     }
     view.eye += (wanted_eye - view.eye) * (1.0 - (-dt * 10.0).exp());
+    // Walking up or down stairs the feet jump a step at a time: steeper than any slope
+    // underfoot, so a rise much bigger than the ground covered is a step, and the eye glides it.
+    let feet = player.translation;
+    let (rise, moved) = view.feet.map_or((0.0, f32::MAX), |was| (feet.y - was.y, was.xz().distance(feet.xz())));
+    view.feet = Some(feet);
+    if !local || moved > 1.5 || mover.climbing {
+        view.stair = 0.0;
+    } else if mover.grounded && rise.abs() > moved * 0.9 + 0.02 && rise.abs() < 0.6 {
+        view.stair = (view.stair - rise).clamp(-0.5, 0.5);
+    }
+    view.stair *= (-dt * 14.0).exp();
     // Peeking out of cover glides the head out past the corner.
     let lean_k = 1.0 - (-dt * 12.0).exp();
     let wanted_lean = if health.alive() { oz_sim::player::lean_offset(&statics, player.translation, input) } else { Vec3::ZERO };
@@ -491,7 +506,7 @@ fn follow_player(
     let (eye, roll) = (view.eye, if health.alive() { (view.bob).sin() * 0.04 * view.climb } else { 0.5 });
     let t = time.elapsed_secs();
     let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
-    let head = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob + view.lean;
+    let head = player.translation + Vec3::Y * (eye - view.land * 0.13 + view.stair) + bob + view.lean;
     // Holding a gun up is never perfectly still: a slow drift down the sights, less when crouched or prone.
     let hold = view.ads * stance::steadiness(input.stance) * 0.0035;
     let drift = Vec2::new((t * 0.8).sin() + 0.5 * (t * 1.9).sin(), (t * 1.3).cos() * 0.7) * hold;

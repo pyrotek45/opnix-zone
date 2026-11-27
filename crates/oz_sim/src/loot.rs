@@ -6,6 +6,9 @@
 //! Walk over ammo, gear and armour to take them. Walk over a gun to take it while a
 //! hand is free (you carry two); with both full, press Use to swap the gun you are
 //! holding for it - yours drops where you stand.
+//!
+//! The other versus modes have no loot, but the fallen there sometimes drop a box of
+//! ammo (always when their killer is running dry), so nobody is left with an empty gun.
 
 use crate::{
     net::NetIds,
@@ -208,16 +211,7 @@ pub fn run_loot(
             }
             let owned: Vec<usize> = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).collect();
             let taken = match pickup.loot {
-                Loot::Ammo => {
-                    let mut any = false;
-                    for (weapon, def) in arsenal.weapons.iter_mut().zip(&content.weapons) {
-                        if weapon.owned && !def.infinite_reserve && weapon.reserve < def.reserve.max(def.mag * 4) {
-                            weapon.reserve = (weapon.reserve + def.mag.max(1) * 2).min(def.reserve.max(def.mag * 4));
-                            any = true;
-                        }
-                    }
-                    any.then(|| "AMMO".to_string())
-                }
+                Loot::Ammo => take_ammo(&content, &mut arsenal).then(|| "AMMO".to_string()),
                 Loot::Armor => (health.max < ARMORED).then(|| {
                     health.max = ARMORED;
                     health.hp = (health.hp + 50.0).min(ARMORED);
@@ -286,6 +280,106 @@ pub fn run_loot(
             let name = content.weapons.get(index as usize).map_or("", |d| d.name);
             fx.write(FxEvent::tell(player.id, format!("+ {name}")));
             fx.write(FxEvent::Sound { sfx: Sfx::Swap, at: Some(feet) });
+        }
+    }
+}
+
+/// An ammo box: two magazines more for every gun carried, up to what it can hold.
+/// False if every gun is already full.
+fn take_ammo(content: &Content, arsenal: &mut Arsenal) -> bool {
+    let mut any = false;
+    for (weapon, def) in arsenal.weapons.iter_mut().zip(&content.weapons) {
+        let cap = def.reserve.max(def.mag * 4);
+        if weapon.owned && !def.infinite_reserve && weapon.reserve < cap {
+            weapon.reserve = (weapon.reserve + def.mag.max(1) * 2).min(cap);
+            any = true;
+        }
+    }
+    any
+}
+
+/// Is a gun carried running dry: less than a spare magazine left behind the one loaded?
+/// (Sidearms with endless reserve do not count: nobody wants to be left with only those.)
+pub fn low_on_ammo(content: &Content, arsenal: &Arsenal) -> bool {
+    arsenal.weapons.iter().zip(&content.weapons).any(|(weapon, def)| weapon.owned && !def.infinite_reserve && def.mag > 0 && weapon.reserve < def.mag)
+}
+
+/// Versus modes without loot: the fallen sometimes drop ammo.
+pub fn ammo_drops(rules: Option<Res<Rules>>) -> bool {
+    rules.is_some_and(|rules| rules.pvp && !rules.loot && !rules.hunt)
+}
+
+/// Chance someone killed drops an ammo box when their killer is not short of ammo.
+pub const AMMO_DROP_CHANCE: f32 = 0.25;
+/// Most dropped ammo boxes lying about at once.
+const AMMO_DROPS: usize = 6;
+/// How long a dropped ammo box lies before it goes.
+const AMMO_LIFE: f32 = 30.0;
+
+/// Authority, versus modes without loot: a kill sometimes leaves an ammo box where the
+/// victim fell, always when the killer is low on ammo. Never more than a few at once:
+/// past that the oldest one goes.
+#[allow(clippy::too_many_arguments)]
+pub fn drop_ammo(
+    content: Res<Content>,
+    state: Res<MatchState>,
+    mut rng: ResMut<SimRng>,
+    mut ids: ResMut<NetIds>,
+    mut commands: Commands,
+    mut kills: EventReader<FxEvent>,
+    players: Query<(&Player, &Transform, &Arsenal)>,
+    boxes: Query<(Entity, &Pickup)>,
+) {
+    let killed: Vec<(u8, u8)> = kills.read().filter_map(|e| if let FxEvent::Killed { victim, by, .. } = *e { Some((victim, by)) } else { None }).collect();
+    if state.phase == Phase::Lobby || killed.is_empty() {
+        return;
+    }
+    let mut lying: Vec<(Entity, f32)> = boxes.iter().filter_map(|(e, p)| (p.loot == Loot::Ammo).then_some((e, p.life?))).collect();
+    for (victim, by) in killed {
+        let Some((_, at, _)) = players.iter().find(|(p, ..)| p.id == victim) else { continue };
+        let short = players.iter().find(|(p, ..)| p.id == by).is_some_and(|(_, _, arsenal)| low_on_ammo(&content, arsenal));
+        if !short && !rng.0.chance(AMMO_DROP_CHANCE) {
+            continue;
+        }
+        if lying.len() >= AMMO_DROPS {
+            // Make room: the one with the least time left goes.
+            lying.sort_by(|a, b| b.1.total_cmp(&a.1));
+            if let Some((oldest, _)) = lying.pop() {
+                commands.entity(oldest).despawn();
+            }
+        }
+        let entity = commands.spawn((MatchEntity, ids.next(), Pickup { loot: Loot::Ammo, life: Some(AMMO_LIFE) }, Transform::from_translation(at.translation + Vec3::Y * 0.1))).id();
+        lying.push((entity, AMMO_LIFE));
+    }
+}
+
+/// Authority, versus modes without loot: ages the dropped ammo boxes and hands them to
+/// whoever walks over one with room for it.
+pub fn take_dropped_ammo(
+    time: Res<Time>,
+    content: Res<Content>,
+    mut commands: Commands,
+    mut boxes: Query<(Entity, &Transform, &mut Pickup)>,
+    mut players: Query<(&Player, &Transform, &mut Arsenal, &Health)>,
+    mut fx: EventWriter<FxEvent>,
+) {
+    let dt = sim_dt(&time);
+    for (entity, at, mut pickup) in &mut boxes {
+        let (Loot::Ammo, Some(life)) = (pickup.loot, pickup.life.as_mut()) else { continue };
+        *life -= dt;
+        if *life <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let taker = players.iter_mut().find(|(_, feet, arsenal, health)| {
+            let offset = at.translation - feet.translation;
+            health.alive() && offset.xz().length() < REACH && offset.y.abs() < 1.6 && arsenal.weapons.iter().zip(&content.weapons).any(|(w, d)| w.owned && !d.infinite_reserve && w.reserve < d.reserve.max(d.mag * 4))
+        });
+        if let Some((player, feet, mut arsenal, _)) = taker {
+            take_ammo(&content, &mut arsenal);
+            commands.entity(entity).despawn();
+            fx.write(FxEvent::tell(player.id, "+ AMMO".to_string()));
+            fx.write(FxEvent::Sound { sfx: Sfx::Buy, at: Some(feet.translation) });
         }
     }
 }

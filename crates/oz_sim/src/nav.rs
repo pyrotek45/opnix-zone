@@ -37,6 +37,10 @@ pub struct Nav {
     /// Ladders: (foot node, roof node, climb cost). Bots climb up them, and come back down
     /// the short ones by dropping off the edge.
     links: Vec<(u32, u32, u32, bool)>,
+    /// Which walkable region each node is in (connected without ladders). A search for a
+    /// goal no region it can reach holds (a rooftop with no way up) fails at once instead
+    /// of flooding the whole grid, which bots chasing someone up there did every frame.
+    region: Vec<u32>,
 }
 
 /// Reusable A* buffers.
@@ -100,7 +104,8 @@ impl Nav {
             }
         }
         start.push(floor.len() as u32);
-        let mut nav = Nav { half, side, start, floor, column, links: Vec::new() };
+        let mut nav = Nav { half, side, start, floor, column, links: Vec::new(), region: Vec::new() };
+        nav.region = nav.regions();
         for ladder in &map.ladders {
             let out = Vec3::new(ladder.out.x, 0.0, ladder.out.y);
             let foot = ladder.foot + out * crate::player::LADDER_STANDOFF;
@@ -117,6 +122,61 @@ impl Nav {
             }
         }
         nav
+    }
+
+    /// Labels every node with its region: nodes joined by any step a search could take
+    /// (in either direction, so a region is never split that a search could cross).
+    fn regions(&self) -> Vec<u32> {
+        fn root(parent: &mut [u32], mut n: u32) -> u32 {
+            while parent[n as usize] != n {
+                parent[n as usize] = parent[parent[n as usize] as usize];
+                n = parent[n as usize];
+            }
+            n
+        }
+        let mut parent: Vec<u32> = (0..self.floor.len() as u32).collect();
+        let side = self.side as i32;
+        for node in 0..self.floor.len() {
+            let c = self.column[node] as usize;
+            let (cx, cz) = ((c % self.side) as i32, (c / self.side) as i32);
+            for (dx, dz) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
+                let (x, z) = (cx + dx, cz + dz);
+                if x < 0 || z < 0 || x >= side || z >= side {
+                    continue;
+                }
+                let column = (z * side + x) as usize;
+                // Both ways round: what this node steps to, and what steps back to it.
+                let forward = self.step_into(column, self.floor[node]);
+                let back = self.nodes(column).filter(|n| self.step_into(c, self.floor[*n]) == Some(node));
+                for other in forward.into_iter().chain(back) {
+                    let (a, b) = (root(&mut parent, node as u32), root(&mut parent, other as u32));
+                    parent[a.max(b) as usize] = a.min(b);
+                }
+            }
+        }
+        (0..parent.len() as u32).map(|n| root(&mut parent, n)).collect()
+    }
+
+    /// Could a search get from region `from` to region `to`, walking and taking ladders
+    /// (up any, back down the short ones)?
+    fn reachable(&self, from: u32, to: u32) -> bool {
+        let mut seen = vec![from];
+        let mut i = 0;
+        while let Some(&at) = seen.get(i) {
+            if at == to {
+                return true;
+            }
+            for &(bottom, top, _, drop) in &self.links {
+                let (low, high) = (self.region[bottom as usize], self.region[top as usize]);
+                for next in [(low == at).then_some(high), (drop && high == at).then_some(low)].into_iter().flatten() {
+                    if !seen.contains(&next) {
+                        seen.push(next);
+                    }
+                }
+            }
+            i += 1;
+        }
+        false
     }
 
     pub fn walkable_cells(&self) -> usize {
@@ -210,6 +270,9 @@ impl Nav {
         let (start, goal) = (self.nearest(from)?, self.nearest(to)?);
         if start == goal {
             return Some(vec![to]);
+        }
+        if !self.reachable(self.region[start], self.region[goal]) {
+            return None;
         }
         let n = self.floor.len();
         if scratch.stamp.len() != n {
@@ -459,5 +522,27 @@ mod tests {
             }
         }
         assert!(reached >= 6, "only {reached} of 12 upstairs spots were reachable");
+    }
+
+    #[test]
+    fn a_rooftop_with_no_way_up_fails_fast() {
+        let map = GameMap::generate(WorldRecipe::town(9, Biome::IronShoals));
+        let nav = Nav::build(&map, &map.statics());
+        let mut scratch = NavScratch::default();
+        let start = map.team_spawns[0][2];
+        let start = Vec3::new(start.x, map.height(start.x, start.y), start.y);
+        let home = nav.region[nav.nearest(start).unwrap()];
+        // High nodes with nothing over them that no route reaches: roofs without a ladder.
+        let cut_off: Vec<Vec3> = (0..nav.floor.len())
+            .filter(|n| nav.floor[*n] > 5.0 && nav.nodes(nav.column[*n] as usize).last() == Some(*n) && !nav.reachable(home, nav.region[*n]))
+            .map(|n| nav.center(n))
+            .collect();
+        assert!(!cut_off.is_empty(), "no unreachable rooftop to test with");
+        let clock = std::time::Instant::now();
+        for goal in cut_off.iter().step_by((cut_off.len() / 20).max(1)) {
+            assert!(nav.path(&mut scratch, start, *goal).is_none());
+        }
+        // Each used to expand up to 150k nodes; a bot repeats it every frame it has no path.
+        assert!(clock.elapsed().as_millis() < 20, "{:?} for unreachable searches", clock.elapsed());
     }
 }
