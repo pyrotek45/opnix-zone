@@ -338,10 +338,16 @@ fn follow_player(
     mut view: ResMut<ViewState>,
     (players, subject): (Query<(&Transform, &PlayerInput, &Arsenal, &Mover, &Health, &Player, Has<LocalPlayer>)>, Res<ViewSubject>),
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Player>)>,
-    (role, prediction, settings, statics, cover): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>, Res<Statics>, Res<crate::cover::Cover>),
+    (role, prediction, settings, statics, cover, killcam): (Res<NetRole>, Res<crate::predict::Prediction>, Res<crate::settings::Settings>, Res<Statics>, Res<crate::cover::Cover>, Res<crate::killcam::KillCam>),
 ) {
     let dt = time.delta_secs().min(0.05);
-    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
+    // A kill cam replay: the killer's own first-person view, from the recording.
+    let base = players.iter().find(|(.., local)| *local);
+    let replay = killcam.pov.as_ref().zip(base).map(|(pov, (_, _, arsenal, _, _, me, _))| pov.stand_in(arsenal, me));
+    let pick = match &replay {
+        Some((t, i, a, m, h, p)) => Some((t, i, a, m, h, p, false)),
+        None => subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local)),
+    };
     let (Some((player, input, arsenal, mover, health, me, local)), Ok((mut camera, mut projection))) = (pick, cameras.single_mut()) else {
         return;
     };
@@ -562,9 +568,15 @@ fn viewmodel(
         Query<(&mut Transform, &mut Visibility), (With<ThrowArm>, Without<GunRoot>, Without<GunGroup>, Without<MuzzleFlash>, Without<ThrowGrenade>)>,
         Query<&mut Visibility, (With<ThrowGrenade>, Without<ThrowArm>, Without<GunRoot>, Without<GunGroup>, Without<MuzzleFlash>)>,
     ),
-    (statics, eyes): (Res<Statics>, Query<&Transform, (With<WorldCamera>, Without<GunRoot>, Without<GunGroup>, Without<MuzzleFlash>, Without<ThrowArm>)>),
+    (statics, eyes, killcam, me): (Res<Statics>, Query<&Transform, (With<WorldCamera>, Without<GunRoot>, Without<GunGroup>, Without<MuzzleFlash>, Without<ThrowArm>)>, Res<crate::killcam::KillCam>, Query<&Player, With<LocalPlayer>>),
 ) {
-    let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
+    // A kill cam replay shows the killer's gun, in their hands, as they held it.
+    let base = players.iter().find(|(.., local)| *local).zip(me.single().ok());
+    let replay = killcam.pov.as_ref().zip(base).map(|(pov, ((arsenal, ..), me))| pov.stand_in(arsenal, me));
+    let pick = match &replay {
+        Some((_, i, a, m, h, _)) => Some((a, h, m, i, false)),
+        None => subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local)),
+    };
     let (Some((arsenal, health, mover, input, _)), Ok((root, mut transform, mut visibility))) = (pick, gun.single_mut()) else {
         return;
     };

@@ -58,6 +58,7 @@ struct Frame {
 #[derive(Clone, Copy)]
 struct ShotRecord {
     t: f32,
+    by: u8,
     from: Vec3,
     to: Vec3,
     tracer: Paint,
@@ -121,6 +122,47 @@ pub struct KillCam {
     best: Option<Clip>,
     /// The replay is looking down a scope of this kind (0 = none): the HUD draws its glass.
     pub scope: u8,
+    /// While a replay runs: the killer's first-person state, which the view draws instead
+    /// of the local player's.
+    pub pov: Option<Pov>,
+}
+
+/// One frame of someone's first-person view, from a recording.
+#[derive(Clone, Copy, Debug)]
+pub struct Pov {
+    pub at: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub stance: u8,
+    pub aiming: bool,
+    pub reloading: bool,
+    pub weapon: u8,
+    pub parts: [u8; SLOT_COUNT],
+    pub shots: u32,
+    pub speed: f32,
+}
+
+impl Pov {
+    /// Stand-in components shaped like a live player, for the view code to read.
+    pub fn stand_in(&self, base_arsenal: &Arsenal, base_player: &Player) -> (Transform, PlayerInput, Arsenal, oz_sim::player::Mover, Health, Player) {
+        let mut arsenal = base_arsenal.clone();
+        arsenal.current = self.weapon;
+        if let Some(weapon) = arsenal.weapons.get_mut(self.weapon as usize) {
+            weapon.owned = true;
+            weapon.equipped = self.parts;
+            weapon.ammo = weapon.ammo.max(1);
+        }
+        arsenal.reload = if self.reloading { 1.0 } else { 0.0 };
+        arsenal.reload_total = if self.reloading { 2.0 } else { 0.0 };
+        arsenal.shots = self.shots;
+        let mut buttons = 0;
+        if self.aiming {
+            buttons |= oz_sim::player::buttons::AIM;
+        }
+        let input = PlayerInput { yaw: self.yaw, pitch: self.pitch, stance: self.stance, weapon: self.weapon, buttons, ..default() };
+        let mover = oz_sim::player::Mover { speed: self.speed, grounded: true, ..default() };
+        (Transform::from_translation(self.at), input, arsenal, mover, Health { hp: 100.0, max: 100.0 }, base_player.clone())
+    }
 }
 
 impl KillCam {
@@ -251,7 +293,7 @@ fn record(
     }
     for event in events.read() {
         match event {
-            FxEvent::Shot { from, to, tracer, beam, .. } => cam.shots.push_back(ShotRecord { t: now, from: *from, to: *to, tracer: *tracer, beam: *beam }),
+            FxEvent::Shot { by, from, to, tracer, beam, .. } => cam.shots.push_back(ShotRecord { t: now, by: *by, from: *from, to: *to, tracer: *tracer, beam: *beam }),
             FxEvent::Killed { victim, by, head, blast } if victim != by => {
                 let at = |id: u8| players.iter().find(|(p, ..)| p.id == id).map(|(_, t, ..)| t.translation);
                 let distance = at(*victim).zip(at(*by)).map_or(0.0, |(a, b)| a.distance(b));
@@ -383,6 +425,7 @@ fn run(
             }
             commands.entity(replay.overlay).despawn();
             cam.scope = 0;
+            cam.pov = None;
             for mut visibility in robots.iter_mut() {
                 if *visibility == Visibility::Hidden {
                     *visibility = Visibility::Inherited;
@@ -407,7 +450,7 @@ fn run(
         let name = state.roster.iter().find(|r| r.id == clip.killer).map_or("?".to_string(), |r| r.name.clone());
         let weapon = sample_in(&clip.frames, clip.killer, clip.death).and_then(|s| content.weapons.get(s.weapon as usize)).map_or("", |w| w.name);
         let overlay = overlay(&mut commands, "PLAY OF THE MATCH", &format!("{name}  -  {}", clip.title), weapon, "");
-        let gun = held_gun(&mut commands, &art, &content, &mut guns, &mut meshes, &clip.frames, clip.killer, clip.death);
+        let gun = None;
         let start = clip.frames.first().map_or(clip.death, |f| f.t);
         cam.frames = clip.frames.iter().cloned().collect();
         cam.shots = clip.shots.iter().copied().collect();
@@ -441,7 +484,7 @@ fn run(
                 let weapon = cam.sample(killer, died).and_then(|s| content.weapons.get(s.weapon as usize)).map_or("", |w| w.name);
                 let skip = if controls.gamepad { "(A)".to_string() } else { settings.bindings.label(crate::bindings::Action::Jump) };
                 let overlay = overlay(&mut commands, "KILLCAM", &format!("KILLED BY  {name}"), weapon, &format!("[{skip}]  SKIP"));
-                let gun = held_gun(&mut commands, &art, &content, &mut guns, &mut meshes, &frames, killer, died);
+                let gun = None;
                 cam.replay = Some(Replay { clock: start, end: died + AFTER, death: died, killer, ghosts, camera: None, overlay, gun, finale: false });
             }
         } else if now - died > 1.6 {
@@ -520,45 +563,26 @@ fn run(
         ));
     }
 
-    // Through the killer's eyes, looking where they looked, their gun in front.
-    if let (Some(killer), Ok((mut camera, mut projection))) = (cam.sample(replay.killer, replay.clock), cameras.single_mut()) {
-        let eye = killer.pos + Vec3::Y * stance::eye(killer.flags & flags::STANCE);
-        let lean = flags::lean(killer.flags) as f32;
-        let rotation = Quat::from_euler(EulerRot::YXZ, killer.yaw, killer.pitch, -lean * 0.12);
-        let wanted = eye + rotation * Vec3::new(lean * 0.35, 0.0, 0.0);
-        let blend = 1.0 - (-dt * 18.0).exp();
-        let (position, rotation) = replay.camera.map_or((wanted, rotation), |(p, r)| (p.lerp(wanted, blend), r.slerp(rotation, blend)));
-        replay.camera = Some((position, rotation));
-        camera.translation = position;
-        camera.rotation = rotation;
-        let aiming = killer.flags & flags::AIMING != 0;
-        // What the killer's gun does when aimed: its zoom, and whether that is through glass.
-        let stats = content.weapons.get(killer.weapon as usize).map(|def| oz_core::arsenal::resolve(def, &oz_core::arsenal::WeaponState { equipped: killer.parts, ..default() }, &content.attachments));
-        let (ads_fov, scope) = stats.map_or((55.0, 0), |s| (s.ads_fov, s.scope));
-        let scoped = aiming && scope > 0;
-        cam.scope = if scoped { scope } else { 0 };
-        if let Projection::Perspective(perspective) = &mut *projection {
-            let fov = if aiming { ads_fov * 70.0 / crate::view::BASE_FOV } else if slow { 60.0 } else { 70.0 };
-            perspective.fov = fov.to_radians();
+    // Through the killer's eyes: the normal first-person view (camera, hands, gun, aim,
+    // scope, recoil) is drawn from the killer's recorded state, as they saw it (see `view`).
+    cam.scope = 0;
+    cam.pov = cam.sample(replay.killer, replay.clock).map(|killer| {
+        let earlier = cam.sample(replay.killer, replay.clock - 0.1).unwrap_or(killer);
+        let shots = cam.shots.iter().filter(|s| s.by == replay.killer && s.t <= replay.clock).count() as u32;
+        Pov {
+            at: killer.pos,
+            yaw: killer.yaw,
+            pitch: killer.pitch,
+            stance: killer.flags & flags::STANCE,
+            aiming: killer.flags & flags::AIMING != 0,
+            reloading: killer.flags & flags::RELOADING != 0,
+            weapon: killer.weapon,
+            parts: killer.parts,
+            shots,
+            speed: (killer.pos - earlier.pos).xz().length() / 0.1,
         }
-        if let Some(gun) = replay.gun {
-            if let Ok(mut shown) = gun_shown.get_mut(gun) {
-                // Down a scope the glass is the view; the gun itself would only be in the way.
-                let wanted = if scoped { Visibility::Hidden } else { Visibility::Inherited };
-                if *shown != wanted {
-                    *shown = wanted;
-                }
-            }
-            if let Ok(mut gun) = held.get_mut(gun) {
-                // Hip or shouldered, scaled down like a view model, with a kick on every shot.
-                let kick = cam.shots.iter().filter(|s| (replay.clock - s.t) >= 0.0 && (replay.clock - s.t) < 0.07 && s.from.distance(eye) < 2.5).count().min(1) as f32;
-                let hold = if aiming { Vec3::new(0.0, -0.075, -0.2) } else { Vec3::new(0.12, -0.13, -0.24) };
-                gun.translation = position + rotation * (hold + Vec3::Z * kick * 0.03);
-                gun.rotation = rotation * Quat::from_rotation_x(kick * 0.08);
-                gun.scale = Vec3::splat(0.55);
-            }
-        }
-    }
+    });
+    let _ = (&mut cameras, &mut held, &mut gun_shown, slow);
     cam.replay = Some(replay);
 }
 
@@ -571,6 +595,7 @@ fn sample_in(frames: &[Frame], id: u8, t: f32) -> Option<Sample> {
     frames.iter().min_by(|a, b| (a.t - t).abs().total_cmp(&(b.t - t).abs())).and_then(|f| f.bodies.iter().find(|b| b.id == id).copied())
 }
 
+#[allow(dead_code)]
 fn held_gun(commands: &mut Commands, art: &Art, content: &Content, guns: &mut GunCache, meshes: &mut Assets<Mesh>, frames: &[Frame], killer: u8, at: f32) -> Option<Entity> {
     let s = sample_in(frames, killer, at)?;
     let baked = guns.get(art, meshes, content, s.weapon, s.parts)?;

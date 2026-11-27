@@ -893,13 +893,15 @@ fn scope_and_stance(
     killcam: Res<crate::killcam::KillCam>,
 ) {
     // A replay looking down the killer's scope shows its glass too.
-    let replay = killcam.playing() && killcam.scope > 0;
+    // A replay looking down the killer's scope shows its glass too (the view fills `scoped`
+    // from the recording), also behind the end-of-match screen.
+    let replay = killcam.playing() && view.scoped > 0.5;
     if let Ok(mut visibility) = overlay.single_mut() {
         let wanted = if replay || (view.scoped > 0.5 && *screen == Screen::None) { Visibility::Inherited } else { Visibility::Hidden };
         set(&mut *visibility, wanted);
     }
     if let (Ok(mut glass), Some(images)) = (glass.single_mut(), images) {
-        let kind = if replay { killcam.scope } else { view.scope_kind };
+        let kind = view.scope_kind;
         let handle = &images.0[(kind.clamp(1, 3) - 1) as usize];
         if glass.image != *handle {
             glass.image = handle.clone();
