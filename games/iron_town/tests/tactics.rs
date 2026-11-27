@@ -257,3 +257,49 @@ fn nothing_drawn_can_be_walked_into() {
     }
     assert!(problems.is_empty(), "{} spots to walk into scenery:\n{}", problems.len(), problems.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
 }
+
+#[test]
+fn killstreak_aircraft_can_be_shot_down() {
+    use oz_sim::killstreak::{Aircraft, Recon};
+    let mut app = app();
+    let mut rules = deathmatch_rules(6);
+    rules.team_size = 1;
+    start(&mut app, rules);
+    // Earn and call in a UAV: a radar plane appears over the town.
+    for _ in 0..3 {
+        app.world_mut().resource_mut::<MatchState>().credits.push(0);
+        app.update();
+    }
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::UseStreak });
+    run(&mut app, 0.2);
+    assert!(app.world().resource::<MatchState>().uav[0] > 0.0);
+    let (plane, at) = {
+        let mut q = app.world_mut().query_filtered::<(Entity, &Transform), With<Recon>>();
+        q.single(app.world()).map(|(e, t)| (e, t.translation)).expect("a radar plane in the sky")
+    };
+    // The enemy shoots straight at it until it falls.
+    let enemy = {
+        let mut q = app.world_mut().query::<(Entity, &Player)>();
+        q.iter(app.world()).find(|(_, p)| p.team == 1).map(|(e, _)| e).unwrap()
+    };
+    app.world_mut().entity_mut(enemy).remove::<Bot>();
+    let mut down = false;
+    for _ in 0..(10.0 / FRAME) as usize {
+        let target = app.world().get::<Transform>(plane).map(|t| t.translation).unwrap_or(at);
+        let feet = app.world().get::<Transform>(enemy).unwrap().translation;
+        let to = target - (feet + Vec3::Y * EYE);
+        let mut input = app.world_mut().get_mut::<PlayerInput>(enemy).unwrap();
+        input.yaw = f32::atan2(-to.x, -to.z);
+        input.pitch = (to.y / to.length()).asin();
+        // Its sidearm: plain bullets.
+        input.weapon = oz_core::kit::gun::PISTOL as u8;
+        input.buttons = if input.buttons & buttons::FIRE == 0 { buttons::FIRE | buttons::AIM } else { buttons::AIM };
+        app.update();
+        if app.world().get_entity(plane).is_err() {
+            down = true;
+            break;
+        }
+    }
+    assert!(down, "the radar plane survived ten seconds of fire: {:?}", app.world().get::<Aircraft>(plane).map(|a| a.hp));
+    assert_eq!(app.world().resource::<MatchState>().uav[0], 0.0, "the UAV went down with its plane");
+}

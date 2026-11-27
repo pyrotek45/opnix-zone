@@ -519,8 +519,8 @@ fn killstreaks_are_earned_and_called_in() {
     call(&mut app);
     assert!(app.world().resource::<MatchState>().uav[0] > 25.0, "the UAV did not go up");
     assert_eq!(me(&mut app).rewards, [0; 3]);
-    // The bombs fall and the strike is over.
-    for _ in 0..(4.0 / FRAME) as usize {
+    // The jet flies over, the bombs fall, and the strike is over.
+    for _ in 0..(7.0 / FRAME) as usize {
         app.update();
     }
     assert_eq!(app.world_mut().query::<&Airstrike>().iter(app.world()).count(), 0);

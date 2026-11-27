@@ -490,6 +490,21 @@ pub struct Mover {
     pub speed: f32,
     /// Going over an obstacle right now.
     pub vault: Option<Vault>,
+    /// Where the body was last frame (to measure remote players' speed on the host).
+    pub last: Vec3,
+}
+
+/// Authority: remote players move on their own machines, so measure how fast they are going
+/// here (hip-fire bloom and footsteps depend on it).
+pub fn measure_remote_speed(time: Res<Time>, mut players: Query<(&Transform, &mut Mover), (Without<LocalPlayer>, Without<Bot>)>) {
+    let dt = sim_dt(&time).max(1e-4);
+    for (transform, mut mover) in &mut players {
+        let moved = (transform.translation - mover.last).xz().length() / dt;
+        let moved = if moved > 30.0 { 0.0 } else { moved };
+        mover.speed += (moved - mover.speed) * (1.0 - (-dt * 8.0).exp());
+        mover.grounded = true;
+        mover.last = transform.translation;
+    }
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

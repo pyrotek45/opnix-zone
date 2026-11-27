@@ -411,23 +411,8 @@ fn spawn_effects(
                 }
             }
             FxEvent::Flyby { from, to } => {
-                // A dark dart of a jet with a hot exhaust, crossing in about two seconds.
-                let span = *to - *from;
-                let velocity = span / 2.0;
-                let rotation = Quat::from_rotation_arc(Vec3::NEG_Z, span.normalize_or_zero());
-                for (offset, scale, paint) in [
-                    (Vec3::ZERO, Vec3::new(1.4, 0.9, 9.0), Paint::Dark),
-                    (Vec3::new(0.0, -0.1, 1.0), Vec3::new(10.0, 0.25, 2.6), Paint::Steel),
-                    (Vec3::new(0.0, 0.0, 4.7), Vec3::new(0.9, 0.9, 0.9), Paint::Glow),
-                ] {
-                    let at = *from + rotation * offset;
-                    fx.particle(
-                        Shape::Cube,
-                        paint,
-                        Transform::from_translation(at).with_rotation(rotation).with_scale(scale),
-                        Particle { velocity, gravity: 0.0, life: 2.0, initial: 2.0, size: scale, grow: 0.0 },
-                    );
-                }
+                // The jet itself is a real, shootable entity now; this is its roar.
+                let _ = (from, to);
                 sounds.write(PlaySfx { volume: 0.9, ..PlaySfx::new(Sfx::Jet, None) });
                 view.shake += 0.4;
             }

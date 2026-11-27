@@ -143,15 +143,28 @@ pub enum ShotLook {
     Mine = 6,
     /// A killstreak attack drone.
     Drone = 7,
+    /// The airstrike jet.
+    Jet = 8,
+    /// The recon UAV: a radar plane circling the map.
+    RadarPlane = 9,
+    /// A bomb falling from the jet.
+    Bomb = 10,
+    /// An artillery shell coming down.
+    Shell = 11,
 }
 
 impl ShotLook {
     pub fn from_index(i: u8) -> Self {
-        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine, ShotLook::Drone][(i as usize).min(7)]
+        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine, ShotLook::Drone, ShotLook::Jet, ShotLook::RadarPlane, ShotLook::Bomb, ShotLook::Shell][(i as usize).min(11)]
     }
 
     pub fn paint(self) -> Paint {
-        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red, Paint::Dark][self as usize]
+        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red, Paint::Dark, Paint::Dark, Paint::Steel, Paint::Iron, Paint::Iron][self as usize]
+    }
+
+    /// Killstreak aircraft and what they drop: drawn as full models, not a dart.
+    pub fn is_air(self) -> bool {
+        matches!(self, ShotLook::Drone | ShotLook::Jet | ShotLook::RadarPlane | ShotLook::Bomb | ShotLook::Shell)
     }
 
     /// Size of the projectile's mesh.

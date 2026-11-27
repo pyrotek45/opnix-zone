@@ -152,7 +152,7 @@ fn predict(
     let reach = match def.mode {
         FireMode::Projectile { .. } => 1.5,
         FireMode::Beam => 7.5,
-        FireMode::Hitscan => stats.range,
+        FireMode::Hitscan => oz_sim::weapons::MAX_RANGE,
     };
     let mut end = map.raycast(eye, dir, reach);
     if let Some((d, _)) = statics.raycast(eye, dir, end) {
@@ -201,7 +201,8 @@ fn hide_echoes(role: Res<NetRole>, local: Query<&Player, With<LocalPlayer>>, mut
     }
     let Ok(me) = local.single() else { return };
     for (shot, mut visibility) in &mut shots {
-        if shot.owner == Some(me.id) && *visibility != Visibility::Hidden {
+        // Bombs and aircraft are never predicted: always show them.
+        if shot.owner == Some(me.id) && !shot.look.is_air() && *visibility != Visibility::Hidden {
             *visibility = Visibility::Hidden;
         }
     }

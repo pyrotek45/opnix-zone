@@ -766,7 +766,7 @@ pub fn host_send(
     state: Res<MatchState>,
     players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput)>,
     enemies: Query<(&NetId, &Enemy, &Transform, &Health)>,
-    (shots, mines, drones): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>, Query<(&NetId, &crate::killstreak::Drone, &Transform)>),
+    (shots, mines, drones): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>, Query<(&NetId, &crate::killstreak::Aircraft, &Transform)>),
     structures: Query<(&NetId, &Structure, &Transform, &Health)>,
     ores: Query<(&NetId, &OreNode, &Transform)>,
     changed: Query<(), Or<(Added<Structure>, Added<OreNode>)>>,

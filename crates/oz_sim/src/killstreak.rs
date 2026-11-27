@@ -16,7 +16,7 @@
 //! reward count toward the next one.
 
 use crate::{
-    combat::{SmokeCloud, blast_players, smoke_between},
+    combat::{SmokeCloud, smoke_between},
     net::NetIds,
     player::{Arsenal, Health, Player, PlayerInput, damage_player, eye_point},
     session::{Content, Map, MatchEntity, Statics},
@@ -99,6 +99,38 @@ pub fn pop(rewards: &mut [u8; STACK]) -> Option<u8> {
     Some(std::mem::take(&mut rewards[slot]))
 }
 
+/// Killstreak aircraft are real things in the sky: drawn, replicated, and shootable by the
+/// other team. Destroying one ends the reward early (a downed jet drops nothing more, a
+/// downed radar plane takes the UAV with it).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Aircraft {
+    pub look: oz_core::content::ShotLook,
+    pub hp: f32,
+    pub team: u8,
+    pub owner: u8,
+    /// Hit sphere radius.
+    pub radius: f32,
+    /// Who hurt it last (for the shoot-down notice).
+    pub hit_by: Option<u8>,
+}
+
+/// The recon UAV's radar plane, circling the town.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Recon {
+    pub life: f32,
+    pub angle: f32,
+}
+
+const JET_HP: f32 = 260.0;
+const JET_SPEED: f32 = 48.0;
+const JET_HEIGHT: f32 = 30.0;
+const RECON_HP: f32 = 240.0;
+const RECON_HEIGHT: f32 = 48.0;
+const RECON_ORBIT: f32 = 42.0;
+const DRONE_HP: f32 = 130.0;
+/// Seconds a bomb takes to fall from the jet.
+const BOMB_FALL: f32 = 1.1;
+
 const SHELLS: u8 = 16;
 const SHELL_SPREAD: f32 = 13.0;
 const BARRAGE_DELAY: f32 = 3.0;
@@ -107,7 +139,7 @@ const STRIKE_DELAY: f32 = 2.6;
 const BOMBS: u8 = 7;
 const BOMB_SPACING: f32 = 3.6;
 const BOMB_DAMAGE: f32 = 170.0;
-const BOMB_RADIUS: f32 = 6.0;
+const BOMB_RADIUS: f32 = 9.0;
 const DRONE_SECONDS: f32 = 30.0;
 const DRONE_RANGE: f32 = 45.0;
 const DRONE_DAMAGE: f32 = 13.0;
@@ -177,7 +209,18 @@ pub fn use_streaks(
             (eye + dir * reach, Vec3::new(dir.x, 0.0, dir.z).normalize_or(Vec3::NEG_Z))
         };
         match def.id {
-            reward::UAV => state.uav[(team as usize).min(1)] = UAV_SECONDS,
+            reward::UAV => {
+                state.uav[(team as usize).min(1)] = UAV_SECONDS;
+                let angle = transform.translation.x.atan2(transform.translation.z);
+                let at = Vec3::new(angle.sin() * RECON_ORBIT, RECON_HEIGHT, angle.cos() * RECON_ORBIT);
+                commands.spawn((
+                    MatchEntity,
+                    ids.next(),
+                    Recon { life: UAV_SECONDS, angle },
+                    Aircraft { look: oz_core::content::ShotLook::RadarPlane, hp: RECON_HP, team, owner: id, radius: 3.2, hit_by: None },
+                    Transform::from_translation(at),
+                ));
+            }
             reward::SUPPLY => {
                 for (mut mate, _, _, mut health, mut arsenal) in &mut players {
                     if mate.team == team && health.alive() {
@@ -196,11 +239,24 @@ pub fn use_streaks(
             reward::AIRSTRIKE => {
                 // Bombs fall along the line you are looking down, centred where you aim.
                 let (at, flat) = aim(transform, input);
-                commands.spawn((MatchEntity, Airstrike { at, dir: flat, owner: id, team, timer: STRIKE_DELAY, flown: false, dropped: 0, barrage: false }));
+                let start = at + Vec3::Y * JET_HEIGHT - flat * JET_SPEED * STRIKE_DELAY;
+                commands.spawn((
+                    MatchEntity,
+                    ids.next(),
+                    Airstrike { at, dir: flat, owner: id, team, timer: STRIKE_DELAY, flown: false, dropped: 0, barrage: false },
+                    Aircraft { look: oz_core::content::ShotLook::Jet, hp: JET_HP, team, owner: id, radius: 3.4, hit_by: None },
+                    Transform::from_translation(start).looking_to(flat, Vec3::Y),
+                ));
             }
             _ => {
                 let at = transform.translation + Vec3::Y * 4.5;
-                commands.spawn((MatchEntity, ids.next(), Drone { owner: id, team, life: DRONE_SECONDS, cooldown: 1.0, orbit: 0.0 }, Transform::from_translation(at)));
+                commands.spawn((
+                    MatchEntity,
+                    ids.next(),
+                    Drone { owner: id, team, life: DRONE_SECONDS, cooldown: 1.0, orbit: 0.0 },
+                    Aircraft { look: oz_core::content::ShotLook::Drone, hp: DRONE_HP, team, owner: id, radius: 0.9, hit_by: None },
+                    Transform::from_translation(at),
+                ));
             }
         }
         fx.write(FxEvent::StreakUsed { name, team, reward: def.id });
@@ -213,15 +269,14 @@ pub fn run_streaks(
     time: Res<Time>,
     map: Res<Map>,
     statics: Res<Statics>,
-    content: Res<Content>,
-    grid: Res<crate::combat::Grid>,
     mut state: ResMut<MatchState>,
     mut commands: Commands,
-    mut strikes: Query<(Entity, &mut Airstrike)>,
-    mut drones: Query<(Entity, &mut Drone, &mut Transform), Without<Player>>,
+    mut strikes: Query<(Entity, &mut Airstrike, Option<&mut Transform>), (Without<Drone>, Without<Player>, Without<Recon>)>,
+    mut recons: Query<(Entity, &mut Recon, &mut Transform), (Without<Drone>, Without<Player>, Without<Airstrike>)>,
+    mut ids: ResMut<NetIds>,
+    mut drones: Query<(Entity, &mut Drone, &mut Transform), (Without<Player>, Without<Airstrike>, Without<Recon>)>,
     mut players: Query<(&Transform, &mut Health, &mut Player), (Without<crate::combat::Projectile>, Without<crate::structures::Structure>, Without<Drone>)>,
-    smokes: Query<(&Transform, &SmokeCloud), (Without<Player>, Without<Drone>)>,
-    mut hits: EventWriter<crate::combat::Hit>,
+    smokes: Query<(&Transform, &SmokeCloud), (Without<Player>, Without<Drone>, Without<Airstrike>, Without<Recon>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let dt = sim_dt(&time);
@@ -230,16 +285,25 @@ pub fn run_streaks(
     }
     let name_of = |state: &MatchState, id: u8| state.roster.iter().find(|r| r.id == id).map_or(String::new(), |r| r.name.clone());
 
-    for (entity, mut strike) in &mut strikes {
+    for (entity, mut strike, mut transform) in &mut strikes {
         strike.timer -= dt;
-        if !strike.flown && strike.timer <= 0.7 {
-            strike.flown = true;
-            let high = strike.at + Vec3::Y * 38.0;
-            fx.write(FxEvent::Flyby { from: high - strike.dir * 160.0, to: high + strike.dir * 160.0 });
+        // The jet flies straight over the target; the engines are heard as it comes in.
+        if !strike.barrage {
+            if let Some(transform) = transform.as_mut() {
+                // Over the target as the first bombs land; the bombs keep the jet's speed as they fall.
+                transform.translation = strike.at + Vec3::Y * JET_HEIGHT - strike.dir * JET_SPEED * strike.timer;
+            }
+            if !strike.flown && strike.timer <= 1.6 {
+                strike.flown = true;
+                let high = strike.at + Vec3::Y * JET_HEIGHT;
+                fx.write(FxEvent::Flyby { from: high - strike.dir * 160.0, to: high + strike.dir * 160.0 });
+            }
         }
-        // One bomb every 0.12 s once the timer runs out; artillery shells land slower and scattered.
+        // Bombs leave the jet one after another, timed to land in a line across the target;
+        // artillery shells come down out of the sky, slower and scattered.
         let (count, gap) = if strike.barrage { (SHELLS, 0.38) } else { (BOMBS, 0.12) };
-        while strike.timer <= -(strike.dropped as f32) * gap && strike.dropped < count {
+        let lead = if strike.barrage { 0.0 } else { BOMB_FALL };
+        while strike.dropped < count && strike.timer <= lead - (strike.dropped as f32) * gap {
             let p = if strike.barrage {
                 // A sunflower scatter: even cover of the target area, no two shells alike.
                 let k = strike.dropped as f32 + 0.5;
@@ -250,13 +314,33 @@ pub fn run_streaks(
                 strike.at + strike.dir * (strike.dropped as f32 - (BOMBS - 1) as f32 * 0.5) * BOMB_SPACING
             };
             let ground = map.height(p.x, p.z).max(statics.support(p.x, p.z, p.y + 0.5));
-            let at = Vec3::new(p.x, ground.max(p.y - 3.0) + 0.4, p.z);
-            fx.write(FxEvent::Explosion { at, radius: BOMB_RADIUS });
-            crate::combat::splash(&grid, &mut hits, at, BOMB_RADIUS, BOMB_DAMAGE, Some(strike.owner), None);
-            blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, BOMB_RADIUS, BOMB_DAMAGE, strike.team, strike.owner, None);
+            let target = Vec3::new(p.x, ground.max(p.y - 3.0), p.z);
+            let (from, look, gravity, fall) = if strike.barrage {
+                (target + Vec3::new(4.0, 70.0, 0.0), oz_core::content::ShotLook::Shell, 20.0, 1.6)
+            } else {
+                (transform.as_ref().map_or(target + Vec3::Y * JET_HEIGHT, |t| t.translation - Vec3::Y * 1.2), oz_core::content::ShotLook::Bomb, 14.0, BOMB_FALL)
+            };
+            // Launch so it lands on `target` after `fall` seconds under gravity.
+            let velocity = (target - from) / fall + Vec3::Y * 0.5 * gravity * fall;
+            let shot = crate::combat::Projectile { velocity, gravity, damage: BOMB_DAMAGE, splash: BOMB_RADIUS, look, owner: Some(strike.owner), team: strike.team, life: fall + 2.0, effect: crate::combat::Impact::Blast };
+            crate::combat::spawn_projectile(&mut commands, &mut ids, from, shot);
             strike.dropped += 1;
         }
-        if strike.dropped >= count {
+        // Done once everything is away and the jet has flown off.
+        if strike.dropped >= count && strike.timer < -2.5 {
+            commands.entity(entity).despawn();
+        }
+    }
+
+    // The radar plane circles the town until the UAV runs out.
+    for (entity, mut recon, mut transform) in &mut recons {
+        recon.life -= dt;
+        recon.angle += dt * 0.22;
+        let at = Vec3::new(recon.angle.sin() * RECON_ORBIT, RECON_HEIGHT, recon.angle.cos() * RECON_ORBIT);
+        let heading = Vec3::new(recon.angle.cos(), 0.0, -recon.angle.sin());
+        transform.translation = at;
+        transform.look_to(heading, Vec3::Y);
+        if recon.life <= 0.0 || state.phase != Phase::Live {
             commands.entity(entity).despawn();
         }
     }
@@ -340,5 +424,49 @@ mod tests {
         assert_eq!(name(reward::DRONE), "ATTACK DRONE");
         assert_eq!(chosen([0, 0, 0]), DEFAULT_STREAKS);
         assert_eq!(chosen([reward::SUPPLY, reward::SUPPLY, 99]), [reward::SUPPLY, 0, 0]);
+    }
+}
+
+/// Authority: rockets and grenades that reach an enemy aircraft hurt it (bullets are handled in
+/// `weapons`), and anything shot down falls out of the sky.
+#[allow(clippy::too_many_arguments)]
+pub fn shoot_down(
+    mut commands: Commands,
+    mut state: ResMut<MatchState>,
+    shots: Query<(Entity, &Transform, &crate::combat::Projectile), Without<Aircraft>>,
+    mut aircraft: Query<(Entity, &Transform, &mut Aircraft, Has<Recon>)>,
+    mut fx: EventWriter<FxEvent>,
+) {
+    use oz_core::content::ShotLook;
+    for (shot_entity, at, shot) in &shots {
+        if shot.owner.is_none() || shot.damage <= 0.0 || matches!(shot.look, ShotLook::Bomb | ShotLook::Shell | ShotLook::Drone) {
+            continue;
+        }
+        for (_, plane, mut craft, _) in &mut aircraft {
+            if craft.team != shot.team && craft.hp > 0.0 && plane.translation.distance(at.translation) < craft.radius + 0.6 {
+                craft.hp -= shot.damage.max(120.0);
+                craft.hit_by = shot.owner;
+                fx.write(FxEvent::Explosion { at: at.translation, radius: shot.splash.max(2.0) });
+                commands.entity(shot_entity).despawn();
+                break;
+            }
+        }
+    }
+    for (entity, plane, craft, recon) in &mut aircraft {
+        if craft.hp > 0.0 {
+            continue;
+        }
+        let what = match craft.look {
+            ShotLook::Jet => "AIRSTRIKE JET",
+            ShotLook::RadarPlane => "RADAR PLANE",
+            _ => "ATTACK DRONE",
+        };
+        let by = craft.hit_by.and_then(|id| state.roster.iter().find(|r| r.id == id)).map_or(String::new(), |r| format!("{} SHOT DOWN ", r.name));
+        fx.write(FxEvent::notice(format!("{by}{what}")));
+        fx.write(FxEvent::Explosion { at: plane.translation, radius: if craft.look == ShotLook::Drone { 3.0 } else { 7.0 } });
+        if recon {
+            state.uav[(craft.team as usize).min(1)] = 0.0;
+        }
+        commands.entity(entity).despawn();
     }
 }

@@ -513,7 +513,7 @@ fn update_shapes(
     content: Res<Content>,
     rules: Res<Rules>,
     view: Res<ViewState>,
-    spectate: Res<crate::spectate::Spectate>,
+    (spectate, screen): (Res<crate::spectate::Spectate>, Res<crate::ui::Screen>),
     (prediction, role): (Res<crate::predict::Prediction>, Res<NetRole>),
     (players, subject): (Query<(&Health, &Arsenal, &Player, &Transform, &PlayerInput, &Mover, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
     enemies: Query<&Transform, With<Enemy>>,
@@ -531,7 +531,11 @@ fn update_shapes(
     };
     if let Ok(mut overlay) = hurt.single_mut() {
         let low = if health.alive() { (0.35 - health.fraction()).max(0.0) * 0.6 } else { 0.45 };
-        let color = if view.blind > 0.0 {
+        // Damage, flash and low-health tints belong to the game view, never to a menu over it.
+        let in_menu = !matches!(*screen, crate::ui::Screen::None | crate::ui::Screen::Chat);
+        let color = if in_menu {
+            Color::NONE
+        } else if view.blind > 0.0 {
             // A flashbang whites the screen out, then fades.
             Color::srgba(1.0, 1.0, 0.96, view.blind.min(1.0).powf(0.7))
         } else {
@@ -621,7 +625,17 @@ fn update_shapes(
     let beacon_fraction = if state.objective_max > 0.0 { state.objective_hp / state.objective_max } else { 0.0 };
     let beacon_lit = (beacon_fraction * BEACON_SEGMENTS as f32).ceil() as u8;
     let owned: Vec<usize> = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).collect();
-    let gap = 5.0 + (mover.speed * 1.1).min(9.0) + view.recoil * 9.0 + if view.hit > 0.0 { if view.head_hit || view.limb_hit > 0.0 { 7.0 } else { 3.0 } } else { 0.0 };
+    // The ticks sit on the real cone: hip fire is wide, moving blooms it, the sights close it.
+    let aiming = input.held(buttons::AIM);
+    let cone = weapon.map_or(0.02, |(def, owned)| {
+        let stats = resolve(def, owned, &content.attachments);
+        let hip = match oz_sim::player::perk(&content, me) {
+            Some(oz_core::content::PerkEffect::Hipfire(scale)) if !aiming => scale,
+            _ => 1.0,
+        };
+        stats.spread * if aiming { stats.ads_spread } else { hip * oz_sim::weapons::HIP_WIDTH } * stance::steadiness(input.stance) * oz_sim::weapons::bloom(mover.speed, mover.grounded, aiming)
+    });
+    let gap = 3.0 + (cone * 520.0).min(90.0) + view.recoil * 9.0 + if view.hit > 0.0 { if view.head_hit || view.limb_hit > 0.0 { 7.0 } else { 3.0 } } else { 0.0 };
     // Over a player: the crosshair takes their team colour, so you never shoot a friend by mistake.
     let eye = transform.translation + Vec3::Y * input.eye();
     let aim = input.aim_dir();

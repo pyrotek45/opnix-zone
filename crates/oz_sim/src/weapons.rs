@@ -25,6 +25,20 @@ const BEAM_RANGE: f32 = 7.5;
 const PIERCE_DEPTH: f32 = 0.65;
 const PIERCE_KEEP: f32 = 0.6;
 const BURN_SECONDS: f32 = 3.0;
+/// Rounds fly until they hit something or leave the map: past a gun's effective range they
+/// only lose punch (see `falloff` in `fire_weapons`).
+pub const MAX_RANGE: f32 = 400.0;
+/// Hip fire is a spray: this much wider than the weapon's listed spread before parts and perks.
+pub const HIP_WIDTH: f32 = 1.6;
+
+/// How much moving opens the cone: walking nearly doubles it, sprinting about triples it,
+/// in the air worse still. Aiming down the sights barely blooms.
+pub fn bloom(speed: f32, grounded: bool, aiming: bool) -> f32 {
+    let walk = (speed / crate::player::WALK_SPEED).clamp(0.0, 1.0);
+    let run = ((speed - crate::player::WALK_SPEED) / (crate::player::SPRINT_SPEED - crate::player::WALK_SPEED)).clamp(0.0, 1.0);
+    let moving = 1.0 + 0.9 * walk + 1.1 * run + if grounded { 0.0 } else { 1.5 };
+    if aiming { 1.0 + (moving - 1.0) * 0.15 } else { moving }
+}
 /// A gun-butt strike: one puts a standard robot down (armour perks survive it).
 pub const MELEE_DAMAGE: f32 = 100.0;
 
@@ -144,10 +158,10 @@ pub fn fire_weapons(
     mut rng: ResMut<SimRng>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health, Option<&ViewTime>)>,
+    mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health, Option<&ViewTime>, Option<&crate::player::Mover>)>,
     solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<OreNode>)>,
     mut ores: Query<(&Transform, &mut OreNode)>,
-    (mut hits, mut traces, mut noises): (EventWriter<Hit>, EventWriter<crate::breakables::Trace>, ResMut<crate::bots::Noises>),
+    (mut hits, mut traces, mut noises, mut aircraft): (EventWriter<Hit>, EventWriter<crate::breakables::Trace>, ResMut<crate::bots::Noises>, Query<(Entity, &Transform, &mut crate::killstreak::Aircraft), Without<Player>>),
     mut fx: EventWriter<FxEvent>,
     mut ore_carry: Local<[f32; 3]>,
 ) {
@@ -155,7 +169,7 @@ pub fn fire_weapons(
     let bodies: Vec<Body> = if rules.pvp {
         players
             .iter()
-            .filter(|(.., health, _)| health.alive())
+            .filter(|(.., health, _, _)| health.alive())
             .map(|(entity, player, transform, input, ..)| Body {
                 entity,
                 id: player.id,
@@ -177,7 +191,7 @@ pub fn fire_weapons(
     let lobby = state.phase == Phase::Lobby;
 
     let now = time.elapsed_secs();
-    for (entity, mut player, transform, input, mut arsenal, mut health, view) in &mut players {
+    for (entity, mut player, transform, input, mut arsenal, mut health, view, mover) in &mut players {
         // Plain reborrow so separate fields can be borrowed at once.
         let arsenal = &mut *arsenal;
         arsenal.cooldown = (arsenal.cooldown - dt).max(0.0);
@@ -429,7 +443,8 @@ pub fn fire_weapons(
         };
         // Blind fire from cover: the gun is out, the eyes are not.
         let blind = if input.held(buttons::BLIND) { 3.2 } else { 1.0 };
-        let spread = (stats.spread * if aiming { stats.ads_spread } else { hipfire } * stance::steadiness(input.stance) * blind).max(if blind > 1.0 { 0.045 } else { 0.0 });
+        let moving = mover.map_or(1.0, |m| bloom(m.speed, m.grounded, aiming));
+        let spread = (stats.spread * if aiming { stats.ads_spread } else { hipfire * HIP_WIDTH } * stance::steadiness(input.stance) * blind * moving).max(if blind > 1.0 { 0.045 } else { 0.0 });
         noises.0.push(crate::bots::Noise { at: eye, radius: if stats.quiet { 9.0 } else { 80.0 }, team: player.team, shout: false });
         let shot = |to: Vec3, beam: bool| FxEvent::Shot { by: player.id, sound: def.sound, from, to, beam, tracer: stats.tracer, quiet: stats.quiet, local: false };
         // Nearest enemy-team player along a ray, within `reach`.
@@ -502,9 +517,22 @@ pub fn fire_weapons(
             FireMode::Hitscan => {
                 for _ in 0..stats.pellets {
                     let dir = spread_dir(look, spread, &mut rng);
-                    let (mut reach, kept) = reach_with_pierce(&map, &statics, &solids, eye, dir, stats.range, stats.pierce);
-                    // Damage falls off over the last 40% of the range.
-                    let falloff = |d: f32| kept * (1.0 - 0.5 * ((d / stats.range - 0.6) / 0.4).clamp(0.0, 1.0));
+                    let (mut reach, kept) = reach_with_pierce(&map, &statics, &solids, eye, dir, MAX_RANGE, stats.pierce);
+                    // Full damage out to the effective range, then it eases off to 55% by three times it.
+                    let falloff = |d: f32| kept * (1.0 - 0.45 * ((d - stats.range) / (2.0 * stats.range)).clamp(0.0, 1.0));
+                    // Enemy killstreak aircraft in the way take the round.
+                    let plane = aircraft
+                        .iter()
+                        .filter(|(_, _, craft)| craft.team != player.team && craft.hp > 0.0)
+                        .filter_map(|(e, t, craft)| ray_sphere(eye, dir, t.translation, craft.radius).filter(|d| *d < reach).map(|d| (d, e)))
+                        .min_by(|a, b| a.0.total_cmp(&b.0));
+                    if let Some((d, e)) = plane {
+                        reach = d;
+                        if let Ok((_, _, mut craft)) = aircraft.get_mut(e) {
+                            craft.hp -= stats.damage * falloff(d);
+                            craft.hit_by = Some(player.id);
+                        }
+                    }
                     let body = player_hit(dir, reach);
                     if let Some((d, ..)) = body {
                         reach = d;
@@ -521,7 +549,7 @@ pub fn fire_weapons(
                         }
                     } else if let (Some((d, head, victim)), Some(me)) = (body, me) {
                         struck.push((victim, stats.damage * falloff(d), me, stats.burn, head));
-                    } else if stats.splash > 0.0 && reach < stats.range {
+                    } else if stats.splash > 0.0 && reach < MAX_RANGE {
                         splash(&grid, &mut hits, end, stats.splash, stats.damage * 0.5, Some(player.id), None);
                     }
                     // Explosive rounds also catch nearby players.
@@ -543,7 +571,7 @@ pub fn fire_weapons(
     }
 
     for (at, radius, team) in resupply {
-        for (_, player, transform, _, mut arsenal, health, _) in &mut players {
+        for (_, player, transform, _, mut arsenal, health, _, _) in &mut players {
             if player.team == team && health.alive() && transform.translation.distance(at) <= radius {
                 top_up(&mut arsenal, &content.weapons);
             }
@@ -552,7 +580,7 @@ pub fn fire_weapons(
 
     for (victim, damage, attacker, burn, part) in struck {
         let attacker = &bodies[attacker];
-        if let Ok((_, mut player, _, _, _, mut health, _)) = players.get_mut(victim) {
+        if let Ok((_, mut player, _, _, _, mut health, _, _)) = players.get_mut(victim) {
             if burn > 0.0 {
                 player.burn = burn;
                 player.burn_time = BURN_SECONDS;

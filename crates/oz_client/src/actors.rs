@@ -9,6 +9,7 @@ use crate::{
     art::{AnimPart, Art, Baked, LegGroup},
 };
 use bevy::{pbr::NotShadowCaster, prelude::*};
+use oz_core::content::ShotLook;
 use oz_sim::prelude::*;
 
 /// Per-match baked models, indexed like the catalog.
@@ -66,6 +67,70 @@ fn bake_models(content: Res<Content>, art: Res<Art>, mut meshes: ResMut<Assets<M
     };
 }
 
+/// Killstreak aircraft and their payloads, nose toward -Z, in the owner's team colours.
+fn air_model(look: ShotLook, team: u8) -> BlockModel {
+    let paint = crate::avatar::team_paint(team.min(2));
+    let light = crate::avatar::team_light(team.min(2));
+    match look {
+        // A swept-wing attack jet: long nose, delta wings, twin tails, hot exhaust.
+        ShotLook::Jet => BlockModel::new()
+            .cube(Paint::Dark, [0.0, 0.0, 0.0], [1.3, 1.1, 8.5])
+            .shard(Paint::Dark, [0.0, 0.0, -5.0], [0.9, 0.8, 2.2])
+            .cube(Paint::Glow, [0.0, 0.45, -2.6], [0.6, 0.35, 1.6])
+            .cube(paint, [-2.6, -0.1, 1.2], [4.2, 0.18, 2.4])
+            .rotated([0.0, -28.0, 0.0])
+            .cube(paint, [2.6, -0.1, 1.2], [4.2, 0.18, 2.4])
+            .rotated([0.0, 28.0, 0.0])
+            .cube(paint, [-0.7, 1.1, 3.6], [0.15, 1.6, 1.5])
+            .rotated([0.0, 0.0, -14.0])
+            .cube(paint, [0.7, 1.1, 3.6], [0.15, 1.6, 1.5])
+            .rotated([0.0, 0.0, 14.0])
+            .cube(Paint::Steel, [0.0, -0.1, 3.8], [3.4, 0.14, 1.0])
+            .cylinder(Paint::Spark, [0.0, 0.0, 4.4], [0.55, 0.3, 0.55])
+            .rotated([90.0, 0.0, 0.0])
+            .cube(light, [-4.4, -0.05, 2.2], [0.3, 0.2, 0.3])
+            .cube(light, [4.4, -0.05, 2.2], [0.3, 0.2, 0.3]),
+        // A slow, straight-winged radar plane with a big dish on its back.
+        ShotLook::RadarPlane => BlockModel::new()
+            .cube(Paint::Steel, [0.0, 0.0, 0.0], [1.5, 1.4, 9.0])
+            .shard(Paint::Steel, [0.0, 0.0, -5.0], [1.1, 1.0, 1.6])
+            .cube(paint, [0.0, 0.0, -0.5], [15.0, 0.22, 1.8])
+            .cube(paint, [0.0, 1.0, 4.0], [0.2, 2.0, 1.6])
+            .cube(Paint::Steel, [0.0, 0.2, 4.2], [4.6, 0.16, 1.1])
+            .cylinder(Paint::Dark, [0.0, 1.7, 0.6], [4.0, 0.45, 4.0])
+            .cylinder(light, [0.0, 1.95, 0.6], [3.2, 0.06, 3.2])
+            .cube(Paint::Dark, [0.0, 1.05, 0.6], [0.3, 0.8, 0.3])
+            .cylinder(Paint::Metal, [-3.8, 0.0, -1.7], [1.6, 0.1, 1.6])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Metal, [3.8, 0.0, -1.7], [1.6, 0.1, 1.6])
+            .rotated([90.0, 0.0, 0.0])
+            .cube(Paint::Dark, [-3.8, 0.0, -0.9], [0.6, 0.6, 1.6])
+            .cube(Paint::Dark, [3.8, 0.0, -0.9], [0.6, 0.6, 1.6]),
+        // A quadcopter: a body, four arms and rotor discs, a red eye.
+        ShotLook::Drone => {
+            let mut m = BlockModel::new().cube(paint, [0.0, 0.0, 0.0], [0.6, 0.22, 0.7]).shard(Paint::Red, [0.0, -0.05, -0.38], [0.14, 0.14, 0.1]).cube(Paint::Dark, [0.0, -0.2, 0.0], [0.18, 0.18, 0.4]);
+            for (x, z) in [(-0.55, -0.55), (0.55, -0.55), (-0.55, 0.55), (0.55, 0.55)] {
+                m = m.segment(Paint::Dark, [0.0, 0.05, 0.0], [x, 0.1, z], 0.06).cylinder(Paint::Steel, [x, 0.16, z], [0.5, 0.03, 0.5]).cylinder(light, [x, 0.12, z], [0.1, 0.06, 0.1]);
+            }
+            m
+        }
+        // A finned bomb, nose first.
+        ShotLook::Bomb => BlockModel::new()
+            .cylinder(Paint::Iron, [0.0, 0.0, 0.0], [0.42, 1.4, 0.42])
+            .rotated([90.0, 0.0, 0.0])
+            .shard(Paint::Iron, [0.0, 0.0, -0.85], [0.36, 0.36, 0.4])
+            .cube(Paint::Dark, [0.0, 0.0, 0.85], [0.8, 0.06, 0.4])
+            .cube(Paint::Dark, [0.0, 0.0, 0.85], [0.06, 0.8, 0.4])
+            .cube(Paint::Gold, [0.0, 0.0, -0.3], [0.44, 0.44, 0.08]),
+        // An artillery shell with a glowing tail.
+        _ => BlockModel::new()
+            .cylinder(Paint::Gold, [0.0, 0.0, 0.0], [0.24, 0.9, 0.24])
+            .rotated([90.0, 0.0, 0.0])
+            .shard(Paint::Iron, [0.0, 0.0, -0.55], [0.22, 0.22, 0.3])
+            .shard(Paint::Spark, [0.0, 0.0, 0.6], [0.2, 0.2, 0.4]),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn attach(
     mut commands: Commands,
@@ -78,7 +143,17 @@ fn attach(
     ores: Query<(Entity, &OreNode), Added<OreNode>>,
     shots: Query<(Entity, &Projectile), Added<Projectile>>,
     mines: Query<Entity, Added<oz_sim::combat::Mine>>,
+    (aircraft, mut meshes, mut air): (Query<(Entity, &oz_sim::killstreak::Aircraft), (Added<oz_sim::killstreak::Aircraft>, Without<Projectile>)>, ResMut<Assets<Mesh>>, Local<bevy::platform::collections::HashMap<(u8, u8), crate::art::Baked>>),
 ) {
+    // Aircraft and bombs get real models (the host's aircraft are not projectiles; clients' are).
+    let mut air_model_for = |commands: &mut Commands, entity: Entity, look: ShotLook, team: u8| {
+        let baked = air.entry((look as u8, team)).or_insert_with(|| art.bake(&air_model(look, team), &mut meshes)).clone();
+        commands.entity(entity).insert(Visibility::Inherited);
+        art.spawn(commands, entity, &baked);
+    };
+    for (entity, craft) in &aircraft {
+        air_model_for(&mut commands, entity, craft.look, craft.team);
+    }
     for entity in &mines {
         let look = oz_core::content::ShotLook::Mine;
         commands.entity(entity).insert(Visibility::Inherited).with_children(|parent| {
@@ -106,6 +181,10 @@ fn attach(
         art.spawn(&mut commands, entity, &models.ore[node.ore as usize]);
     }
     for (entity, shot) in &shots {
+        if shot.look.is_air() {
+            air_model_for(&mut commands, entity, shot.look, shot.team);
+            continue;
+        }
         commands.entity(entity).insert(Visibility::Inherited).with_children(|parent| {
             parent.spawn((
                 Mesh3d(art.primitive(Shape::Shard)),

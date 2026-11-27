@@ -547,13 +547,19 @@ impl World {
 
     /// Distance along a ray until it dips below the terrain, or `max`.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> f32 {
+        // Fine steps close by, coarser far out (rounds now fly hundreds of metres), and done
+        // as soon as a rising ray is above any terrain there could be.
         let mut d = 0.2;
         while d < max {
             let p = origin + dir * d;
-            if p.y <= self.height(p.x, p.z) {
+            let ground = self.height(p.x, p.z);
+            if p.y <= ground {
                 return d;
             }
-            d += 0.3;
+            if dir.y >= 0.0 && p.y > 60.0 {
+                return max;
+            }
+            d += (0.3 + d * 0.012).min((p.y - ground).max(0.3));
         }
         max
     }
