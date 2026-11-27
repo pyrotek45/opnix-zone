@@ -135,6 +135,8 @@ pub struct Rig {
     pub(crate) climb_phase: f32,
     /// The body's current turn away from the view (cover), eased.
     pub(crate) turn: f32,
+    /// Which way the body is turning (sign) while it turns, so half turns pick a side and keep it.
+    pub(crate) spin: f32,
     pub(crate) throw_t: f32,
     pub(crate) melee_t: f32,
 }
@@ -420,6 +422,7 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
         throw_t: 9.0,
         melee_t: 9.0,
         turn: 0.0,
+        spin: 0.0,
         climb: 0.0,
         climb_phase: 0.0,
         hunker: 0.0,
@@ -693,22 +696,27 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             (Vec3::new(0.0, 0.2, 1.08) * pr, Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr))
         };
         // Cover: back to the wall while waiting; turn out to face the shot when aiming or firing.
-        // Blind fire over low cover turns to face the wall and reaches up over it; round a
-        // corner the back stays to the wall and only the arm goes out.
+        // Blind fire keeps the back to the wall too: only the gun arm goes up and over.
         let over_top = pose.blind && pose.lean.abs() < 0.3;
         let wanted_turn = match pose.cover {
-            Some(turn) if over_top => (turn + PI + PI).rem_euclid(TAU) - PI,
             Some(turn) if (!pose.aiming && rig.angry < 0.8) || pose.blind => turn,
             _ => 0.0,
         };
-        let gap = (wanted_turn - rig.turn + PI).rem_euclid(TAU) - PI;
+        // Half a turn either way is the same distance: keep going the way it already is, so
+        // popping up to aim over a wall never flips back and forth or spins right round.
+        let mut gap = (wanted_turn - rig.turn + PI).rem_euclid(TAU) - PI;
+        if gap.abs() > 2.6 && rig.spin != 0.0 && gap.signum() != rig.spin.signum() {
+            gap += TAU * rig.spin.signum();
+        }
+        rig.spin = if gap.abs() > 0.05 { gap } else { 0.0 };
         rig.turn += gap * (1.0 - (-dt * 10.0).exp());
+        rig.turn = (rig.turn + PI).rem_euclid(TAU) - PI;
         let body_rot = Quat::from_rotation_y(rig.turn) * body_rot;
         set(&mut transforms, rig.body, body_at, body_rot, blend);
 
         // Hunkered down behind cover: lower and folded over, so the head stays under the top
         // of a waist-high wall (the hit spheres in `weapons` drop the same way).
-        let hunker_target = if pose.cover.is_some() && pose.stance == stance::CROUCH && !pose.aiming && !pose.dead { if over_top { 0.55 } else { 1.0 } } else { 0.0 };
+        let hunker_target = if pose.cover.is_some() && pose.stance == stance::CROUCH && !pose.aiming && !pose.dead { 1.0 } else { 0.0 };
         rig.hunker = towards(rig.hunker, hunker_target, 9.0);
         let hunker = rig.hunker * c;
         // Hips: standing bobs with the stride; crouch-walking stays low and level; kneeling is lowest.
@@ -763,11 +771,10 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let torso_lean = st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.24 - 0.1 * moving) - 0.45 * hunker;
         // Leaning out to aim rolls the whole torso; blind fire (leaning without aiming) keeps
         // the body in and only pushes the gun round the corner.
-        // Blind fire over the top leans in towards the wall and away from the raised arm.
+        // Blind fire over the top leans a little away from the raised arm, head tucked down.
         rig.blind = towards(rig.blind, over_top as u8 as f32, 14.0);
         let b = rig.blind;
-        let torso_lean = torso_lean - 0.2 * b;
-        let roll = Quat::from_rotation_z(-pose.lean * if pose.aiming { 0.3 } else { 0.06 } + 0.16 * b);
+        let roll = Quat::from_rotation_z(-pose.lean * if pose.aiming { 0.3 } else { 0.06 } + 0.12 * b);
         let twist = Quat::from_rotation_y(swing * 0.08 * k.min(1.0) * st);
         set(&mut transforms, rig.torso, Vec3::Y * 0.06, roll * rot(torso_lean) * twist, blend);
         let carry = if pose.sprinting && !pose.aiming { -0.75 } else { 0.0 } - 0.5 * r;
@@ -776,10 +783,8 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let aim_pitch = aim_pitch + (-1.35 - aim_pitch) * rig.climb;
         let tilt = Quat::from_rotation_z(0.45 * r + fumble * 2.0);
         let melee = if rig.melee_t < 0.42 { (rig.melee_t / 0.42 * PI).sin() } else { 0.0 };
-        // Blind fire: one arm up, the gun held over the top (or out round the edge).
         let aim_at = Vec3::Y * SHOULDER
             + if pose.aiming { Vec3::new(-0.04, 0.03, -0.04) } else { Vec3::new(pose.lean * 0.4, 0.0, 0.0) } * (1.0 - b)
-            + Vec3::new(0.0, 0.06, 0.0) * b
             + Vec3::new(0.0, 0.05, -0.3) * melee
             + Vec3::new(0.0, -0.05 * r + fumble, 0.07 * kick.max(0.0) - 0.03 * kick.min(0.0));
         // Firing blind the gun arm swings round to point exactly where the player looks, over
@@ -788,18 +793,20 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let torso_rot = roll * rot(torso_lean) * twist;
         let body_frame = Quat::from_rotation_y(rig.turn) * torso_rot;
         let look = rot(pose.pitch.clamp(-1.2, 1.2));
-        // Over the top the arm reaches straight up (a touch forward, over the wall) and the
-        // wrist turns the gun to point where the player looks.
-        let reach_up = Quat::from_rotation_y(rig.turn) * rot(1.35 + 0.1 * kick) * Quat::from_rotation_z(0.1);
-        let aim_rot = if over_top {
-            body_frame.inverse() * reach_up
+        // Over the top: the right arm swings up from its shoulder and back over the wall, angled
+        // up, and the hand holds the gun level, pointing where the player looks.
+        let raise = 0.95 + 0.12 * kick;
+        let shoulder = Vec3::new(0.27, SHOULDER + 0.02, 0.0);
+        let (aim_at, aim_rot) = if over_top {
+            let arm_rot = body_frame.inverse() * look * rot(raise);
+            (aim_at.lerp(shoulder - arm_rot * Vec3::new(0.27, 0.02, 0.0), b), arm_rot)
         } else if pose.blind {
-            body_frame.inverse() * look
+            (aim_at, body_frame.inverse() * look)
         } else {
-            rot(aim_pitch + 0.4 * melee) * Quat::from_rotation_y(0.5 * melee) * tilt
+            (aim_at, rot(aim_pitch + 0.4 * melee) * Quat::from_rotation_y(0.5 * melee) * tilt)
         };
         set(&mut transforms, rig.aim, aim_at, aim_rot, if prone { blend } else { 1.0 - (-dt * 30.0).exp() });
-        let wrist = if over_top { reach_up.inverse() * look } else { Quat::IDENTITY };
+        let wrist = if over_top { rot(-raise) } else { Quat::IDENTITY };
         set(&mut transforms, rig.gun, GRIP, wrist, 1.0 - (-dt * 30.0).exp());
         // The left arm: wound back over the shoulder while a grenade cooks, then an overarm throw.
         let arm = if rig.cook {
@@ -813,13 +820,13 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         // On a ladder both hands reach up rung over rung; the gun hangs on its sling.
         let reach = |side: f32| rot(2.5 + 0.45 * (rig.climb_phase + side * PI).sin());
         let arm = arm.slerp(reach(0.0), rig.climb);
-        // One-handed blind fire: the off hand stays down behind cover, braced low in front.
-        let arm = if pose.blind && !pose.dead && !rig.cook && rig.throw_t >= 0.45 {
-            (body_frame * aim_rot).inverse() * Quat::from_rotation_y(rig.turn) * rot(-0.55) * Quat::from_rotation_y(-0.35)
-        } else {
-            arm
-        };
-        set(&mut transforms, rig.arms[0], Vec3::ZERO, arm, blend);
+        // One-handed blind fire: the off hand stays down behind cover, braced on the wall at
+        // its side, and stays at the shoulder while the gun arm goes up.
+        let braced = pose.blind && !pose.dead && !rig.cook && rig.throw_t >= 0.45;
+        let arm = if braced { (body_frame * aim_rot).inverse() * Quat::from_rotation_y(rig.turn) * Quat::from_rotation_y(-0.35) * rot(-0.6) } else { arm };
+        // Moved with the gun arm's joint: put back at the left shoulder.
+        let arm_at = if braced { aim_rot.inverse() * (Vec3::Y * SHOULDER - aim_at) } else { Vec3::ZERO };
+        set(&mut transforms, rig.arms[0], arm_at, arm, blend);
         if rig.climb > 0.01 {
             set(&mut transforms, rig.arms[1], Vec3::ZERO, Quat::IDENTITY.slerp(reach(1.0), rig.climb), blend);
         } else {

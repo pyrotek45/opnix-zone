@@ -643,7 +643,7 @@ fn update_shapes(
     mut zones: Query<(&Zone, &mut Node), (Without<Seg>, Without<Fill>)>,
     mut hurt: Query<&mut BackgroundColor, (With<HurtOverlay>, Without<Seg>, Without<Fill>)>,
     mut wave_size: Local<u32>,
-    killcam: Res<crate::killcam::KillCam>,
+    (killcam, statics, map): (Res<crate::killcam::KillCam>, Res<Statics>, Res<Map>),
 ) {
     let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
     let Some((health, arsenal, me, transform, input, mover, _)) = pick else {
@@ -764,6 +764,8 @@ fn update_shapes(
         .iter()
         .filter(|(_, _, h)| h.alive())
         .filter_map(|(t, p, _)| oz_sim::combat::ray_sphere(eye, aim, t.translation + Vec3::Y * 1.0, 0.55).filter(|d| *d < 90.0).map(|d| (d, p.team)))
+        // Only someone you can actually see: never through a wall, a floor or a hill.
+        .filter(|(d, _)| statics.raycast(eye, aim, *d).is_none() && map.raycast(eye, aim, *d) >= *d - 0.1)
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, team)| team);
     let cross_color = if view.hit > 0.0 {
