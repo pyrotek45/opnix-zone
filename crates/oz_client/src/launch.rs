@@ -14,54 +14,23 @@ use oz_net::{DEFAULT_PORT, normalize_address};
 use oz_sim::{net, prelude::*};
 
 /// Add as a `Startup` system.
-pub fn launch_from_args(
-    mut commands: Commands,
-    modes: Res<Modes>,
-    settings: Res<Settings>,
-    mut pending: ResMut<PendingMatch>,
-) {
+pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res<Settings>, mut pending: ResMut<PendingMatch>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let value = |flag: &str| {
-        args.iter()
-            .position(|a| a == flag)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-    };
+    let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let has = |flag: &str| args.iter().any(|a| a == flag);
-    let seed = value("--seed")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(7, |d| d.as_nanos() as u64)
-        });
+    let seed = value("--seed").and_then(|s| s.parse().ok()).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(7, |d| d.as_nanos() as u64));
     let rules = || {
-        let index = value("--mode")
-            .and_then(|m| m.parse::<usize>().ok())
-            .unwrap_or(0);
+        let index = value("--mode").and_then(|m| m.parse::<usize>().ok()).unwrap_or(0);
         let mode = modes.0.get(index).filter(|mode| mode.playable)?;
         let mut rules = (mode.rules)(seed);
         rules.mode = index as u8;
-        if let Some(layout) = value("--map").and_then(|m| {
-            oz_core::worldgen::Layout::VERSUS.into_iter().find(|l| {
-                l.title()
-                    .replace(' ', "")
-                    .eq_ignore_ascii_case(&m.replace(' ', ""))
-            })
-        }) && rules.recipe.layout.is_town()
+        if let Some(layout) = value("--map").and_then(|m| oz_core::worldgen::Layout::VERSUS.into_iter().find(|l| l.title().replace(' ', "").eq_ignore_ascii_case(&m.replace(' ', ""))))
+            && rules.recipe.layout.is_town()
             && layout != oz_core::worldgen::Layout::Town
         {
-            rules.recipe = oz_core::worldgen::WorldRecipe::preset(
-                layout,
-                rules.recipe.biome,
-                rules.recipe.weather,
-            );
+            rules.recipe = oz_core::worldgen::WorldRecipe::preset(layout, rules.recipe.biome, rules.recipe.weather);
         }
-        if let Some(weather) = value("--weather").and_then(|w| {
-            oz_core::worldgen::Weather::ALL
-                .into_iter()
-                .find(|x| x.name().eq_ignore_ascii_case(&w))
-        }) {
+        if let Some(weather) = value("--weather").and_then(|w| oz_core::worldgen::Weather::ALL.into_iter().find(|x| x.name().eq_ignore_ascii_case(&w))) {
             rules.recipe.weather = weather;
         }
         if let Some(size) = value("--teams").and_then(|t| t.parse::<u8>().ok()) {
@@ -70,28 +39,15 @@ pub fn launch_from_args(
         Some(rules)
     };
     if let Some(address) = value("--join") {
-        net::join_as(
-            &mut commands,
-            &normalize_address(&address),
-            settings.callsign.clone(),
-            settings.token,
-        );
+        net::join_as(&mut commands, &normalize_address(&address), settings.callsign.clone(), settings.token);
     } else if has("--host") {
-        match rules().map(|rules| {
-            net::host_setup(
-                rules,
-                settings.callsign.clone(),
-                &format!("0.0.0.0:{DEFAULT_PORT}"),
-                false,
-            )
-        }) {
+        match rules().map(|rules| net::host_setup(rules, settings.callsign.clone(), &format!("0.0.0.0:{DEFAULT_PORT}"), false)) {
             Some(Ok(setup)) => pending.0 = Some(setup),
             Some(Err(error)) => error!("could not host: {error}"),
             None => error!("that mode is not playable"),
         }
     } else if has("--solo")
-        && let Some(rules) = rules()
-    {
-        pending.0 = Some(MatchSetup::offline(rules, settings.callsign.clone()));
-    }
+        && let Some(rules) = rules() {
+            pending.0 = Some(MatchSetup::offline(rules, settings.callsign.clone()));
+        }
 }

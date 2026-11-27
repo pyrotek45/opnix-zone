@@ -3,7 +3,14 @@
 //! The simulation (`oz_sim::breakables`) decides what breaks; this module
 //! dresses the pieces and plays the moment they go.
 
-use crate::{ClientSet, art::Art, fx::fragment, input::Controls, ui::Screen, view::WorldCamera};
+use crate::{
+    ClientSet,
+    art::Art,
+    fx::fragment,
+    input::Controls,
+    ui::Screen,
+    view::WorldCamera,
+};
 use bevy::{pbr::NotShadowCaster, prelude::*};
 use oz_core::worldgen::ClutterKind;
 use oz_sim::{
@@ -33,31 +40,12 @@ pub struct PropsPlugin;
 impl Plugin for PropsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DoorPrompt>()
-            .add_systems(
-                Startup,
-                |mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>| {
-                    let glass = materials.add(StandardMaterial {
-                        base_color: Color::srgba(0.62, 0.86, 0.95, 0.3),
-                        alpha_mode: AlphaMode::Blend,
-                        perceptual_roughness: 0.1,
-                        ..default()
-                    });
-                    commands.insert_resource(Glass(glass));
-                },
-            )
-            .add_systems(
-                Update,
-                use_doors
-                    .in_set(ClientSet::Input)
-                    .after(crate::input::ReadDevices)
-                    .run_if(in_state(MatchPhase::Active)),
-            )
-            .add_systems(
-                Update,
-                (dress, follow_doors, breakage)
-                    .in_set(ClientSet::Present)
-                    .run_if(in_state(MatchPhase::Active)),
-            );
+            .add_systems(Startup, |mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>| {
+                let glass = materials.add(StandardMaterial { base_color: Color::srgba(0.62, 0.86, 0.95, 0.3), alpha_mode: AlphaMode::Blend, perceptual_roughness: 0.1, ..default() });
+                commands.insert_resource(Glass(glass));
+            })
+            .add_systems(Update, use_doors.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
+            .add_systems(Update, (dress, follow_doors, breakage).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -120,67 +108,28 @@ fn dress(
     clutter: Query<(Entity, &ClutterPiece), Added<ClutterPiece>>,
 ) {
     for entity in &doors {
-        commands
-            .entity(entity)
-            .insert(Visibility::Inherited)
-            .with_children(|door| {
-                door.spawn((
-                    DoorPanel,
-                    Mesh3d(art.primitive(Shape::Cube)),
-                    MeshMaterial3d(art.paint(Paint::Wood)),
-                    Transform::IDENTITY,
-                ));
-            });
+        commands.entity(entity).insert(Visibility::Inherited).with_children(|door| {
+            door.spawn((DoorPanel, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(Paint::Wood)), Transform::IDENTITY));
+        });
     }
     for (entity, pane) in &panes {
-        let Some(spec) = map.windows.get(pane.index) else {
-            continue;
-        };
-        let size = if spec.along_x {
-            Vec3::new(spec.width, spec.height, 0.03)
-        } else {
-            Vec3::new(0.03, spec.height, spec.width)
-        };
-        commands
-            .entity(entity)
-            .insert(Visibility::Inherited)
-            .with_children(|p| {
-                p.spawn((
-                    GlassPane,
-                    Mesh3d(art.primitive(Shape::Cube)),
-                    MeshMaterial3d(glass.0.clone()),
-                    Transform::from_translation(Vec3::Y * spec.height * 0.5).with_scale(size),
-                    NotShadowCaster,
-                ));
-            });
+        let Some(spec) = map.windows.get(pane.index) else { continue };
+        let size = if spec.along_x { Vec3::new(spec.width, spec.height, 0.03) } else { Vec3::new(0.03, spec.height, spec.width) };
+        commands.entity(entity).insert(Visibility::Inherited).with_children(|p| {
+            p.spawn((GlassPane, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(glass.0.clone()), Transform::from_translation(Vec3::Y * spec.height * 0.5).with_scale(size), NotShadowCaster));
+        });
     }
     for (entity, piece) in &clutter {
-        let Some(spec) = map.clutter.get(piece.index) else {
-            continue;
-        };
+        let Some(spec) = map.clutter.get(piece.index) else { continue };
         let baked = art.bake(&clutter_model(spec.kind), &mut meshes);
-        let model = commands
-            .spawn((
-                ClutterModel,
-                Transform::from_rotation(Quat::from_rotation_y(if spec.turned {
-                    std::f32::consts::FRAC_PI_2
-                } else {
-                    0.0
-                })),
-                Visibility::Inherited,
-                ChildOf(entity),
-            ))
-            .id();
+        let model = commands.spawn((ClutterModel, Transform::from_rotation(Quat::from_rotation_y(if spec.turned { std::f32::consts::FRAC_PI_2 } else { 0.0 })), Visibility::Inherited, ChildOf(entity))).id();
         art.spawn(&mut commands, model, &baked);
         commands.entity(entity).insert(Visibility::Inherited);
     }
 }
 
 /// Door panels match their collision box: closed across the doorway, open against the wall.
-fn follow_doors(
-    doors: Query<(&Solid, &Children), With<Door>>,
-    mut panels: Query<&mut Transform, With<DoorPanel>>,
-) {
+fn follow_doors(doors: Query<(&Solid, &Children), With<Door>>, mut panels: Query<&mut Transform, With<DoorPanel>>) {
     for (solid, children) in &doors {
         for child in children.iter() {
             if let Ok(mut transform) = panels.get_mut(child) {
@@ -205,10 +154,7 @@ fn breakage(
     doors: Query<(&Door, &Children)>,
     panes: Query<(&Pane, &Children)>,
     clutter: Query<(&ClutterPiece, &Children)>,
-    mut visibility: Query<
-        &mut Visibility,
-        Or<(With<DoorPanel>, With<GlassPane>, With<ClutterModel>)>,
-    >,
+    mut visibility: Query<&mut Visibility, Or<(With<DoorPanel>, With<GlassPane>, With<ClutterModel>)>>,
     mut seed: Local<u32>,
 ) {
     if !state.is_changed() {
@@ -218,29 +164,14 @@ fn breakage(
         *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (*seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
     };
-    let first = seen.0.len() != state.doors.len()
-        || seen.1.len() != state.panes.len()
-        || seen.2.len() != state.clutter.len();
+    let first = seen.0.len() != state.doors.len() || seen.1.len() != state.panes.len() || seen.2.len() != state.clutter.len();
     if first {
-        *seen = (
-            state.doors.clone(),
-            state.panes.clone(),
-            state.clutter.clone(),
-        );
+        *seen = (state.doors.clone(), state.panes.clone(), state.clutter.clone());
     }
-    let hide = |children: &Children,
-                visibility: &mut Query<
-        &mut Visibility,
-        Or<(With<DoorPanel>, With<GlassPane>, With<ClutterModel>)>,
-    >,
-                gone: bool| {
+    let hide = |children: &Children, visibility: &mut Query<&mut Visibility, Or<(With<DoorPanel>, With<GlassPane>, With<ClutterModel>)>>, gone: bool| {
         for child in children.iter() {
             if let Ok(mut v) = visibility.get_mut(child) {
-                let wanted = if gone {
-                    Visibility::Hidden
-                } else {
-                    Visibility::Inherited
-                };
+                let wanted = if gone { Visibility::Hidden } else { Visibility::Inherited };
                 if *v != wanted {
                     *v = wanted;
                 }
@@ -250,107 +181,52 @@ fn breakage(
     for (d, children) in &doors {
         let broken = state.doors.get(d.index) == Some(&door::BROKEN);
         hide(children, &mut visibility, broken);
-        if broken
-            && !first
-            && seen.0.get(d.index) != Some(&door::BROKEN)
-            && let Some(spec) = map.doors.get(d.index)
-        {
-            for _ in 0..10 {
-                let at =
-                    spec.center + Vec3::new(random() * 0.6, 1.0 + random() * 0.9, random() * 0.6);
-                fragment(
-                    &mut commands,
-                    &art,
-                    Shape::Cube,
-                    Paint::Wood,
-                    at,
-                    Vec3::new(0.08, 0.5, 0.06),
-                    Vec3::new(random() * 3.0, 2.0 + random(), random() * 3.0),
-                    2.5,
-                );
+        if broken && !first && seen.0.get(d.index) != Some(&door::BROKEN)
+            && let Some(spec) = map.doors.get(d.index) {
+                for _ in 0..10 {
+                    let at = spec.center + Vec3::new(random() * 0.6, 1.0 + random() * 0.9, random() * 0.6);
+                    fragment(&mut commands, &art, Shape::Cube, Paint::Wood, at, Vec3::new(0.08, 0.5, 0.06), Vec3::new(random() * 3.0, 2.0 + random(), random() * 3.0), 2.5);
+                }
             }
-        }
     }
     for (p, children) in &panes {
         let broken = state.panes.get(p.index) == Some(&1);
         hide(children, &mut visibility, broken);
-        if broken
-            && !first
-            && seen.1.get(p.index) == Some(&0)
-            && let Some(spec) = map.windows.get(p.index)
-        {
-            for _ in 0..12 {
-                let at = spec.center
-                    + Vec3::new(
-                        random() * spec.width * 0.4,
-                        spec.height * (0.5 + random() * 0.4),
-                        random() * spec.width * 0.4,
-                    );
-                fragment(
-                    &mut commands,
-                    &art,
-                    Shape::Shard,
-                    if random() > 0.0 {
-                        Paint::Aether
-                    } else {
-                        Paint::White
-                    },
-                    at,
-                    Vec3::splat(0.05),
-                    Vec3::new(random() * 2.0, random(), random() * 2.0),
-                    1.6,
-                );
+        if broken && !first && seen.1.get(p.index) == Some(&0)
+            && let Some(spec) = map.windows.get(p.index) {
+                for _ in 0..12 {
+                    let at = spec.center + Vec3::new(random() * spec.width * 0.4, spec.height * (0.5 + random() * 0.4), random() * spec.width * 0.4);
+                    fragment(&mut commands, &art, Shape::Shard, if random() > 0.0 { Paint::Aether } else { Paint::White }, at, Vec3::splat(0.05), Vec3::new(random() * 2.0, random(), random() * 2.0), 1.6);
+                }
             }
-        }
     }
     for (c, children) in &clutter {
         let wrecked = state.clutter.get(c.index) == Some(&0);
         hide(children, &mut visibility, wrecked);
-        if wrecked
-            && !first
-            && seen.2.get(c.index).is_some_and(|hp| *hp > 0)
-            && let Some(spec) = map.clutter.get(c.index)
-        {
-            let paint = match spec.kind {
-                ClutterKind::Bin => Paint::Teal,
-                ClutterKind::Barrel => Paint::Red,
-                ClutterKind::Mailbox => Paint::Blue,
-                ClutterKind::Car => Paint::Coral,
-                _ => Paint::Wood,
-            };
-            let size = spec.half();
-            for _ in 0..14 {
-                let at = spec.center()
-                    + Vec3::new(random() * size.x, random() * size.y, random() * size.z);
-                fragment(
-                    &mut commands,
-                    &art,
-                    Shape::Cube,
-                    if random() > 0.3 { paint } else { Paint::Dark },
-                    at,
-                    Vec3::splat(0.12 + random().abs() * 0.15),
-                    Vec3::new(random() * 4.0, 3.0 + random() * 2.0, random() * 4.0),
-                    3.0,
-                );
+        if wrecked && !first && seen.2.get(c.index).is_some_and(|hp| *hp > 0)
+            && let Some(spec) = map.clutter.get(c.index) {
+                let paint = match spec.kind {
+                    ClutterKind::Bin => Paint::Teal,
+                    ClutterKind::Barrel => Paint::Red,
+                    ClutterKind::Mailbox => Paint::Blue,
+                    ClutterKind::Car => Paint::Coral,
+                    _ => Paint::Wood,
+                };
+                let size = spec.half();
+                for _ in 0..14 {
+                    let at = spec.center() + Vec3::new(random() * size.x, random() * size.y, random() * size.z);
+                    fragment(&mut commands, &art, Shape::Cube, if random() > 0.3 { paint } else { Paint::Dark }, at, Vec3::splat(0.12 + random().abs() * 0.15), Vec3::new(random() * 4.0, 3.0 + random() * 2.0, random() * 4.0), 3.0);
+                }
+                // What is left behind stays: a scorched heap.
+                commands.spawn((
+                    MatchEntity,
+                    Mesh3d(art.primitive(Shape::Shard)),
+                    MeshMaterial3d(art.paint(Paint::Dark)),
+                    Transform::from_translation(spec.pos + Vec3::Y * 0.1).with_scale(Vec3::new(size.x * 0.9, 0.18, size.z * 0.9)),
+                ));
             }
-            // What is left behind stays: a scorched heap.
-            commands.spawn((
-                MatchEntity,
-                Mesh3d(art.primitive(Shape::Shard)),
-                MeshMaterial3d(art.paint(Paint::Dark)),
-                Transform::from_translation(spec.pos + Vec3::Y * 0.1).with_scale(Vec3::new(
-                    size.x * 0.9,
-                    0.18,
-                    size.z * 0.9,
-                )),
-            ));
-        }
     }
-    *seen = (
-        state.doors.clone(),
-        state.panes.clone(),
-        state.clutter.clone(),
-    );
+    *seen = (state.doors.clone(), state.panes.clone(), state.clutter.clone());
 }
 
 /// Use (F) on a door you are looking at, within reach.
@@ -365,9 +241,7 @@ fn use_doors(
     mut prompt: ResMut<DoorPrompt>,
     mut orders: EventWriter<CommandEvent>,
 ) {
-    let (Ok(eye), Ok(me)) = (camera.single(), players.single()) else {
-        return;
-    };
+    let (Ok(eye), Ok(me)) = (camera.single(), players.single()) else { return };
     let forward = eye.forward().as_vec3();
     let best = map
         .doors
@@ -384,9 +258,6 @@ fn use_doors(
         && *screen == Screen::None
         && nearby.0.is_none()
     {
-        orders.write(CommandEvent {
-            player: me.id,
-            command: PlayerCommand::Door(index as u16),
-        });
+        orders.write(CommandEvent { player: me.id, command: PlayerCommand::Door(index as u16) });
     }
 }

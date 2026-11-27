@@ -40,16 +40,7 @@ pub struct Hit {
 
 impl Hit {
     pub fn plain(target: Entity, amount: f32, by: Option<u8>) -> Self {
-        Self {
-            target,
-            amount,
-            by,
-            frost: 0.0,
-            venom: 0.0,
-            arc: 0.0,
-            scavenge: 0.0,
-            repair: 0.0,
-        }
+        Self { target, amount, by, frost: 0.0, venom: 0.0, arc: 0.0, scavenge: 0.0, repair: 0.0 }
     }
 }
 
@@ -76,13 +67,7 @@ impl Grid {
     pub fn new(half_extent: f32) -> Self {
         let cell = 6.0;
         let side = (2.0 * half_extent / cell).ceil() as usize + 1;
-        Self {
-            cell,
-            half: half_extent,
-            side,
-            cells: vec![Vec::new(); side * side],
-            count: 0,
-        }
+        Self { cell, half: half_extent, side, cells: vec![Vec::new(); side * side], count: 0 }
     }
 
     fn coord(&self, v: f32) -> usize {
@@ -135,11 +120,9 @@ impl Grid {
         let mut best: Option<(f32, GridItem)> = None;
         let mut test = |item: &GridItem| {
             if let Some(d) = ray_sphere(origin, dir, item.pos, item.radius)
-                && d <= max
-                && best.is_none_or(|(bd, _)| d < bd)
-            {
-                best = Some((d, *item));
-            }
+                && d <= max && best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, *item));
+                }
         };
         // Sample the ray every half cell and test a one-cell margin; cells repeat, which is fine.
         let steps = (max / (self.cell * 0.5)).ceil() as usize;
@@ -161,19 +144,11 @@ impl Grid {
     }
 }
 
-pub fn rebuild_grid(
-    mut grid: ResMut<Grid>,
-    content: Res<Content>,
-    enemies: Query<(Entity, &Transform, &Enemy)>,
-) {
+pub fn rebuild_grid(mut grid: ResMut<Grid>, content: Res<Content>, enemies: Query<(Entity, &Transform, &Enemy)>) {
     grid.clear();
     for (entity, transform, enemy) in &enemies {
         let radius = content.enemies[enemy.kind as usize].radius;
-        grid.insert(GridItem {
-            entity,
-            pos: transform.translation + Vec3::Y * radius,
-            radius,
-        });
+        grid.insert(GridItem { entity, pos: transform.translation + Vec3::Y * radius, radius });
     }
 }
 
@@ -185,13 +160,7 @@ pub fn ray_sphere(origin: Vec3, dir: Vec3, center: Vec3, radius: f32) -> Option<
         return None;
     }
     let (near, far) = (-b - h.sqrt(), -b + h.sqrt());
-    if near >= 0.0 {
-        Some(near)
-    } else if far >= 0.0 {
-        Some(far)
-    } else {
-        None
-    }
+    if near >= 0.0 { Some(near) } else if far >= 0.0 { Some(far) } else { None }
 }
 
 pub fn ray_box(origin: Vec3, dir: Vec3, center: Vec3, half: Vec3, max: f32) -> Option<f32> {
@@ -203,10 +172,7 @@ pub fn ray_box(origin: Vec3, dir: Vec3, center: Vec3, half: Vec3, max: f32) -> O
                 return None;
             }
         } else {
-            let (a, b) = (
-                (min - origin[axis]) / dir[axis],
-                (max - origin[axis]) / dir[axis],
-            );
+            let (a, b) = ((min - origin[axis]) / dir[axis], (max - origin[axis]) / dir[axis]);
             lo = lo.max(a.min(b));
             hi = hi.min(a.max(b));
             if hi < lo {
@@ -253,65 +219,15 @@ pub enum Impact {
 pub fn throw(kind: &oz_core::content::GearKind, dir: Vec3) -> Option<(Vec3, Projectile)> {
     use oz_core::content::GearKind;
     let (effect, damage, splash, speed, gravity, life, look) = match *kind {
-        GearKind::Frag { damage, radius } => (
-            Impact::Blast,
-            damage,
-            radius,
-            19.0,
-            13.0,
-            1.8,
-            ShotLook::Grenade,
-        ),
-        GearKind::Smoke { radius, seconds } => (
-            Impact::Smoke { radius, seconds },
-            0.0,
-            0.0,
-            17.0,
-            13.0,
-            1.6,
-            ShotLook::Canister,
-        ),
-        GearKind::Flash { radius, seconds } => (
-            Impact::Flash { radius, seconds },
-            0.0,
-            0.0,
-            18.0,
-            13.0,
-            1.4,
-            ShotLook::Canister,
-        ),
-        GearKind::Mine { damage, radius } => (
-            Impact::Mine { damage, radius },
-            0.0,
-            0.0,
-            7.0,
-            13.0,
-            3.0,
-            ShotLook::Grenade,
-        ),
+        GearKind::Frag { damage, radius } => (Impact::Blast, damage, radius, 19.0, 13.0, 1.8, ShotLook::Grenade),
+        GearKind::Smoke { radius, seconds } => (Impact::Smoke { radius, seconds }, 0.0, 0.0, 17.0, 13.0, 1.6, ShotLook::Canister),
+        GearKind::Flash { radius, seconds } => (Impact::Flash { radius, seconds }, 0.0, 0.0, 18.0, 13.0, 1.4, ShotLook::Canister),
+        GearKind::Mine { damage, radius } => (Impact::Mine { damage, radius }, 0.0, 0.0, 7.0, 13.0, 3.0, ShotLook::Grenade),
         GearKind::Knife { damage } => (Impact::Blast, damage, 0.0, 38.0, 2.0, 1.2, ShotLook::Knife),
         GearKind::Stim { .. } | GearKind::Ammo { .. } => return None,
     };
-    let velocity = dir * speed
-        + if gravity > 5.0 {
-            Vec3::Y * 4.5
-        } else {
-            Vec3::ZERO
-        };
-    Some((
-        velocity,
-        Projectile {
-            velocity,
-            gravity,
-            damage,
-            splash,
-            look,
-            owner: None,
-            team: 0,
-            life,
-            effect,
-        },
-    ))
+    let velocity = dir * speed + if gravity > 5.0 { Vec3::Y * 4.5 } else { Vec3::ZERO };
+    Some((velocity, Projectile { velocity, gravity, damage, splash, look, owner: None, team: 0, life, effect }))
 }
 
 /// A sight-blocking cloud. Exists on every machine (clients make theirs from the effect event).
@@ -322,26 +238,14 @@ pub struct SmokeCloud {
 }
 
 /// Does anything in `smokes` sit across the line from `a` to `b`?
-pub fn smoke_between<'a>(
-    smokes: impl IntoIterator<Item = (&'a Transform, &'a SmokeCloud)>,
-    a: Vec3,
-    b: Vec3,
-) -> bool {
+pub fn smoke_between<'a>(smokes: impl IntoIterator<Item = (&'a Transform, &'a SmokeCloud)>, a: Vec3, b: Vec3) -> bool {
     let span = b - a;
     let length = span.length();
     if length < 1e-3 {
         return false;
     }
     let dir = span / length;
-    smokes.into_iter().any(|(t, smoke)| {
-        ray_sphere(
-            a,
-            dir,
-            t.translation,
-            smoke.radius * smoke_scale(smoke.time),
-        )
-        .is_some_and(|d| d < length)
-    })
+    smokes.into_iter().any(|(t, smoke)| ray_sphere(a, dir, t.translation, smoke.radius * smoke_scale(smoke.time)).is_some_and(|d| d < length))
 }
 
 /// Clouds swell in over a second and thin out over their last two.
@@ -398,60 +302,29 @@ pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
     owner: u8,
     skip: Option<u8>,
 ) {
-    let name = state
-        .roster
-        .iter()
-        .find(|r| r.id == owner)
-        .map_or(String::new(), |r| r.name.clone());
+    let name = state.roster.iter().find(|r| r.id == owner).map_or(String::new(), |r| r.name.clone());
     for (target, mut health, mut player) in players.iter_mut() {
         let distance = (target.translation + Vec3::Y).distance(at);
-        if player.team != team
-            && Some(player.id) != skip
-            && distance < radius
-            && !sheltered(statics, at, target.translation)
-        {
+        if player.team != team && Some(player.id) != skip && distance < radius && !sheltered(statics, at, target.translation) {
             let amount = damage * (1.0 - 0.7 * distance / radius) * blast_scale(content, &player);
             player.last_hit = crate::player::part::BLAST;
             // A big blast tears a leg off anyone it does not kill outright.
             if amount > 60.0 {
-                let leg = if player.id % 2 == 0 {
-                    crate::player::part::LEFT_LEG
-                } else {
-                    crate::player::part::RIGHT_LEG
-                };
+                let leg = if player.id % 2 == 0 { crate::player::part::LEFT_LEG } else { crate::player::part::RIGHT_LEG };
                 crate::player::wound_limb(&mut player, leg, 999.0, owner, fx);
             }
-            damage_player(
-                &mut health,
-                &mut player,
-                amount,
-                Some((&name, team, owner)),
-                state,
-                fx,
-            );
+            damage_player(&mut health, &mut player, amount, Some((&name, team, owner)), state, fx);
             player.last_hit = crate::player::part::TORSO;
         }
     }
 }
 
 /// Damages every enemy within `radius`, with linear falloff.
-pub fn splash(
-    grid: &Grid,
-    hits: &mut EventWriter<Hit>,
-    at: Vec3,
-    radius: f32,
-    damage: f32,
-    by: Option<u8>,
-    skip: Option<Entity>,
-) {
+pub fn splash(grid: &Grid, hits: &mut EventWriter<Hit>, at: Vec3, radius: f32, damage: f32, by: Option<u8>, skip: Option<Entity>) {
     grid.for_each_near(at, radius, |item| {
         let d = (item.pos.distance(at) - item.radius).max(0.0);
         if d < radius && Some(item.entity) != skip {
-            hits.write(Hit::plain(
-                item.entity,
-                damage * (1.0 - 0.6 * d / radius),
-                by,
-            ));
+            hits.write(Hit::plain(item.entity, damage * (1.0 - 0.6 * d / radius), by));
         }
     });
 }
@@ -467,30 +340,10 @@ pub fn fly_projectiles(
     mut ids: ResMut<crate::net::NetIds>,
     mut commands: Commands,
     mut shots: Query<(Entity, &mut Transform, &mut Projectile)>,
-    mut players: Query<
-        (&Transform, &mut Health, &mut Player),
-        (Without<Projectile>, Without<Structure>),
-    >,
-    mut structures: Query<
-        (&Transform, &Solid, &mut Health),
-        (With<Structure>, Without<Projectile>, Without<Player>),
-    >,
-    bots: Query<
-        (Entity, &Transform, &crate::player::PlayerInput),
-        (With<crate::bots::Bot>, Without<Projectile>),
-    >,
-    props: Query<
-        (&Transform, &Solid),
-        (
-            Or<(
-                With<crate::breakables::Door>,
-                With<crate::breakables::ClutterPiece>,
-            )>,
-            Without<Projectile>,
-            Without<Structure>,
-            Without<Player>,
-        ),
-    >,
+    mut players: Query<(&Transform, &mut Health, &mut Player), (Without<Projectile>, Without<Structure>)>,
+    mut structures: Query<(&Transform, &Solid, &mut Health), (With<Structure>, Without<Projectile>, Without<Player>)>,
+    bots: Query<(Entity, &Transform, &crate::player::PlayerInput), (With<crate::bots::Bot>, Without<Projectile>)>,
+    props: Query<(&Transform, &Solid), (Or<(With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Projectile>, Without<Structure>, Without<Player>)>,
     mut hits: EventWriter<Hit>,
     mut fx: EventWriter<FxEvent>,
 ) {
@@ -530,86 +383,34 @@ pub fn fly_projectiles(
                     impact = Some(from + dir * d);
                     hits.write(Hit::plain(item.entity, shot.damage, shot.owner));
                     if shot.splash > 0.0 {
-                        splash(
-                            &grid,
-                            &mut hits,
-                            from + dir * d,
-                            shot.splash,
-                            shot.damage * 0.7,
-                            shot.owner,
-                            Some(item.entity),
-                        );
+                        splash(&grid, &mut hits, from + dir * d, shot.splash, shot.damage * 0.7, shot.owner, Some(item.entity));
                     }
                 } else if impact.is_some() && shot.splash > 0.0 {
-                    splash(
-                        &grid,
-                        &mut hits,
-                        to,
-                        shot.splash,
-                        shot.damage * 0.7,
-                        shot.owner,
-                        None,
-                    );
+                    splash(&grid, &mut hits, to, shot.splash, shot.damage * 0.7, shot.owner, None);
                 }
             }
             if rules.pvp {
                 // Direct hit, or caught in the blast when it lands.
-                let name = state
-                    .roster
-                    .iter()
-                    .find(|r| r.id == owner)
-                    .map_or(String::new(), |r| r.name.clone());
+                let name = state.roster.iter().find(|r| r.id == owner).map_or(String::new(), |r| r.name.clone());
                 let mut direct = None;
                 for (target, mut health, mut player) in &mut players {
-                    if let Some(d) = ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.6)
-                        .filter(|d| *d <= wall)
-                        && player.team != shot.team
-                        && health.alive()
-                    {
+                    if let Some(d) = ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.6).filter(|d| *d <= wall)
+                        && player.team != shot.team && health.alive() {
                         if harmful {
-                            damage_player(
-                                &mut health,
-                                &mut player,
-                                shot.damage,
-                                Some((&name, shot.team, owner)),
-                                &mut state,
-                                &mut fx,
-                            );
+                            damage_player(&mut health, &mut player, shot.damage, Some((&name, shot.team, owner)), &mut state, &mut fx);
                         }
                         direct = Some(player.id);
                         impact = Some(from + dir * d);
                     }
                 }
                 if let (Some(at), true) = (impact, harmful && shot.splash > 0.0) {
-                    blast_players(
-                        &statics,
-                        &content,
-                        &mut state,
-                        &mut fx,
-                        &mut players,
-                        at,
-                        shot.splash,
-                        shot.damage,
-                        shot.team,
-                        owner,
-                        direct,
-                    );
+                    blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, shot.splash, shot.damage, shot.team, owner, direct);
                 }
             }
         } else {
             for (target, mut health, mut player) in &mut players {
-                if health.alive()
-                    && ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.75)
-                        .is_some_and(|d| d <= wall)
-                {
-                    damage_player(
-                        &mut health,
-                        &mut player,
-                        shot.damage,
-                        None,
-                        &mut state,
-                        &mut fx,
-                    );
+                if health.alive() && ray_sphere(from, dir, target.translation + Vec3::Y * 1.0, 0.75).is_some_and(|d| d <= wall) {
+                    damage_player(&mut health, &mut player, shot.damage, None, &mut state, &mut fx);
                     impact = Some(to);
                 }
             }
@@ -622,10 +423,7 @@ pub fn fly_projectiles(
                     }
                 }
             }
-            if impact.is_none()
-                && state.objective_max > 0.0
-                && ray_sphere(from, dir, core, 1.9).is_some_and(|d| d <= length)
-            {
+            if impact.is_none() && state.objective_max > 0.0 && ray_sphere(from, dir, core, 1.9).is_some_and(|d| d <= length) {
                 state.damage_objective(shot.damage);
                 impact = Some(to);
             }
@@ -639,82 +437,35 @@ pub fn fly_projectiles(
         commands.entity(entity).despawn();
         match shot.effect {
             Impact::Blast if shot.splash > 0.0 => {
-                fx.write(FxEvent::Explosion {
-                    at,
-                    radius: shot.splash,
-                });
+                fx.write(FxEvent::Explosion { at, radius: shot.splash });
             }
             Impact::Blast => {
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::Hit,
-                    at: Some(at),
-                });
+                fx.write(FxEvent::Sound { sfx: Sfx::Hit, at: Some(at) });
             }
             Impact::Smoke { radius, seconds } => {
-                let at = Vec3::new(
-                    at.x,
-                    map.height(at.x, at.z).max(at.y - 1.0) + radius * 0.4,
-                    at.z,
-                );
-                commands.spawn((
-                    MatchEntity,
-                    SmokeCloud {
-                        radius,
-                        time: seconds,
-                    },
-                    Transform::from_translation(at),
-                ));
-                fx.write(FxEvent::Smoke {
-                    at,
-                    radius,
-                    seconds,
-                });
+                let at = Vec3::new(at.x, map.height(at.x, at.z).max(at.y - 1.0) + radius * 0.4, at.z);
+                commands.spawn((MatchEntity, SmokeCloud { radius, time: seconds }, Transform::from_translation(at)));
+                fx.write(FxEvent::Smoke { at, radius, seconds });
             }
             Impact::Flash { radius, seconds } => {
-                fx.write(FxEvent::Flash {
-                    at,
-                    radius,
-                    seconds,
-                });
+                fx.write(FxEvent::Flash { at, radius, seconds });
                 // Bots facing the blast with a clear line are stunned; people get blinded on their own screens.
                 for (bot, transform, input) in &bots {
                     let eye = transform.translation + Vec3::Y * input.eye();
                     let to_blast = at - eye;
                     let distance = to_blast.length();
-                    if distance < radius
-                        && statics
-                            .raycast(eye, to_blast / distance.max(1e-3), distance)
-                            .is_none()
-                    {
-                        let facing =
-                            (input.aim_dir().dot(to_blast / distance.max(1e-3)) + 1.0) * 0.5;
+                    if distance < radius && statics.raycast(eye, to_blast / distance.max(1e-3), distance).is_none() {
+                        let facing = (input.aim_dir().dot(to_blast / distance.max(1e-3)) + 1.0) * 0.5;
                         let strength = (1.0 - distance / radius) * (0.35 + 0.65 * facing);
                         commands.entity(bot).insert(Stunned(seconds * strength));
                     }
                 }
             }
             Impact::Mine { damage, radius } => {
-                let ground = map
-                    .height(at.x, at.z)
-                    .max(statics.support(at.x, at.z, at.y + 0.3));
-                let mine = Mine {
-                    owner: shot.owner.unwrap_or(255),
-                    team: shot.team,
-                    damage,
-                    radius,
-                    arm: 1.2,
-                    life: 120.0,
-                };
-                commands.spawn((
-                    MatchEntity,
-                    ids.next(),
-                    mine,
-                    Transform::from_xyz(at.x, ground.max(at.y - 2.0), at.z),
-                ));
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::Build,
-                    at: Some(at),
-                });
+                let ground = map.height(at.x, at.z).max(statics.support(at.x, at.z, at.y + 0.3));
+                let mine = Mine { owner: shot.owner.unwrap_or(255), team: shot.team, damage, radius, arm: 1.2, life: 120.0 };
+                commands.spawn((MatchEntity, ids.next(), mine, Transform::from_xyz(at.x, ground.max(at.y - 2.0), at.z)));
+                fx.write(FxEvent::Sound { sfx: Sfx::Build, at: Some(at) });
             }
         }
     }
@@ -730,10 +481,7 @@ pub fn run_mines(
     mut state: ResMut<MatchState>,
     mut commands: Commands,
     mut mines: Query<(Entity, &Transform, &mut Mine)>,
-    mut players: Query<
-        (&Transform, &mut Health, &mut Player),
-        (Without<Projectile>, Without<Structure>),
-    >,
+    mut players: Query<(&Transform, &mut Health, &mut Player), (Without<Projectile>, Without<Structure>)>,
     mut hits: EventWriter<Hit>,
     mut fx: EventWriter<FxEvent>,
 ) {
@@ -749,49 +497,20 @@ pub fn run_mines(
             continue;
         }
         let at = transform.translation + Vec3::Y * 0.3;
-        let player_near = players.iter().any(|(t, h, p)| {
-            p.team != mine.team && h.alive() && t.translation.distance(transform.translation) < 2.2
-        });
+        let player_near = players.iter().any(|(t, h, p)| p.team != mine.team && h.alive() && t.translation.distance(transform.translation) < 2.2);
         let enemy_near = grid.nearest(at, 1.6, None).is_some();
         if !player_near && !enemy_near {
             continue;
         }
         commands.entity(entity).despawn();
-        fx.write(FxEvent::Explosion {
-            at,
-            radius: mine.radius,
-        });
-        splash(
-            &grid,
-            &mut hits,
-            at,
-            mine.radius,
-            mine.damage,
-            Some(mine.owner),
-            None,
-        );
-        blast_players(
-            &statics,
-            &content,
-            &mut state,
-            &mut fx,
-            &mut players,
-            at,
-            mine.radius,
-            mine.damage,
-            mine.team,
-            mine.owner,
-            None,
-        );
+        fx.write(FxEvent::Explosion { at, radius: mine.radius });
+        splash(&grid, &mut hits, at, mine.radius, mine.damage, Some(mine.owner), None);
+        blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, mine.radius, mine.damage, mine.team, mine.owner, None);
     }
 }
 
 /// Clouds drift apart; on every machine.
-pub fn tick_smoke(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut smokes: Query<(Entity, &mut SmokeCloud)>,
-) {
+pub fn tick_smoke(time: Res<Time>, mut commands: Commands, mut smokes: Query<(Entity, &mut SmokeCloud)>) {
     let dt = sim_dt(&time);
     for (entity, mut smoke) in &mut smokes {
         smoke.time -= dt;
@@ -802,18 +521,12 @@ pub fn tick_smoke(
 }
 
 /// Spawns a projectile entity. Used by weapons and enemies alike.
-pub fn spawn_projectile(
-    commands: &mut Commands,
-    ids: &mut crate::net::NetIds,
-    at: Vec3,
-    projectile: Projectile,
-) {
+pub fn spawn_projectile(commands: &mut Commands, ids: &mut crate::net::NetIds, at: Vec3, projectile: Projectile) {
     commands.spawn((
         MatchEntity,
         ids.next(),
         projectile,
-        Transform::from_translation(at)
-            .looking_to(projectile.velocity.normalize_or(Vec3::NEG_Z), Vec3::Y),
+        Transform::from_translation(at).looking_to(projectile.velocity.normalize_or(Vec3::NEG_Z), Vec3::Y),
     ));
 }
 
@@ -829,14 +542,8 @@ pub fn resolve_hits(
     mut bonus_credits: Local<f32>,
 ) {
     let mut chained = Vec::new();
-    let mut apply = |hit: &Hit,
-                     state: &mut MatchState,
-                     chained: &mut Vec<Hit>,
-                     commands: &mut Commands,
-                     fx: &mut EventWriter<FxEvent>| {
-        let Ok((transform, mut enemy, mut health)) = enemies.get_mut(hit.target) else {
-            return;
-        };
+    let mut apply = |hit: &Hit, state: &mut MatchState, chained: &mut Vec<Hit>, commands: &mut Commands, fx: &mut EventWriter<FxEvent>| {
+        let Ok((transform, mut enemy, mut health)) = enemies.get_mut(hit.target) else { return };
         if !health.alive() {
             return;
         }
@@ -854,30 +561,19 @@ pub fn resolve_hits(
         let def = &content.enemies[enemy.kind as usize];
         let at = transform.translation + Vec3::Y * def.radius;
         if hit.arc > 0.0
-            && let Some(other) = grid.nearest(at, 7.0, Some(hit.target))
-        {
-            chained.push(Hit::plain(other.entity, hit.amount * hit.arc, hit.by));
-            fx.write(FxEvent::Arc {
-                from: at,
-                to: other.pos,
-            });
-        }
+            && let Some(other) = grid.nearest(at, 7.0, Some(hit.target)) {
+                chained.push(Hit::plain(other.entity, hit.amount * hit.arc, hit.by));
+                fx.write(FxEvent::Arc { from: at, to: other.pos });
+            }
         let killed = !health.alive();
         if killed {
             state.kills += 1;
             state.stock.credits += def.reward;
-            fx.write(FxEvent::EnemyDied {
-                at,
-                kind: enemy.kind,
-            });
+            fx.write(FxEvent::EnemyDied { at, kind: enemy.kind });
             commands.entity(hit.target).despawn();
         }
         if let Some(player) = hit.by {
-            fx.write(FxEvent::HitMarker {
-                player,
-                kill: killed,
-                head: false,
-            });
+            fx.write(FxEvent::HitMarker { player, kill: killed, head: false });
         }
     };
     for hit in events.read() {
@@ -899,19 +595,10 @@ mod tests {
 
     #[test]
     fn rays_hit_and_miss() {
-        assert_eq!(
-            ray_sphere(Vec3::ZERO, Vec3::Z, Vec3::Z * 5.0, 1.0),
-            Some(4.0)
-        );
+        assert_eq!(ray_sphere(Vec3::ZERO, Vec3::Z, Vec3::Z * 5.0, 1.0), Some(4.0));
         assert_eq!(ray_sphere(Vec3::ZERO, Vec3::Z, Vec3::X * 3.0, 1.0), None);
-        assert_eq!(
-            ray_box(Vec3::ZERO, Vec3::Z, Vec3::Z * 5.0, Vec3::ONE, 100.0),
-            Some(4.0)
-        );
-        assert_eq!(
-            ray_box(Vec3::ZERO, Vec3::Z, Vec3::X * 3.0, Vec3::ONE, 100.0),
-            None
-        );
+        assert_eq!(ray_box(Vec3::ZERO, Vec3::Z, Vec3::Z * 5.0, Vec3::ONE, 100.0), Some(4.0));
+        assert_eq!(ray_box(Vec3::ZERO, Vec3::Z, Vec3::X * 3.0, Vec3::ONE, 100.0), None);
     }
 
     #[test]
@@ -919,35 +606,14 @@ mod tests {
         let mut grid = Grid::new(160.0);
         let mut world = World::new();
         let (near, far) = (world.spawn_empty().id(), world.spawn_empty().id());
-        grid.insert(GridItem {
-            entity: near,
-            pos: Vec3::new(10.0, 1.0, 0.0),
-            radius: 1.0,
-        });
-        grid.insert(GridItem {
-            entity: far,
-            pos: Vec3::new(60.0, 1.0, 0.0),
-            radius: 1.0,
-        });
-        assert_eq!(
-            grid.nearest(Vec3::new(8.0, 1.0, 0.0), 5.0, None)
-                .map(|i| i.entity),
-            Some(near)
-        );
-        assert_eq!(
-            grid.nearest(Vec3::new(8.0, 1.0, 0.0), 5.0, Some(near))
-                .map(|i| i.entity),
-            None
-        );
-        let (d, item) = grid
-            .raycast(Vec3::new(-100.0, 1.0, 0.0), Vec3::X, 300.0)
-            .unwrap();
+        grid.insert(GridItem { entity: near, pos: Vec3::new(10.0, 1.0, 0.0), radius: 1.0 });
+        grid.insert(GridItem { entity: far, pos: Vec3::new(60.0, 1.0, 0.0), radius: 1.0 });
+        assert_eq!(grid.nearest(Vec3::new(8.0, 1.0, 0.0), 5.0, None).map(|i| i.entity), Some(near));
+        assert_eq!(grid.nearest(Vec3::new(8.0, 1.0, 0.0), 5.0, Some(near)).map(|i| i.entity), None);
+        let (d, item) = grid.raycast(Vec3::new(-100.0, 1.0, 0.0), Vec3::X, 300.0).unwrap();
         assert_eq!(item.entity, near);
         assert!((d - 109.0).abs() < 1e-3);
-        assert!(
-            grid.raycast(Vec3::new(-100.0, 1.0, 9.0), Vec3::X, 300.0)
-                .is_none()
-        );
+        assert!(grid.raycast(Vec3::new(-100.0, 1.0, 9.0), Vec3::X, 300.0).is_none());
     }
 }
 
@@ -961,25 +627,13 @@ mod wall_tests {
     fn blasts_do_not_go_through_walls() {
         let mut world = StaticWorld::new(50.0);
         // A wall 3 m tall between x = 0 and x = 0.3.
-        world.add(Aabb::span(
-            Vec3::new(0.0, 0.0, -5.0),
-            Vec3::new(0.3, 3.0, 5.0),
-        ));
+        world.add(Aabb::span(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.3, 3.0, 5.0)));
         let blast = Vec3::new(-2.0, 0.5, 0.0);
-        assert!(
-            sheltered(&world, blast, Vec3::new(2.0, 0.0, 0.0)),
-            "behind the wall is safe"
-        );
-        assert!(
-            !sheltered(&world, blast, Vec3::new(-3.0, 0.0, 1.0)),
-            "the same side is not"
-        );
+        assert!(sheltered(&world, blast, Vec3::new(2.0, 0.0, 0.0)), "behind the wall is safe");
+        assert!(!sheltered(&world, blast, Vec3::new(-3.0, 0.0, 1.0)), "the same side is not");
         // Peeking over a waist-high wall still gets you hurt.
         let mut low = StaticWorld::new(50.0);
-        low.add(Aabb::span(
-            Vec3::new(0.0, 0.0, -5.0),
-            Vec3::new(0.3, 1.0, 5.0),
-        ));
+        low.add(Aabb::span(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.3, 1.0, 5.0)));
         assert!(!sheltered(&low, blast, Vec3::new(2.0, 0.0, 0.0)));
     }
 }

@@ -28,11 +28,7 @@ impl Rng {
 
     /// Uniform integer in `[0, n)`. Returns 0 when `n == 0`.
     pub fn below(&mut self, n: usize) -> usize {
-        if n == 0 {
-            0
-        } else {
-            (self.next_u64() % n as u64) as usize
-        }
+        if n == 0 { 0 } else { (self.next_u64() % n as u64) as usize }
     }
 
     pub fn chance(&mut self, p: f32) -> bool {
@@ -40,11 +36,7 @@ impl Rng {
     }
 
     pub fn pick<'a, T>(&mut self, items: &'a [T]) -> Option<&'a T> {
-        if items.is_empty() {
-            None
-        } else {
-            Some(&items[self.below(items.len())])
-        }
+        if items.is_empty() { None } else { Some(&items[self.below(items.len())]) }
     }
 
     /// Derive an independent stream, e.g. one per map layer.

@@ -57,13 +57,7 @@ pub struct Bot {
 impl Bot {
     /// A terrorist-hunt hostile holding `post`.
     pub fn sentry(post: Vec3) -> Self {
-        Self {
-            strafe: 1.0,
-            sentry: true,
-            post,
-            crouch_at_range: true,
-            ..default()
-        }
+        Self { strafe: 1.0, sentry: true, post, crouch_at_range: true, ..default() }
     }
 }
 
@@ -98,81 +92,44 @@ pub fn footstep_radius(stance_now: u8, speed: f32) -> f32 {
 
 /// First player id used by bots; humans stay below it.
 pub const FIRST_BOT_ID: u8 = 200;
-const NAMES: [&str; 12] = [
-    "VEGA", "ONYX", "RIGGS", "HALO", "DUSK", "MOTH", "KITE", "BRASS", "ECHO", "FLINT", "NOVA",
-    "WREN",
-];
+const NAMES: [&str; 12] = ["VEGA", "ONYX", "RIGGS", "HALO", "DUSK", "MOTH", "KITE", "BRASS", "ECHO", "FLINT", "NOVA", "WREN"];
 
 /// Spawns a bot on `team` with a random class and random attachments.
-pub fn spawn_bot(
-    commands: &mut Commands,
-    ids: &mut NetIds,
-    content: &Content,
-    rules: &Rules,
-    map: &Map,
-    rng: &mut SimRng,
-    id: u8,
-    team: u8,
-) -> Entity {
+pub fn spawn_bot(commands: &mut Commands, ids: &mut NetIds, content: &Content, rules: &Rules, map: &Map, rng: &mut SimRng, id: u8, team: u8) -> Entity {
     let name = format!("{} [BOT]", NAMES[id as usize % NAMES.len()]);
-    let brain = Bot {
-        strafe: 1.0,
-        crouch_at_range: rng.0.chance(0.6),
-        ..default()
-    };
-    let entity = commands
-        .spawn((
-            player_bundle(content, rules, map, id, name, team),
-            ids.next(),
-            brain,
-        ))
-        .id();
-    let guns: Vec<u8> = (0..content.weapons.len() as u8)
-        .filter(|i| content.weapons[*i as usize].frame.is_some())
-        .collect();
+    let brain = Bot { strafe: 1.0, crouch_at_range: rng.0.chance(0.6), ..default() };
+    let entity = commands.spawn((player_bundle(content, rules, map, id, name, team), ids.next(), brain)).id();
+    let guns: Vec<u8> = (0..content.weapons.len() as u8).filter(|i| content.weapons[*i as usize].frame.is_some()).collect();
     if guns.len() < 2 {
         return entity;
     }
     let primary = guns[1 + rng.0.below(guns.len() - 1)];
-    let loadout = Loadout {
-        primary,
-        secondary: guns[0],
-        perk: rng.0.below(content.perks.len().max(1)) as u8,
-        gear: rng.0.below(content.gear.len().max(1)) as u8,
-        parts: None,
-        streaks: [0; 3],
-    };
+    let loadout = Loadout { primary, secondary: guns[0], perk: rng.0.below(content.perks.len().max(1)) as u8, gear: rng.0.below(content.gear.len().max(1)) as u8, parts: None, streaks: [0; 3] };
     // Kit the primary out: each slot has an even chance of a random part that fits.
     let mut parts = content.weapons[primary as usize].defaults;
     for (slot_index, part) in parts.iter_mut().enumerate().take(SLOT_COUNT) {
-        let choices = options(
-            &content.weapons[primary as usize],
-            &content.attachments,
-            slot_index,
-        );
+        let choices = options(&content.weapons[primary as usize], &content.attachments, slot_index);
         if rng.0.chance(0.5) && !choices.is_empty() && !(slot_index == slot::OPTIC && *part != 0) {
             *part = choices[rng.0.below(choices.len())].0 as u8;
         }
     }
     let content = content.clone();
-    commands
-        .entity(entity)
-        .queue(move |mut entity: EntityWorldMut| {
-            let Some(mut player) = entity.take::<Player>() else {
-                return;
-            };
-            if let Some(mut arsenal) = entity.get_mut::<Arsenal>() {
-                if let Some(weapon) = arsenal.weapons.get_mut(primary as usize) {
-                    weapon.equipped = parts;
-                }
-                apply_loadout(&content, &mut player, &mut arsenal, loadout);
+    commands.entity(entity).queue(move |mut entity: EntityWorldMut| {
+        let Some(mut player) = entity.take::<Player>() else {
+            return;
+        };
+        if let Some(mut arsenal) = entity.get_mut::<Arsenal>() {
+            if let Some(weapon) = arsenal.weapons.get_mut(primary as usize) {
+                weapon.equipped = parts;
             }
-            let weapon = entity.get::<Arsenal>().map_or(0, |arsenal| arsenal.current);
-            if let Some(mut input) = entity.get_mut::<PlayerInput>() {
-                input.weapon = weapon;
-            }
-            entity.insert(player);
-        });
+            apply_loadout(&content, &mut player, &mut arsenal, loadout);
+        }
+        let weapon = entity.get::<Arsenal>().map_or(0, |arsenal| arsenal.current);
+        if let Some(mut input) = entity.get_mut::<PlayerInput>() {
+            input.weapon = weapon;
+        }
+        entity.insert(player);
+    });
     entity
 }
 
@@ -208,68 +165,28 @@ pub fn drive_bots(
     mut scratch: ResMut<NavScratch>,
     mut budget: ResMut<NavBudget>,
     mut rng: ResMut<SimRng>,
-    mut players: Query<(
-        Entity,
-        Option<&mut Bot>,
-        &Player,
-        &Transform,
-        &mut PlayerInput,
-        &Health,
-        &Arsenal,
-        Option<&mut crate::combat::Stunned>,
-        &crate::player::Mover,
-    )>,
+    mut players: Query<(Entity, Option<&mut Bot>, &Player, &Transform, &mut PlayerInput, &Health, &Arsenal, Option<&mut crate::combat::Stunned>, &crate::player::Mover)>,
     mut noises: ResMut<Noises>,
-    solids: Query<
-        (&Transform, &Solid),
-        (
-            Or<(
-                With<Structure>,
-                With<crate::breakables::Door>,
-                With<crate::breakables::ClutterPiece>,
-            )>,
-            Without<Player>,
-        ),
-    >,
+    solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Player>)>,
     smokes: Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>,
 ) {
     let dt = sim_dt(&time);
     // Everyone a bot might fight, humans and bots alike.
-    let fighters: Vec<(Entity, u8, Vec3, u8)> = players
-        .iter()
-        .filter(|(.., health, _, _, _)| health.alive())
-        .map(|(entity, _, player, transform, input, ..)| {
-            (entity, player.team, transform.translation, input.stance)
-        })
-        .collect();
+    let fighters: Vec<(Entity, u8, Vec3, u8)> =
+        players.iter().filter(|(.., health, _, _, _)| health.alive()).map(|(entity, _, player, transform, input, ..)| (entity, player.team, transform.translation, input.stance)).collect();
     // Living humans, for squadmates to stay with.
-    let humans: Vec<(u8, Vec3)> = players
-        .iter()
-        .filter(|(_, bot, .., health, _, _, _)| bot.is_none() && health.alive())
-        .map(|(_, _, p, t, ..)| (p.team, t.translation))
-        .collect();
+    let humans: Vec<(u8, Vec3)> = players.iter().filter(|(_, bot, .., health, _, _, _)| bot.is_none() && health.alive()).map(|(_, _, p, t, ..)| (p.team, t.translation)).collect();
     // What can be heard this frame: everything made since last frame, plus everyone's footsteps.
     let mut heard_now = std::mem::take(&mut noises.0);
     for (_, _, player, transform, input, health, _, _, mover) in &players {
         let mut radius = footstep_radius(input.stance, mover.speed);
         // Pushing through a bush rustles: it carries much further than a footstep.
         let at = transform.translation;
-        if radius > 0.0
-            && map.props.iter().any(|p| {
-                matches!(p.kind, oz_core::worldgen::PropKind::Bush)
-                    && (p.pos.xz() - at.xz()).length() < 0.75 * p.scale + 0.25
-                    && (p.pos.y - at.y).abs() < 1.2
-            })
-        {
+        if radius > 0.0 && map.props.iter().any(|p| matches!(p.kind, oz_core::worldgen::PropKind::Bush) && (p.pos.xz() - at.xz()).length() < 0.75 * p.scale + 0.25 && (p.pos.y - at.y).abs() < 1.2) {
             radius = radius.max(18.0);
         }
         if health.alive() && radius > 0.0 {
-            heard_now.push(Noise {
-                at: transform.translation,
-                radius,
-                team: player.team,
-                shout: false,
-            });
+            heard_now.push(Noise { at: transform.translation, radius, team: player.team, shout: false });
         }
     }
     let mut shouts: Vec<Noise> = Vec::new();
@@ -327,10 +244,7 @@ pub fn drive_bots(
         let eye = feet + Vec3::Y * input.eye();
         let moved = feet.distance(bot.last) / dt.max(1e-4);
         bot.last = feet;
-        let class = content
-            .weapons
-            .get(arsenal.current as usize)
-            .map_or(GunClass::Rifle, |w| w.class);
+        let class = content.weapons.get(arsenal.current as usize).map_or(GunClass::Rifle, |w| w.class);
         let (near, far) = engagement(class);
 
         bot.think -= dt;
@@ -340,16 +254,7 @@ pub fn drive_bots(
             let upright = PlayerInput { lean: 0, ..*input };
             let sees = |from: Vec3, chest: Vec3| {
                 let distance = chest.distance(from);
-                distance < 85.0
-                    && obstruction(
-                        &map,
-                        &statics,
-                        &solids,
-                        from,
-                        (chest - from) / distance.max(1e-3),
-                        distance,
-                    ) >= distance - 0.6
-                    && !crate::combat::smoke_between(smokes, from, chest)
+                distance < 85.0 && obstruction(&map, &statics, &solids, from, (chest - from) / distance.max(1e-3), distance) >= distance - 0.6 && !crate::combat::smoke_between(smokes, from, chest)
             };
             let (sentry, alert) = (bot.sentry, bot.alert > 0.0);
             let facing_dir = Vec2::new(-input.yaw.sin(), -input.yaw.cos());
@@ -360,14 +265,9 @@ pub fn drive_bots(
                 }
                 let to = at - feet;
                 let distance = to.length();
-                let range = if alert {
-                    70.0
-                } else {
-                    40.0 * [1.0, 0.7, 0.45][(enemy_stance as usize).min(2)]
-                };
+                let range = if alert { 70.0 } else { 40.0 * [1.0, 0.7, 0.45][(enemy_stance as usize).min(2)] };
                 let cone = if alert { -0.3 } else { 0.4 };
-                distance < 2.5
-                    || (distance < range && to.xz().normalize_or_zero().dot(facing_dir) > cone)
+                distance < 2.5 || (distance < range && to.xz().normalize_or_zero().dot(facing_dir) > cone)
             };
             let found = fighters
                 .iter()
@@ -376,52 +276,22 @@ pub fn drive_bots(
                 .filter_map(|(entity, _, at, enemy_stance)| {
                     let chest = *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4);
                     // Face the target before testing a lean, so the lean goes the right way.
-                    let facing = PlayerInput {
-                        yaw: yaw_to((chest - eye).xz()),
-                        ..upright
-                    };
-                    [0i8, -1, 1]
-                        .into_iter()
-                        .find(|lean| {
-                            sees(
-                                crate::player::eye_point(
-                                    &statics,
-                                    feet,
-                                    &PlayerInput {
-                                        lean: *lean,
-                                        ..facing
-                                    },
-                                ),
-                                chest,
-                            )
-                        })
-                        .map(|lean| (*entity, chest, lean))
+                    let facing = PlayerInput { yaw: yaw_to((chest - eye).xz()), ..upright };
+                    [0i8, -1, 1].into_iter().find(|lean| sees(crate::player::eye_point(&statics, feet, &PlayerInput { lean: *lean, ..facing }), chest)).map(|lean| (*entity, chest, lean))
                 })
-                .min_by(|a, b| {
-                    a.1.distance_squared(eye)
-                        .total_cmp(&b.1.distance_squared(eye))
-                });
+                .min_by(|a, b| a.1.distance_squared(eye).total_cmp(&b.1.distance_squared(eye)));
             let target = found.map(|(entity, ..)| entity);
             bot.lean = found.map_or(0, |(.., lean)| lean);
             if target != bot.target {
                 // Caught off guard, a sentry takes a moment to react.
-                bot.seen = if bot.sentry && bot.alert <= 0.0 {
-                    -0.45
-                } else {
-                    0.0
-                };
+                bot.seen = if bot.sentry && bot.alert <= 0.0 { -0.45 } else { 0.0 };
             }
             if bot.sentry
                 && let Some((_, chest, _)) = found
             {
                 bot.alert = 15.0;
                 bot.heard = Some(chest);
-                shouts.push(Noise {
-                    at: chest,
-                    radius: 22.0,
-                    team: me.team,
-                    shout: true,
-                });
+                shouts.push(Noise { at: chest, radius: 22.0, team: me.team, shout: true });
             }
             bot.target = target;
             let miss = 0.07 / rules.difficulty.max(0.25);
@@ -446,18 +316,8 @@ pub fn drive_bots(
                 }
             } else if rules.hunt && me.team == 0 && bot.target.is_none() {
                 // Squadmates stay with the humans.
-                if let Some((_, lead)) =
-                    humans
-                        .iter()
-                        .filter(|(team, _)| *team == me.team)
-                        .min_by(|a, b| {
-                            a.1.distance_squared(feet)
-                                .total_cmp(&b.1.distance_squared(feet))
-                        })
-                {
-                    if lead.distance(feet) > 5.0
-                        && (bot.goal.distance(*lead) > 3.0 || bot.path.is_empty())
-                    {
+                if let Some((_, lead)) = humans.iter().filter(|(team, _)| *team == me.team).min_by(|a, b| a.1.distance_squared(feet).total_cmp(&b.1.distance_squared(feet))) {
+                    if lead.distance(feet) > 5.0 && (bot.goal.distance(*lead) > 3.0 || bot.path.is_empty()) {
                         bot.goal = *lead;
                         bot.path.clear();
                     }
@@ -466,15 +326,9 @@ pub fn drive_bots(
                     bot.goal = Vec3::new(x, map.height(x, z), z);
                     bot.path.clear();
                 }
-            } else if bot.target.is_none()
-                && (bot.path.is_empty() || bot.goal.distance(feet) < 4.0 || bot.stuck > 1.5)
-            {
+            } else if bot.target.is_none() && (bot.path.is_empty() || bot.goal.distance(feet) < 4.0 || bot.stuck > 1.5) {
                 // Hunt: head for an enemy's last position, or sweep through the town.
-                let enemies: Vec<Vec3> = fighters
-                    .iter()
-                    .filter(|(_, team, ..)| *team != me.team)
-                    .map(|(_, _, at, _)| *at)
-                    .collect();
+                let enemies: Vec<Vec3> = fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).collect();
                 bot.goal = match rng.0.pick(&enemies) {
                     Some(enemy) if rng.0.chance(0.65) => *enemy,
                     _ => {
@@ -492,9 +346,7 @@ pub fn drive_bots(
             bot.strafe = -bot.strafe;
         }
 
-        let target = bot
-            .target
-            .and_then(|entity| fighters.iter().find(|(e, ..)| *e == entity).copied());
+        let target = bot.target.and_then(|entity| fighters.iter().find(|(e, ..)| *e == entity).copied());
         input.lean = if target.is_some() { bot.lean } else { 0 };
         let mut held = 0;
         let mut wanted_stance = stance::STAND;
@@ -502,8 +354,7 @@ pub fn drive_bots(
         if let Some((_, _, enemy, enemy_stance)) = target {
             // Fight: track the target, strafe, hold a comfortable range.
             bot.seen += dt;
-            let to = enemy + Vec3::Y * (stance::eye(enemy_stance) - 0.45)
-                - crate::player::eye_point(&statics, feet, &input);
+            let to = enemy + Vec3::Y * (stance::eye(enemy_stance) - 0.45) - crate::player::eye_point(&statics, feet, &input);
             let distance = to.length().max(1e-3);
             let wanted_yaw = yaw_to(to.xz()) + bot.aim_error.x;
             let wanted_pitch = (to.y / distance).asin() + bot.aim_error.y;
@@ -526,19 +377,14 @@ pub fn drive_bots(
             } else {
                 0.0
             };
-            wish = facing * forward
-                + facing.perp() * bot.strafe * if class == GunClass::Sniper { 0.3 } else { 1.0 };
+            wish = facing * forward + facing.perp() * bot.strafe * if class == GunClass::Sniper { 0.3 } else { 1.0 };
             if bot.lean != 0 {
                 // Peeking: hold the corner instead of strafing out of it.
                 wish *= 0.15;
             }
             // Hunker down for long shots.
             if bot.crouch_at_range && distance > 18.0 {
-                wanted_stance = if class == GunClass::Sniper && distance > 35.0 {
-                    stance::PRONE
-                } else {
-                    stance::CROUCH
-                };
+                wanted_stance = if class == GunClass::Sniper && distance > 35.0 { stance::PRONE } else { stance::CROUCH };
                 wish *= 0.4;
             }
             bot.goal = enemy;
@@ -551,11 +397,7 @@ pub fn drive_bots(
                 bot.repath = 3.0;
                 bot.path = nav.path(&mut scratch, feet, bot.goal).unwrap_or_default();
             }
-            while bot
-                .path
-                .first()
-                .is_some_and(|p| p.xz().distance(feet.xz()) < 0.6 && (p.y - feet.y).abs() < 1.6)
-            {
+            while bot.path.first().is_some_and(|p| p.xz().distance(feet.xz()) < 0.6 && (p.y - feet.y).abs() < 1.6) {
                 bot.path.remove(0);
             }
             if let Some(next) = bot.path.first() {
@@ -570,13 +412,7 @@ pub fn drive_bots(
                 }
             } else if bot.sentry {
                 // Standing guard: look about.
-                input.yaw += (bot.strafe * 0.5
-                    + if bot.alert > 0.0 {
-                        bot.strafe * 1.2
-                    } else {
-                        0.0
-                    })
-                    * dt;
+                input.yaw += (bot.strafe * 0.5 + if bot.alert > 0.0 { bot.strafe * 1.2 } else { 0.0 }) * dt;
             }
             // Return fire at a gunshot it heard but cannot see the shooter of.
             if bot.sentry && bot.suppress > 0.0 {

@@ -34,27 +34,13 @@ pub struct OpticsPlugin;
 impl Plugin for OpticsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NightVision>()
-            .add_systems(
-                OnEnter(MatchPhase::Active),
-                (spawn_tint, |mut nv: ResMut<NightVision>| nv.on = false),
-            )
-            .add_systems(
-                Update,
-                (toggle_night_vision, give_heat, show_heat, tint)
-                    .in_set(ClientSet::Present)
-                    .run_if(in_state(MatchPhase::Active)),
-            );
+            .add_systems(OnEnter(MatchPhase::Active), (spawn_tint, |mut nv: ResMut<NightVision>| nv.on = false))
+            .add_systems(Update, (toggle_night_vision, give_heat, show_heat, tint).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
-fn local_perk(
-    content: &Content,
-    players: &Query<&Player, With<LocalPlayer>>,
-) -> Option<PerkEffect> {
-    players
-        .single()
-        .ok()
-        .and_then(|p| oz_sim::player::perk(content, p))
+fn local_perk(content: &Content, players: &Query<&Player, With<LocalPlayer>>) -> Option<PerkEffect> {
+    players.single().ok().and_then(|p| oz_sim::player::perk(content, p))
 }
 
 fn toggle_night_vision(
@@ -66,10 +52,7 @@ fn toggle_night_vision(
     mut nv: ResMut<NightVision>,
     mut sounds: EventWriter<PlaySfx>,
 ) {
-    let has = matches!(
-        local_perk(&content, &players),
-        Some(PerkEffect::NightVision)
-    );
+    let has = matches!(local_perk(&content, &players), Some(PerkEffect::NightVision));
     let alive = health.single().is_ok_and(|h| h.alive());
     if !has || !alive {
         nv.on = false;
@@ -85,12 +68,7 @@ fn spawn_tint(mut commands: Commands) {
     commands.spawn((
         MatchEntity,
         NightVisionTint,
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            ..default()
-        },
+        Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
         BackgroundColor(Color::srgba(0.15, 1.0, 0.35, 0.16)),
         Visibility::Hidden,
         GlobalZIndex(-45),
@@ -99,11 +77,7 @@ fn spawn_tint(mut commands: Commands) {
 
 fn tint(nv: Res<NightVision>, mut overlay: Query<&mut Visibility, With<NightVisionTint>>) {
     if let Ok(mut visibility) = overlay.single_mut() {
-        let wanted = if nv.on {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        let wanted = if nv.on { Visibility::Inherited } else { Visibility::Hidden };
         if *visibility != wanted {
             *visibility = wanted;
         }
@@ -111,11 +85,7 @@ fn tint(nv: Res<NightVision>, mut overlay: Query<&mut Visibility, With<NightVisi
 }
 
 /// Every robot gets a hidden heat silhouette riding its body.
-fn give_heat(
-    mut commands: Commands,
-    art: Res<Art>,
-    robots: Query<&Rig, (Added<Rig>, With<PlayerRobot>)>,
-) {
+fn give_heat(mut commands: Commands, art: Res<Art>, robots: Query<&Rig, (Added<Rig>, With<PlayerRobot>)>) {
     for rig in &robots {
         commands.spawn((
             ThermalGlow,
@@ -139,24 +109,14 @@ fn show_heat(
     mut glows: Query<(&ChildOf, &mut Visibility), With<ThermalGlow>>,
 ) {
     let me = local.single().ok();
-    let thermal =
-        matches!(local_perk(&content, &local), Some(PerkEffect::Thermal)) && view.ads > 0.6;
+    let thermal = matches!(local_perk(&content, &local), Some(PerkEffect::Thermal)) && view.ads > 0.6;
     for (parent, mut visibility) in &mut glows {
         let hot = thermal
             && robots
                 .iter()
                 .find(|(rig, ..)| rig.body == parent.parent())
-                .is_some_and(|(_, player, health)| {
-                    health.alive()
-                        && me.is_some_and(|me| {
-                            player.id != me.id && rules.pvp && player.team != me.team
-                        })
-                });
-        let wanted = if hot {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+                .is_some_and(|(_, player, health)| health.alive() && me.is_some_and(|me| player.id != me.id && rules.pvp && player.team != me.team));
+        let wanted = if hot { Visibility::Inherited } else { Visibility::Hidden };
         if *visibility != wanted {
             *visibility = wanted;
         }

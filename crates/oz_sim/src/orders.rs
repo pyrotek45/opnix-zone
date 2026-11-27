@@ -43,23 +43,14 @@ pub fn process_commands(
         let id = event.player;
         let deny = |fx: &mut EventWriter<FxEvent>, why: &str| {
             fx.write(FxEvent::tell(id, why));
-            fx.write(FxEvent::Cue {
-                to: id,
-                sfx: Sfx::UiDeny,
-            });
+            fx.write(FxEvent::Cue { to: id, sfx: Sfx::UiDeny });
         };
-        let Some((mut player, transform, mut arsenal, _)) =
-            players.iter_mut().find(|(player, ..)| player.id == id)
-        else {
-            continue;
-        };
+        let Some((mut player, transform, mut arsenal, _)) = players.iter_mut().find(|(player, ..)| player.id == id) else { continue };
         let pay = |state: &mut MatchState, cost: &Cost| state.stock.pay(cost);
 
         let done: Option<String> = match event.command.clone() {
             PlayerCommand::BuyWeapon(weapon) => {
-                let Some(def) = content.weapons.get(weapon as usize) else {
-                    continue;
-                };
+                let Some(def) = content.weapons.get(weapon as usize) else { continue };
                 if arsenal.owns(weapon as usize) {
                     deny(&mut fx, "ALREADY OWNED");
                     continue;
@@ -72,15 +63,9 @@ pub fn process_commands(
                 Some(format!("{} ACQUIRED", def.name))
             }
             PlayerCommand::BuyAmmo(weapon) => {
-                let Some(def) = content.weapons.get(weapon as usize) else {
-                    continue;
-                };
+                let Some(def) = content.weapons.get(weapon as usize) else { continue };
                 let cap = def.mag * 8;
-                if !arsenal.owns(weapon as usize)
-                    || def.infinite_reserve
-                    || def.mag == 0
-                    || arsenal.weapons[weapon as usize].reserve >= cap
-                {
+                if !arsenal.owns(weapon as usize) || def.infinite_reserve || def.mag == 0 || arsenal.weapons[weapon as usize].reserve >= cap {
                     deny(&mut fx, "AMMO NOT NEEDED");
                     continue;
                 }
@@ -92,32 +77,18 @@ pub fn process_commands(
                 slot.reserve = (slot.reserve + def.mag * 2).min(cap);
                 Some(format!("{} AMMO +{}", def.name, def.mag * 2))
             }
-            PlayerCommand::EquipPart {
-                weapon,
-                slot,
-                variant,
-            } => {
+            PlayerCommand::EquipPart { weapon, slot, variant } => {
                 let (w, s, v) = (weapon as usize, slot as usize, variant as usize);
-                let name = oz_core::arsenal::options(
-                    &content
-                        .weapons
-                        .get(w)
-                        .cloned()
-                        .unwrap_or_else(oz_core::kit::blank_weapon),
-                    &content.attachments,
-                    s,
-                )
-                .into_iter()
-                .find(|(i, ..)| *i == v)
-                .map_or("PART", |(_, name, ..)| name);
+                let name = oz_core::arsenal::options(&content.weapons.get(w).cloned().unwrap_or_else(oz_core::kit::blank_weapon), &content.attachments, s)
+                    .into_iter()
+                    .find(|(i, ..)| *i == v)
+                    .map_or("PART", |(_, name, ..)| name);
                 // Versus loadouts customise any weapon for free; co-op players pay for parts on guns they own.
                 if w >= arsenal.weapons.len() || (!arsenal.owns(w) && !rules.pvp) {
                     deny(&mut fx, "WEAPON NOT OWNED");
                     continue;
                 }
-                let Some(price) =
-                    oz_core::arsenal::part_cost(&content.weapons[w], &content.attachments, s, v)
-                else {
+                let Some(price) = oz_core::arsenal::part_cost(&content.weapons[w], &content.attachments, s, v) else {
                     deny(&mut fx, "THAT PART DOES NOT FIT");
                     continue;
                 };
@@ -130,12 +101,7 @@ pub fn process_commands(
                 }
                 arsenal.weapons[w].equipped[s] = variant;
                 // A smaller magazine returns the excess rounds to the reserve.
-                let mag = resolve(
-                    &content.weapons[w],
-                    &arsenal.weapons[w],
-                    &content.attachments,
-                )
-                .mag;
+                let mag = resolve(&content.weapons[w], &arsenal.weapons[w], &content.attachments).mag;
                 let state = &mut arsenal.weapons[w];
                 if state.ammo > mag {
                     state.reserve += state.ammo - mag;
@@ -152,14 +118,7 @@ pub fn process_commands(
                 let level = arsenal.weapons[w].mod_level(kind);
                 let mut trial = arsenal.weapons[w];
                 if !trial.add_mod(kind) {
-                    deny(
-                        &mut fx,
-                        if level > 0 {
-                            "MOD AT MAX LEVEL"
-                        } else {
-                            "ALL MOD SLOTS FULL"
-                        },
-                    );
+                    deny(&mut fx, if level > 0 { "MOD AT MAX LEVEL" } else { "ALL MOD SLOTS FULL" });
                     continue;
                 }
                 if !pay(&mut state, &kind.cost(level)) {
@@ -170,22 +129,17 @@ pub fn process_commands(
                 Some(format!("{} MOD LEVEL {}", kind.name(), level + 1))
             }
             PlayerCommand::Build { kind, x, z, yaw } => {
-                let Some(def) = content.structures.get(kind as usize) else {
-                    continue;
-                };
+                let Some(def) = content.structures.get(kind as usize) else { continue };
                 let yaw = snap_yaw(yaw);
                 let half = oriented_half(def.half, yaw);
                 let mut at = Vec3::new(x, 0.0, z);
                 let mut node = None;
                 if matches!(def.kind, StructureKind::Drill { .. }) {
-                    let taken =
-                        |candidate: Entity| structures.iter().any(|s| s.node == Some(candidate));
+                    let taken = |candidate: Entity| structures.iter().any(|s| s.node == Some(candidate));
                     let nearest = ores
                         .iter()
                         .filter(|(entity, _)| !taken(*entity))
-                        .map(|(entity, t)| {
-                            (t.translation.xz().distance(at.xz()), entity, t.translation)
-                        })
+                        .map(|(entity, t)| (t.translation.xz().distance(at.xz()), entity, t.translation))
                         .min_by(|a, b| a.0.total_cmp(&b.0));
                     match nearest {
                         Some((d, entity, pos)) if d <= DRILL_SNAP => {
@@ -201,20 +155,10 @@ pub fn process_commands(
                 at.y = map.height(at.x, at.z);
                 let footprint = half + Vec3::new(0.15, 0.0, 0.15);
                 let drill_site = node.map(|_| at);
-                let blocked = statics.overlaps(
-                    at + Vec3::Y * (half.y + 0.25),
-                    Vec3::new(footprint.x, half.y, footprint.z),
-                    drill_site,
-                ) || solids.iter().any(|(_, t, solid)| {
-                    (t.translation.x - at.x).abs() < solid.half.x + footprint.x
-                        && (t.translation.z - at.z).abs() < solid.half.z + footprint.z
-                });
+                let blocked = statics.overlaps(at + Vec3::Y * (half.y + 0.25), Vec3::new(footprint.x, half.y, footprint.z), drill_site)
+                    || solids.iter().any(|(_, t, solid)| (t.translation.x - at.x).abs() < solid.half.x + footprint.x && (t.translation.z - at.z).abs() < solid.half.z + footprint.z);
                 let near_core = at.xz().distance(map.core) < 3.2;
-                if transform.translation.distance(at) > BUILD_REACH
-                    || at.y < map.water + 0.15
-                    || blocked
-                    || near_core
-                {
+                if transform.translation.distance(at) > BUILD_REACH || at.y < map.water + 0.15 || blocked || near_core {
                     deny(&mut fx, "CANNOT BUILD THERE");
                     continue;
                 }
@@ -234,21 +178,12 @@ pub fn process_commands(
                     Solid { half },
                     Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)),
                 ));
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::Build,
-                    at: Some(at),
-                });
+                fx.write(FxEvent::Sound { sfx: Sfx::Build, at: Some(at) });
                 Some(format!("{} ONLINE", def.name))
             }
             PlayerCommand::Upgrade(index) => {
-                let Some(def) = content.upgrades.get(index as usize) else {
-                    continue;
-                };
-                let level = state
-                    .upgrades
-                    .get(index as usize)
-                    .copied()
-                    .unwrap_or(def.max_level);
+                let Some(def) = content.upgrades.get(index as usize) else { continue };
+                let level = state.upgrades.get(index as usize).copied().unwrap_or(def.max_level);
                 if level >= def.max_level {
                     deny(&mut fx, "UPGRADE AT MAX LEVEL");
                     continue;
@@ -260,14 +195,12 @@ pub fn process_commands(
                 state.upgrades[index as usize] += 1;
                 match def.effect {
                     UpgradeEffect::ObjectiveHull => {
-                        let max = rules.objective_hp
-                            * content.bonus(&state.upgrades, UpgradeEffect::ObjectiveHull);
+                        let max = rules.objective_hp * content.bonus(&state.upgrades, UpgradeEffect::ObjectiveHull);
                         state.objective_hp += max - state.objective_max;
                         state.objective_max = max;
                     }
                     UpgradeEffect::PlayerArmor => {
-                        let max =
-                            100.0 * content.bonus(&state.upgrades, UpgradeEffect::PlayerArmor);
+                        let max = 100.0 * content.bonus(&state.upgrades, UpgradeEffect::PlayerArmor);
                         for (_, _, _, mut health) in &mut players {
                             health.hp += max - health.max;
                             health.max = max;
@@ -275,20 +208,12 @@ pub fn process_commands(
                     }
                     _ => {}
                 }
-                fx.write(FxEvent::notice(format!(
-                    "{} UPGRADED TO LEVEL {}",
-                    def.name,
-                    level + 1
-                )));
+                fx.write(FxEvent::notice(format!("{} UPGRADED TO LEVEL {}", def.name, level + 1)));
                 None
             }
             PlayerCommand::Loadout(loadout) => {
                 let valid = |index: u8| (index as usize) < content.weapons.len();
-                if !rules.pvp
-                    || !valid(loadout.primary)
-                    || !valid(loadout.secondary)
-                    || loadout.primary == loadout.secondary
-                {
+                if !rules.pvp || !valid(loadout.primary) || !valid(loadout.secondary) || loadout.primary == loadout.secondary {
                     deny(&mut fx, "INVALID LOADOUT");
                     continue;
                 }
@@ -303,18 +228,9 @@ pub fn process_commands(
             }
             PlayerCommand::Lobby(_) => continue,
             PlayerCommand::Chat(text) => {
-                let text: String = text
-                    .chars()
-                    .filter(|c| c.is_ascii_graphic() || *c == ' ')
-                    .take(80)
-                    .collect::<String>()
-                    .trim()
-                    .to_uppercase();
+                let text: String = text.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(80).collect::<String>().trim().to_uppercase();
                 if !text.is_empty() {
-                    fx.write(FxEvent::Chat {
-                        name: player.name.clone(),
-                        text,
-                    });
+                    fx.write(FxEvent::Chat { name: player.name.clone(), text });
                 }
                 continue;
             }
@@ -325,10 +241,7 @@ pub fn process_commands(
             // Handled by `breakables::work_doors`.
             PlayerCommand::Door(_) => continue,
         };
-        fx.write(FxEvent::Cue {
-            to: id,
-            sfx: Sfx::Buy,
-        });
+        fx.write(FxEvent::Cue { to: id, sfx: Sfx::Buy });
         if let Some(text) = done {
             fx.write(FxEvent::tell(id, text));
         }

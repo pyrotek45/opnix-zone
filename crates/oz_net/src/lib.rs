@@ -76,11 +76,7 @@ fn parse(packet: &[u8]) -> Option<(u8, u64, &[u8])> {
     if packet.len() < 12 || packet[..2] != MAGIC || packet[2] != VERSION {
         return None;
     }
-    Some((
-        packet[3],
-        u64::from_le_bytes(packet[4..12].try_into().ok()?),
-        &packet[12..],
-    ))
+    Some((packet[3], u64::from_le_bytes(packet[4..12].try_into().ok()?), &packet[12..]))
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -101,8 +97,7 @@ impl<'a> Reader<'a> {
         self.take(2).map(|b| u16::from_le_bytes([b[0], b[1]]))
     }
     fn u32(&mut self) -> Option<u32> {
-        self.take(4)
-            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        self.take(4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
     }
 }
 
@@ -110,11 +105,7 @@ impl<'a> Reader<'a> {
 fn random_u64() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    hasher.write_u128(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos()),
-    );
+    hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
     hasher.finish().max(1)
 }
 
@@ -187,15 +178,11 @@ impl Session {
     }
 
     fn rto(&self) -> Duration {
-        Duration::from_secs_f32(
-            self.srtt
-                .map_or(0.2, |rtt| (rtt * 2.0 + 0.03).clamp(0.06, 1.0)),
-        )
+        Duration::from_secs_f32(self.srtt.map_or(0.2, |rtt| (rtt * 2.0 + 0.03).clamp(0.06, 1.0)))
     }
 
     fn queue(&mut self, body: &[u8]) {
-        self.stream
-            .extend_from_slice(&(body.len() as u32).to_le_bytes());
+        self.stream.extend_from_slice(&(body.len() as u32).to_le_bytes());
         self.stream.extend_from_slice(body);
     }
 
@@ -207,11 +194,7 @@ impl Session {
         }
         let msg = self.next_msg;
         self.next_msg = self.next_msg.wrapping_add(1);
-        for (index, chunk) in body
-            .chunks(SEGMENT)
-            .enumerate()
-            .chain(body.is_empty().then_some((0, &[][..])))
-        {
+        for (index, chunk) in body.chunks(SEGMENT).enumerate().chain(body.is_empty().then_some((0, &[][..]))) {
             let mut entry = Vec::with_capacity(chunk.len() + 11);
             entry.push(LATEST);
             entry.extend_from_slice(&msg.to_le_bytes());
@@ -237,17 +220,14 @@ impl Session {
     fn receive(&mut self, body: &[u8]) {
         self.heard = Instant::now();
         let mut r = Reader(body);
-        let (Some(ack), Some(bits)) = (r.u32(), r.u32()) else {
-            return;
-        };
+        let (Some(ack), Some(bits)) = (r.u32(), r.u32()) else { return };
         let now = Instant::now();
         let acked = |seq: u32, unacked: &mut BTreeMap<u32, Sent>, srtt: &mut Option<f32>| {
             if let Some(sent) = unacked.remove(&seq)
-                && !sent.resent
-            {
-                let sample = now.duration_since(sent.first).as_secs_f32();
-                *srtt = Some(srtt.map_or(sample, |s| s * 0.875 + sample * 0.125));
-            }
+                && !sent.resent {
+                    let sample = now.duration_since(sent.first).as_secs_f32();
+                    *srtt = Some(srtt.map_or(sample, |s| s * 0.875 + sample * 0.125));
+                }
         };
         let done: Vec<u32> = self.unacked.range(..ack).map(|(seq, _)| *seq).collect();
         for seq in done {
@@ -261,12 +241,8 @@ impl Session {
         while let Some(tag) = r.u8() {
             match tag {
                 RELIABLE => {
-                    let (Some(seq), Some(len)) = (r.u32(), r.u16()) else {
-                        return;
-                    };
-                    let Some(data) = r.take(len as usize) else {
-                        return;
-                    };
+                    let (Some(seq), Some(len)) = (r.u32(), r.u16()) else { return };
+                    let Some(data) = r.take(len as usize) else { return };
                     self.need_ack = true;
                     if seq >= self.expected {
                         self.early.entry(seq).or_insert_with(|| data.to_vec());
@@ -277,39 +253,21 @@ impl Session {
                     }
                 }
                 LATEST => {
-                    let (Some(msg), Some(index), Some(count), Some(len)) =
-                        (r.u32(), r.u16(), r.u16(), r.u16())
-                    else {
-                        return;
-                    };
-                    let Some(data) = r.take(len as usize) else {
-                        return;
-                    };
+                    let (Some(msg), Some(index), Some(count), Some(len)) = (r.u32(), r.u16(), r.u16(), r.u16()) else { return };
+                    let Some(data) = r.take(len as usize) else { return };
                     let (index, count) = (index as usize, count as usize);
-                    if self
-                        .newest
-                        .is_some_and(|newest| msg.wrapping_sub(newest) as i32 <= 0)
-                        || index >= count
-                    {
+                    if self.newest.is_some_and(|newest| msg.wrapping_sub(newest) as i32 <= 0) || index >= count {
                         continue;
                     }
-                    let partial = self.partial.entry(msg).or_insert_with(|| Partial {
-                        parts: vec![None; count],
-                        have: 0,
-                    });
+                    let partial = self.partial.entry(msg).or_insert_with(|| Partial { parts: vec![None; count], have: 0 });
                     if partial.parts.len() != count || partial.parts[index].is_some() {
                         continue;
                     }
                     partial.parts[index] = Some(data.to_vec());
                     partial.have += 1;
                     if partial.have == count {
-                        let parts = self
-                            .partial
-                            .remove(&msg)
-                            .map(|p| p.parts)
-                            .unwrap_or_default();
-                        self.latest_in
-                            .push(parts.into_iter().flatten().flatten().collect());
+                        let parts = self.partial.remove(&msg).map(|p| p.parts).unwrap_or_default();
+                        self.latest_in.push(parts.into_iter().flatten().flatten().collect());
                         self.newest = Some(msg);
                         self.partial.retain(|id, _| id.wrapping_sub(msg) as i32 > 0);
                     }
@@ -323,8 +281,7 @@ impl Session {
     fn deliver<T: DeserializeOwned>(&mut self, mut out: impl FnMut(T)) {
         let mut cursor = 0;
         while self.inbox.len() - cursor >= 4 {
-            let length =
-                u32::from_le_bytes(self.inbox[cursor..cursor + 4].try_into().unwrap()) as usize;
+            let length = u32::from_le_bytes(self.inbox[cursor..cursor + 4].try_into().unwrap()) as usize;
             if length > MAX_FRAME {
                 self.closed = true;
                 break;
@@ -386,15 +343,7 @@ impl Session {
             let seq = self.next_seq;
             self.next_seq += 1;
             entries.push(segment(seq, &data));
-            self.unacked.insert(
-                seq,
-                Sent {
-                    data,
-                    first: now,
-                    last: now,
-                    resent: false,
-                },
-            );
+            self.unacked.insert(seq, Sent { data, first: now, last: now, resent: false });
         }
         entries.append(&mut self.outgoing);
 
@@ -442,13 +391,7 @@ fn drain(socket: &UdpSocket, mut handle: impl FnMut(&[u8], SocketAddr)) {
             Ok((n, from)) => handle(&buffer[..n], from),
             Err(e) if e.kind() == ErrorKind::WouldBlock => break,
             // ICMP "port unreachable" from an earlier send shows up here on some systems; skip it.
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    ErrorKind::ConnectionReset
-                        | ErrorKind::ConnectionRefused
-                        | ErrorKind::Interrupted
-                ) => {}
+            Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset | ErrorKind::ConnectionRefused | ErrorKind::Interrupted) => {}
             Err(_) => break,
         }
     }
@@ -475,16 +418,7 @@ pub struct Host<In, Out> {
 
 impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
     pub fn bind(addr: impl ToSocketAddrs) -> io::Result<Self> {
-        Ok(Self {
-            socket: bind_udp(addr)?,
-            peers: Vec::new(),
-            next_id: 1,
-            punches: Vec::new(),
-            punch_timer: Instant::now(),
-            stun: None,
-            loss: 0.0,
-            _marker: PhantomData,
-        })
+        Ok(Self { socket: bind_udp(addr)?, peers: Vec::new(), next_id: 1, punches: Vec::new(), punch_timer: Instant::now(), stun: None, loss: 0.0, _marker: PhantomData })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -529,13 +463,10 @@ impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
         let mut welcomes = Vec::new();
         drain(socket, |packet, from| {
             if let Some(stun) = stun.as_mut()
-                && stun.handle(packet)
-            {
-                return;
-            }
-            let Some((kind, conn, body)) = parse(packet) else {
-                return;
-            };
+                && stun.handle(packet) {
+                    return;
+                }
+            let Some((kind, conn, body)) = parse(packet) else { return };
             let existing = peers.iter().position(|(_, s)| s.addr == from);
             match kind {
                 kind::HELLO => {
@@ -598,9 +529,7 @@ impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
     }
 
     pub fn send(&mut self, peer: PeerId, message: &Out) {
-        let Ok(body) = bincode::serialize(message) else {
-            return;
-        };
+        let Ok(body) = bincode::serialize(message) else { return };
         if let Some((_, session)) = self.peers.iter_mut().find(|(id, _)| *id == peer) {
             session.queue(&body);
         }
@@ -608,9 +537,7 @@ impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
 
     /// Sends a message where only the newest copy matters (it may be dropped, never resent).
     pub fn send_latest(&mut self, peer: PeerId, message: &Out) {
-        let Ok(body) = bincode::serialize(message) else {
-            return;
-        };
+        let Ok(body) = bincode::serialize(message) else { return };
         if let Some((_, session)) = self.peers.iter_mut().find(|(id, _)| *id == peer) {
             session.queue_latest(&body);
         }
@@ -618,9 +545,7 @@ impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
 
     /// Serialises once and sends reliably to every peer.
     pub fn broadcast(&mut self, message: &Out) {
-        let Ok(body) = bincode::serialize(message) else {
-            return;
-        };
+        let Ok(body) = bincode::serialize(message) else { return };
         for (_, session) in &mut self.peers {
             session.queue(&body);
         }
@@ -628,9 +553,7 @@ impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
 
     /// Serialises once and sends latest-only to every peer.
     pub fn broadcast_latest(&mut self, message: &Out) {
-        let Ok(body) = bincode::serialize(message) else {
-            return;
-        };
+        let Ok(body) = bincode::serialize(message) else { return };
         for (_, session) in &mut self.peers {
             session.queue_latest(&body);
         }
@@ -645,19 +568,12 @@ impl<In: DeserializeOwned, Out: Serialize> Host<In, Out> {
 
     /// How long since this peer last sent anything.
     pub fn silent_for(&self, peer: PeerId) -> Option<Duration> {
-        self.peers
-            .iter()
-            .find(|(id, _)| *id == peer)
-            .map(|(_, s)| s.heard.elapsed())
+        self.peers.iter().find(|(id, _)| *id == peer).map(|(_, s)| s.heard.elapsed())
     }
 
     /// Smoothed round trip to a peer.
     pub fn round_trip(&self, peer: PeerId) -> Option<Duration> {
-        self.peers
-            .iter()
-            .find(|(id, _)| *id == peer)
-            .and_then(|(_, s)| s.srtt)
-            .map(Duration::from_secs_f32)
+        self.peers.iter().find(|(id, _)| *id == peer).and_then(|(_, s)| s.srtt).map(Duration::from_secs_f32)
     }
 
     pub fn kick(&mut self, peer: PeerId) {
@@ -703,10 +619,7 @@ impl<In: DeserializeOwned, Out: Serialize> Client<In, Out> {
     pub fn connect(addr: impl ToSocketAddrs) -> io::Result<Self> {
         let targets: Vec<SocketAddr> = addr.to_socket_addrs()?.collect();
         if targets.is_empty() {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "address did not resolve",
-            ));
+            return Err(io::Error::new(ErrorKind::InvalidInput, "address did not resolve"));
         }
         let mut client = Self::open()?;
         client.add_candidates(&targets);
@@ -733,11 +646,7 @@ impl<In: DeserializeOwned, Out: Serialize> Client<In, Out> {
     pub fn add_candidates(&mut self, addrs: &[SocketAddr]) {
         for addr in addrs {
             // Loopback stands in for "this machine" when the host advertised 0.0.0.0.
-            let addr = if addr.ip().is_unspecified() {
-                SocketAddr::from(([127, 0, 0, 1], addr.port()))
-            } else {
-                *addr
-            };
+            let addr = if addr.ip().is_unspecified() { SocketAddr::from(([127, 0, 0, 1], addr.port())) } else { *addr };
             if !self.candidates.contains(&addr) {
                 self.candidates.push(addr);
                 self.hello_timer = Instant::now();
@@ -767,13 +676,10 @@ impl<In: DeserializeOwned, Out: Serialize> Client<In, Out> {
         let established = &mut self.established;
         drain(socket, |packet, from| {
             if let Some(stun) = stun.as_mut()
-                && stun.handle(packet)
-            {
-                return;
-            }
-            let Some((kind, conn, body)) = parse(packet) else {
-                return;
-            };
+                && stun.handle(packet) {
+                    return;
+                }
+            let Some((kind, conn, body)) = parse(packet) else { return };
             match kind {
                 // The connection id is a 64-bit secret, so a welcome carrying it is genuine even
                 // from an address we did not list (routers can remap the host's port).
@@ -782,18 +688,13 @@ impl<In: DeserializeOwned, Out: Serialize> Client<In, Out> {
                     session.heard = Instant::now();
                     *established = true;
                 }
-                kind::DATA if *established && from == session.addr && conn == session.conn => {
-                    session.receive(body)
-                }
-                kind::BYE if *established && from == session.addr && conn == session.conn => {
-                    session.closed = true
-                }
+                kind::DATA if *established && from == session.addr && conn == session.conn => session.receive(body),
+                kind::BYE if *established && from == session.addr && conn == session.conn => session.closed = true,
                 _ => {}
             }
         });
         if self.established {
-            self.session
-                .deliver(|message| events.push(ClientEvent::Message(message)));
+            self.session.deliver(|message| events.push(ClientEvent::Message(message)));
             if !self.session.closed {
                 self.session.flush(&self.socket);
             }
@@ -865,10 +766,7 @@ pub fn normalize_address(input: &str) -> String {
     let input = input.trim();
     if input.is_empty() {
         format!("127.0.0.1:{DEFAULT_PORT}")
-    } else if input
-        .rsplit_once(':')
-        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
-    {
+    } else if input.rsplit_once(':').is_some_and(|(_, port)| port.parse::<u16>().is_ok()) {
         input.to_string()
     } else {
         format!("{input}:{DEFAULT_PORT}")
@@ -939,12 +837,7 @@ mod tests {
         assert_eq!(got, vec![Down(1), Down(2)]);
 
         drop(client);
-        pump(|| {
-            host.poll()
-                .into_iter()
-                .any(|e| matches!(e, HostEvent::Disconnected(id) if id == peer))
-                .then_some(())
-        });
+        pump(|| host.poll().into_iter().any(|e| matches!(e, HostEvent::Disconnected(id) if id == peer)).then_some(()));
         assert_eq!(host.peer_count(), 0);
     }
 
@@ -968,10 +861,7 @@ mod tests {
             }
             (got.len() == 501).then_some(())
         });
-        let expected: Vec<Up> = (0..500)
-            .map(Up::Count)
-            .chain([Up::Blob(vec![3; 40_000])])
-            .collect();
+        let expected: Vec<Up> = (0..500).map(Up::Count).chain([Up::Blob(vec![3; 40_000])]).collect();
         assert_eq!(got, expected);
     }
 
@@ -981,26 +871,14 @@ mod tests {
         let mut client: Client<Down, Up> = Client::connect(host.local_addr().unwrap()).unwrap();
         let peer = pump(|| {
             client.poll();
-            host.poll().into_iter().find_map(|e| {
-                if let HostEvent::Connected(id) = e {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
+            host.poll().into_iter().find_map(|e| if let HostEvent::Connected(id) = e { Some(id) } else { None })
         });
         // A big latest-only message is fragmented and reassembled.
         let big = Up::Blob(vec![9; 20_000]);
         client.send_latest(&big);
         let got = pump(|| {
             client.poll();
-            host.poll().into_iter().find_map(|e| {
-                if let HostEvent::Message(_, m) = e {
-                    Some(m)
-                } else {
-                    None
-                }
-            })
+            host.poll().into_iter().find_map(|e| if let HostEvent::Message(_, m) = e { Some(m) } else { None })
         });
         assert_eq!(got, big);
         // Several in one frame: they arrive in order and none is older than the last.
@@ -1026,17 +904,11 @@ mod tests {
         let port = host.local_addr().unwrap().port();
         let mut client: Client<Down, Up> = Client::open().unwrap();
         // Wrong guesses first, like an internet address that does not route back home.
-        client.add_candidates(&[
-            "127.0.0.1:1".parse().unwrap(),
-            SocketAddr::from(([127, 0, 0, 1], port)),
-        ]);
+        client.add_candidates(&["127.0.0.1:1".parse().unwrap(), SocketAddr::from(([127, 0, 0, 1], port))]);
         client.send(&Up::Hello("x".into()));
         pump(|| {
             client.poll();
-            host.poll()
-                .into_iter()
-                .any(|e| matches!(e, HostEvent::Message(_, Up::Hello(_))))
-                .then_some(())
+            host.poll().into_iter().any(|e| matches!(e, HostEvent::Message(_, Up::Hello(_)))).then_some(())
         });
         assert!(client.is_established());
     }
@@ -1044,10 +916,7 @@ mod tests {
     #[test]
     fn addresses_get_a_default_port() {
         assert_eq!(normalize_address(""), format!("127.0.0.1:{DEFAULT_PORT}"));
-        assert_eq!(
-            normalize_address("example.org"),
-            format!("example.org:{DEFAULT_PORT}")
-        );
+        assert_eq!(normalize_address("example.org"), format!("example.org:{DEFAULT_PORT}"));
         assert_eq!(normalize_address(" 10.0.0.2:9000 "), "10.0.0.2:9000");
     }
 }

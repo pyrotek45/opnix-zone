@@ -46,26 +46,13 @@ pub struct Enemy {
     pub attacks: u8,
 }
 
-pub fn spawn_enemy(
-    commands: &mut Commands,
-    ids: &mut NetIds,
-    content: &Content,
-    kind: u16,
-    at: Vec3,
-    hp_scale: f32,
-    rng: &mut SimRng,
-) -> Entity {
+pub fn spawn_enemy(commands: &mut Commands, ids: &mut NetIds, content: &Content, kind: u16, at: Vec3, hp_scale: f32, rng: &mut SimRng) -> Entity {
     let def = &content.enemies[kind as usize];
     commands
         .spawn((
             MatchEntity,
             ids.next(),
-            Enemy {
-                kind,
-                think: rng.0.range(0.0, 0.4),
-                cooldown: rng.0.range(0.3, 1.0),
-                ..default()
-            },
+            Enemy { kind, think: rng.0.range(0.0, 0.4), cooldown: rng.0.range(0.3, 1.0), ..default() },
             Health::full(def.hp * hp_scale),
             Transform::from_translation(at),
         ))
@@ -101,38 +88,20 @@ pub fn think(
         let nearest_structure = |limit: f32| {
             structures
                 .iter()
-                .map(|(entity, t, solid)| {
-                    (
-                        t.translation.distance(here) - solid.half.x.max(solid.half.z),
-                        entity,
-                        t.translation,
-                        solid.half.x.max(solid.half.z),
-                    )
-                })
+                .map(|(entity, t, solid)| (t.translation.distance(here) - solid.half.x.max(solid.half.z), entity, t.translation, solid.half.x.max(solid.half.z)))
                 .filter(|(d, ..)| *d < limit)
                 .min_by(|a, b| a.0.total_cmp(&b.0))
         };
 
-        let player_target = |limit: f32| {
-            nearest_player
-                .filter(|(d, ..)| *d < limit * limit)
-                .map(|(_, e, p)| (Target::Player(e), p, 0.4))
-        };
-        let structure_target =
-            |limit: f32| nearest_structure(limit).map(|(_, e, p, r)| (Target::Structure(e), p, r));
+        let player_target = |limit: f32| nearest_player.filter(|(d, ..)| *d < limit * limit).map(|(_, e, p)| (Target::Player(e), p, 0.4));
+        let structure_target = |limit: f32| nearest_structure(limit).map(|(_, e, p, r)| (Target::Structure(e), p, r));
         let objective = has_objective.then_some((Target::Objective, core, 1.8));
         // Anything standing right in the way gets attacked regardless of preference.
         let blocking = structure_target(def.radius + 1.2);
         let choice = match def.prefers {
-            Prefers::Players => player_target(70.0)
-                .or(blocking)
-                .or(objective)
-                .or(player_target(1e4)),
+            Prefers::Players => player_target(70.0).or(blocking).or(objective).or(player_target(1e4)),
             Prefers::Structures => structure_target(45.0).or(objective).or(player_target(1e4)),
-            Prefers::Objective => blocking
-                .or(player_target(5.0))
-                .or(objective)
-                .or(player_target(1e4)),
+            Prefers::Objective => blocking.or(player_target(5.0)).or(objective).or(player_target(1e4)),
         };
         match choice {
             Some((target, pos, radius)) => {
@@ -194,9 +163,7 @@ pub fn act(
         let (stop_at, altitude) = match def.brain {
             Brain::Melee => (def.radius + enemy.target_radius + 0.5, 0.0),
             Brain::Ranged { range, .. } => (range * 0.8, 0.0),
-            Brain::Flyer {
-                altitude, range, ..
-            } => (range * 0.7, altitude),
+            Brain::Flyer { altitude, range, .. } => (range * 0.7, altitude),
         };
 
         let mut step = Vec2::ZERO;
@@ -223,9 +190,7 @@ pub fn act(
         let mut pos = here + Vec3::new(step.x, 0.0, step.y) * dt;
         let ground = map.height(pos.x, pos.z).max(map.water - def.radius * 0.9);
         pos.y = if altitude > 0.0 {
-            let hover = ground.max(map.water)
-                + altitude
-                + (elapsed * 1.7 + entity.index() as f32).sin() * 0.35;
+            let hover = ground.max(map.water) + altitude + (elapsed * 1.7 + entity.index() as f32).sin() * 0.35;
             here.y + (hover - here.y) * (dt * 3.0).min(1.0)
         } else {
             ground
@@ -248,14 +213,7 @@ pub fn act(
                 Target::Objective => state.damage_objective(damage),
                 Target::Player(player) => {
                     if let Ok((_, mut health, mut info)) = players.get_mut(player) {
-                        crate::player::damage_player(
-                            &mut health,
-                            &mut info,
-                            damage,
-                            None,
-                            &mut state,
-                            &mut fx,
-                        );
+                        crate::player::damage_player(&mut health, &mut info, damage, None, &mut state, &mut fx);
                     }
                 }
                 Target::Structure(structure) => match structures.get_mut(structure) {
@@ -266,42 +224,14 @@ pub fn act(
             },
             Brain::Ranged { shot_speed, .. } | Brain::Flyer { shot_speed, .. } => {
                 let from = pos + Vec3::Y * def.radius * 1.2;
-                let aim = enemy.target_pos
-                    + Vec3::Y
-                        * if enemy.target == Target::Objective {
-                            1.5
-                        } else {
-                            1.1
-                        };
+                let aim = enemy.target_pos + Vec3::Y * if enemy.target == Target::Objective { 1.5 } else { 1.1 };
                 let flight = from.distance(aim) / shot_speed;
                 let gravity = if altitude > 0.0 { 0.0 } else { 6.0 };
                 // Solve the arc so lobbed shots land on the target.
                 let velocity = (aim - from) / flight.max(0.05) + Vec3::Y * 0.5 * gravity * flight;
-                let look = if altitude > 0.0 {
-                    ShotLook::Bolt
-                } else {
-                    ShotLook::Acid
-                };
-                spawn_projectile(
-                    &mut commands,
-                    &mut ids,
-                    from,
-                    Projectile {
-                        velocity,
-                        gravity,
-                        damage,
-                        splash: 0.0,
-                        look,
-                        owner: None,
-                        team: 255,
-                        life: 5.0,
-                        effect: crate::combat::Impact::Blast,
-                    },
-                );
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::EnemyShot,
-                    at: Some(from),
-                });
+                let look = if altitude > 0.0 { ShotLook::Bolt } else { ShotLook::Acid };
+                spawn_projectile(&mut commands, &mut ids, from, Projectile { velocity, gravity, damage, splash: 0.0, look, owner: None, team: 255, life: 5.0, effect: crate::combat::Impact::Blast });
+                fx.write(FxEvent::Sound { sfx: Sfx::EnemyShot, at: Some(from) });
             }
         }
     }

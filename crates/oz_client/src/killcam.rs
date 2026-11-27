@@ -89,11 +89,7 @@ impl KillCam {
     /// One robot's pose at recorded time `t`, blended between the frames around it.
     fn sample(&self, id: u8, t: f32) -> Option<Sample> {
         let after = self.frames.partition_point(|f| f.t < t);
-        let find = |index: usize| {
-            self.frames
-                .get(index)
-                .and_then(|f| f.bodies.iter().find(|b| b.id == id).map(|b| (f.t, *b)))
-        };
+        let find = |index: usize| self.frames.get(index).and_then(|f| f.bodies.iter().find(|b| b.id == id).map(|b| (f.t, *b)));
         let (a, b) = (after.checked_sub(1).and_then(find), find(after));
         match (a, b) {
             (Some((ta, a)), Some((tb, b))) => {
@@ -102,14 +98,8 @@ impl KillCam {
                 if a.pos.distance(b.pos) > 6.0 {
                     return Some(if k < 0.5 { a } else { b });
                 }
-                let turn = (b.yaw - a.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-                    - std::f32::consts::PI;
-                Some(Sample {
-                    pos: a.pos.lerp(b.pos, k),
-                    yaw: a.yaw + turn * k,
-                    pitch: a.pitch + (b.pitch - a.pitch) * k,
-                    ..if k < 0.5 { a } else { b }
-                })
+                let turn = (b.yaw - a.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                Some(Sample { pos: a.pos.lerp(b.pos, k), yaw: a.yaw + turn * k, pitch: a.pitch + (b.pitch - a.pitch) * k, ..if k < 0.5 { a } else { b } })
             }
             (Some((_, a)), None) => Some(a),
             (None, Some((_, b))) => Some(b),
@@ -130,18 +120,8 @@ pub struct KillCamPlugin;
 impl Plugin for KillCamPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KillCam>()
-            .add_systems(OnEnter(MatchPhase::Active), |mut cam: ResMut<KillCam>| {
-                *cam = KillCam::default()
-            })
-            .add_systems(
-                Update,
-                (record, run)
-                    .chain()
-                    .in_set(ClientSet::Present)
-                    .after(crate::spectate::Spectating)
-                    .before(crate::avatar::AnimateRigs)
-                    .run_if(in_state(MatchPhase::Active)),
-            );
+            .add_systems(OnEnter(MatchPhase::Active), |mut cam: ResMut<KillCam>| *cam = KillCam::default())
+            .add_systems(Update, (record, run).chain().in_set(ClientSet::Present).after(crate::spectate::Spectating).before(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -155,21 +135,8 @@ fn record(
 ) {
     let now = time.elapsed_secs();
     for event in events.read() {
-        if let FxEvent::Shot {
-            from,
-            to,
-            tracer,
-            beam,
-            ..
-        } = event
-        {
-            cam.shots.push_back(ShotRecord {
-                t: now,
-                from: *from,
-                to: *to,
-                tracer: *tracer,
-                beam: *beam,
-            });
+        if let FxEvent::Shot { from, to, tracer, beam, .. } = event {
+            cam.shots.push_back(ShotRecord { t: now, from: *from, to: *to, tracer: *tracer, beam: *beam });
         }
     }
     let bodies = players
@@ -178,19 +145,8 @@ fn record(
             let parts = arsenal
                 .and_then(|a| a.weapons.get(input.weapon as usize))
                 .map(|w| w.equipped)
-                .or_else(|| {
-                    state
-                        .roster
-                        .iter()
-                        .find(|r| r.id == player.id && r.weapon == input.weapon)
-                        .map(|r| r.parts)
-                })
-                .or_else(|| {
-                    content
-                        .weapons
-                        .get(input.weapon as usize)
-                        .map(|d| d.defaults)
-                })
+                .or_else(|| state.roster.iter().find(|r| r.id == player.id && r.weapon == input.weapon).map(|r| r.parts))
+                .or_else(|| content.weapons.get(input.weapon as usize).map(|d| d.defaults))
                 .unwrap_or([0; SLOT_COUNT]);
             let lean = match input.lean {
                 l if l < 0 => flags::LEAN_LEFT,
@@ -199,22 +155,8 @@ fn record(
             };
             let flags = (player.flags & !(flags::STANCE | flags::LEAN_LEFT | flags::LEAN_RIGHT))
                 | input.stance.max(player.flags & flags::STANCE)
-                | if input.lean != 0 {
-                    lean
-                } else {
-                    player.flags & (flags::LEAN_LEFT | flags::LEAN_RIGHT)
-                };
-            Sample {
-                id: player.id,
-                team: player.team,
-                pos: transform.translation,
-                yaw: input.yaw,
-                pitch: input.pitch,
-                flags,
-                alive: health.alive(),
-                weapon: input.weapon,
-                parts,
-            }
+                | if input.lean != 0 { lean } else { player.flags & (flags::LEAN_LEFT | flags::LEAN_RIGHT) };
+            Sample { id: player.id, team: player.team, pos: transform.translation, yaw: input.yaw, pitch: input.pitch, flags, alive: health.alive(), weapon: input.weapon, parts }
         })
         .collect();
     cam.frames.push_back(Frame { t: now, bodies });
@@ -232,13 +174,7 @@ fn run(
     controls: Res<Controls>,
     settings: Res<crate::settings::Settings>,
     death: Res<crate::fx::DeathInfo>,
-    (art, parts, content, statics, state): (
-        Res<Art>,
-        Res<RobotParts>,
-        Res<Content>,
-        Res<Statics>,
-        Res<MatchState>,
-    ),
+    (art, parts, content, statics, state): (Res<Art>, Res<RobotParts>, Res<Content>, Res<Statics>, Res<MatchState>),
     mut guns: ResMut<GunCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut cam: ResMut<KillCam>,
@@ -246,10 +182,7 @@ fn run(
     local: Query<(&Player, &Health), With<LocalPlayer>>,
     mut robots: Query<&mut Visibility, (With<crate::avatar::PlayerRobot>, Without<Ghost>)>,
     mut ghosts: Query<(&mut Transform, &mut Pose), (With<Ghost>, Without<WorldCamera>)>,
-    mut cameras: Query<
-        (&mut Transform, &mut Projection),
-        (With<WorldCamera>, Without<Ghost>, Without<ReplayTracer>),
-    >,
+    mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Ghost>, Without<ReplayTracer>)>,
     mut tracers: Query<(Entity, &mut ReplayTracer)>,
 ) {
     let now = time.elapsed_secs();
@@ -272,12 +205,7 @@ fn run(
         cam.was_alive = false;
         cam.pending = Some(now);
     }
-    let finish = |cam: &mut KillCam,
-                  commands: &mut Commands,
-                  robots: &mut Query<
-        &mut Visibility,
-        (With<crate::avatar::PlayerRobot>, Without<Ghost>),
-    >| {
+    let finish = |cam: &mut KillCam, commands: &mut Commands, robots: &mut Query<&mut Visibility, (With<crate::avatar::PlayerRobot>, Without<Ghost>)>| {
         if let Some(replay) = cam.replay.take() {
             for (_, entity) in replay.ghosts {
                 commands.entity(entity).despawn();
@@ -306,11 +234,7 @@ fn run(
             let start = (died - BEFORE).max(cam.frames.front().map_or(died, |f| f.t));
             // Everyone seen in the window gets a stand-in.
             let mut ids: Vec<(u8, u8, u8, [u8; SLOT_COUNT])> = Vec::new();
-            for frame in cam
-                .frames
-                .iter()
-                .filter(|f| f.t >= start && f.t <= died + AFTER)
-            {
+            for frame in cam.frames.iter().filter(|f| f.t >= start && f.t <= died + AFTER) {
                 for body in &frame.bodies {
                     match ids.iter_mut().find(|(id, ..)| *id == body.id) {
                         Some(entry) => *entry = (body.id, body.team, body.weapon, body.parts),
@@ -322,45 +246,18 @@ fn run(
                 let ghosts = ids
                     .into_iter()
                     .map(|(id, team, weapon, fitted)| {
-                        let root = commands
-                            .spawn((
-                                MatchEntity,
-                                Ghost,
-                                Transform::default(),
-                                Visibility::Inherited,
-                            ))
-                            .id();
+                        let root = commands.spawn((MatchEntity, Ghost, Transform::default(), Visibility::Inherited)).id();
                         let gun = guns.get(&art, &mut meshes, &content, weapon, fitted);
-                        let rig =
-                            spawn_robot(&mut commands, &art, &parts, root, team, gun.as_ref());
+                        let rig = spawn_robot(&mut commands, &art, &parts, root, team, gun.as_ref());
                         commands.entity(root).insert((rig, Pose::default()));
                         (id, root)
                     })
                     .collect();
-                let name = state
-                    .roster
-                    .iter()
-                    .find(|r| r.id == killer)
-                    .map_or("?".to_string(), |r| r.name.clone());
-                let weapon = cam
-                    .sample(killer, died)
-                    .and_then(|s| content.weapons.get(s.weapon as usize))
-                    .map_or("", |w| w.name);
-                let skip = if controls.gamepad {
-                    "(A)".to_string()
-                } else {
-                    settings.bindings.label(crate::bindings::Action::Jump)
-                };
+                let name = state.roster.iter().find(|r| r.id == killer).map_or("?".to_string(), |r| r.name.clone());
+                let weapon = cam.sample(killer, died).and_then(|s| content.weapons.get(s.weapon as usize)).map_or("", |w| w.name);
+                let skip = if controls.gamepad { "(A)".to_string() } else { settings.bindings.label(crate::bindings::Action::Jump) };
                 let overlay = overlay(&mut commands, &name, weapon, &skip);
-                cam.replay = Some(Replay {
-                    clock: start,
-                    end: died + AFTER,
-                    death: died,
-                    killer,
-                    ghosts,
-                    camera: None,
-                    overlay,
-                });
+                cam.replay = Some(Replay { clock: start, end: died + AFTER, death: died, killer, ghosts, camera: None, overlay });
             }
         } else if now - died > 1.6 {
             // Nobody to blame (a fall, our own grenade): no replay.
@@ -398,12 +295,7 @@ fn run(
         transform.rotation = Quat::from_rotation_y(s.yaw);
         let moved = (s.pos - earlier.pos).xz();
         let forward = Vec2::new(-s.yaw.sin(), -s.yaw.cos());
-        let speed = (moved.length() / 0.08).min(9.0)
-            * if moved.dot(forward) < -0.01 {
-                -1.0
-            } else {
-                1.0
-            };
+        let speed = (moved.length() / 0.08).min(9.0) * if moved.dot(forward) < -0.01 { -1.0 } else { 1.0 };
         pose.speed += (speed - pose.speed) * 0.3;
         pose.stance = s.flags & flags::STANCE;
         pose.pitch = s.pitch;
@@ -416,11 +308,7 @@ fn run(
     }
 
     // The shots fired in this slice of the recording fly again.
-    for shot in cam
-        .shots
-        .iter()
-        .filter(|s| s.t > before && s.t <= replay.clock)
-    {
+    for shot in cam.shots.iter().filter(|s| s.t > before && s.t <= replay.clock) {
         let span = shot.to - shot.from;
         let length = span.length();
         if length < 0.05 {
@@ -432,40 +320,24 @@ fn run(
             Ghost,
             ReplayTracer(if slow { 0.18 } else { 0.07 }),
             Mesh3d(art.primitive(Shape::Cube)),
-            MeshMaterial3d(art.paint(if shot.beam {
-                Paint::Aether
-            } else {
-                shot.tracer
-            })),
-            Transform::from_translation(shot.from + span * 0.5)
-                .with_rotation(Quat::from_rotation_arc(Vec3::Z, span / length))
-                .with_scale(Vec3::new(width, width, length)),
+            MeshMaterial3d(art.paint(if shot.beam { Paint::Aether } else { shot.tracer })),
+            Transform::from_translation(shot.from + span * 0.5).with_rotation(Quat::from_rotation_arc(Vec3::Z, span / length)).with_scale(Vec3::new(width, width, length)),
             NotShadowCaster,
         ));
     }
 
     // Over the killer's right shoulder, looking where they looked.
-    if let (Some(killer), Ok((mut camera, mut projection))) = (
-        cam.sample(replay.killer, replay.clock),
-        cameras.single_mut(),
-    ) {
+    if let (Some(killer), Ok((mut camera, mut projection))) = (cam.sample(replay.killer, replay.clock), cameras.single_mut()) {
         let stance_now = killer.flags & flags::STANCE;
         let head = killer.pos + Vec3::Y * (stance::eye(stance_now) + 0.2);
         let look = Quat::from_euler(EulerRot::YXZ, killer.yaw, killer.pitch * 0.8 - 0.08, 0.0);
         let offset = Quat::from_rotation_y(killer.yaw) * Vec3::new(0.75, 0.3, 2.3);
         let distance = offset.length();
-        let reach = statics
-            .raycast(head, offset / distance, distance + 0.3)
-            .map_or(distance, |(d, _)| (d - 0.3).max(0.35))
-            .min(distance);
+        let reach = statics.raycast(head, offset / distance, distance + 0.3).map_or(distance, |(d, _)| (d - 0.3).max(0.35)).min(distance);
         let wanted = head + offset / distance * reach;
-        let target = Transform::from_translation(wanted)
-            .looking_at(head + look * Vec3::new(0.6, -0.1, -14.0), Vec3::Y)
-            .rotation;
+        let target = Transform::from_translation(wanted).looking_at(head + look * Vec3::new(0.6, -0.1, -14.0), Vec3::Y).rotation;
         let blend = 1.0 - (-dt * 9.0).exp();
-        let (position, rotation) = replay.camera.map_or((wanted, target), |(p, r)| {
-            (p.lerp(wanted, blend), r.slerp(target, blend))
-        });
+        let (position, rotation) = replay.camera.map_or((wanted, target), |(p, r)| (p.lerp(wanted, blend), r.slerp(target, blend)));
         replay.camera = Some((position, rotation));
         camera.translation = position;
         camera.rotation = rotation;
@@ -504,14 +376,8 @@ fn overlay(commands: &mut Commands, killer: &str, weapon: &str, skip: &str) -> E
                 BackgroundColor(Color::BLACK),
             ))
             .with_children(|top| {
-                top.spawn((
-                    Node {
-                        padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.75, 0.12, 0.1)),
-                ))
-                .with_children(|tag| ui::label(tag, "KILLCAM", 20.0, ui::TEXT));
+                top.spawn((Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)), ..default() }, BackgroundColor(Color::srgb(0.75, 0.12, 0.1))))
+                    .with_children(|tag| ui::label(tag, "KILLCAM", 20.0, ui::TEXT));
                 ui::label(top, format!("KILLED BY  {killer}"), 20.0, ui::TEXT);
                 if !weapon.is_empty() {
                     ui::label(top, weapon, 15.0, ui::ACCENT);

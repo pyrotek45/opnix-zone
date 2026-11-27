@@ -13,16 +13,7 @@ use bevy::prelude::*;
 use oz_core::arsenal::{Resolved, SLOT_COUNT, SLOTS, options, resolve};
 use oz_sim::prelude::*;
 
-pub const BARS: [&str; 8] = [
-    "DAMAGE",
-    "RANGE",
-    "ACCURACY",
-    "CONTROL",
-    "HANDLING",
-    "FIRE RATE",
-    "MOBILITY",
-    "MAGAZINE",
-];
+pub const BARS: [&str; 8] = ["DAMAGE", "RANGE", "ACCURACY", "CONTROL", "HANDLING", "FIRE RATE", "MOBILITY", "MAGAZINE"];
 
 #[derive(Component, Clone, Copy)]
 struct StatFill(usize);
@@ -47,15 +38,7 @@ impl Plugin for GunsmithPlugin {
                 .before(crate::menu::MenuActions)
                 .run_if(in_state(MatchPhase::Active)),
         )
-        .add_systems(
-            Update,
-            (
-                refresh.before(crate::menu::BuildScreens),
-                preview.after(crate::menu::BuildScreens),
-            )
-                .in_set(ClientSet::Present)
-                .run_if(in_state(MatchPhase::Active)),
-        );
+        .add_systems(Update, (refresh.before(crate::menu::BuildScreens), preview.after(crate::menu::BuildScreens)).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -75,21 +58,10 @@ pub fn bars(stats: &Resolved) -> [f32; 8] {
 }
 
 /// Weapons the gunsmith can switch between from here.
-fn bench(
-    content: &Content,
-    arsenal: &Arsenal,
-    rules: &Rules,
-    class: &Class,
-    from: Back,
-) -> Vec<u8> {
+fn bench(content: &Content, arsenal: &Arsenal, rules: &Rules, class: &Class, from: Back) -> Vec<u8> {
     match from {
         Back::Loadout if rules.pvp => vec![class.current().primary, class.current().secondary],
-        _ => (0..content.weapons.len() as u8)
-            .filter(|i| {
-                content.weapons[*i as usize].frame.is_some()
-                    && (rules.pvp || arsenal.owns(*i as usize))
-            })
-            .collect(),
+        _ => (0..content.weapons.len() as u8).filter(|i| content.weapons[*i as usize].frame.is_some() && (rules.pvp || arsenal.owns(*i as usize))).collect(),
     }
 }
 
@@ -107,43 +79,22 @@ fn gunsmith_actions(
     };
     for ActEvent(act) in events.read() {
         if let Act::OpenGunsmith(weapon, from) = act {
-            *screen = Screen::Gunsmith {
-                weapon: *weapon,
-                slot: 0,
-                from: *from,
-            };
+            *screen = Screen::Gunsmith { weapon: *weapon, slot: 0, from: *from };
             continue;
         }
         let Screen::Gunsmith { weapon, slot, from } = *screen else {
             continue;
         };
         match act {
-            Act::GunSlot(s) => {
-                *screen = Screen::Gunsmith {
-                    weapon,
-                    slot: *s,
-                    from,
-                }
-            }
+            Act::GunSlot(s) => *screen = Screen::Gunsmith { weapon, slot: *s, from },
             Act::Part(s, v) => {
-                orders.write(CommandEvent {
-                    player: player.id,
-                    command: PlayerCommand::EquipPart {
-                        weapon,
-                        slot: *s,
-                        variant: *v,
-                    },
-                });
+                orders.write(CommandEvent { player: player.id, command: PlayerCommand::EquipPart { weapon, slot: *s, variant: *v } });
             }
             Act::Weapon(step) => {
                 let list = bench(&content, arsenal, &rules, &class, from);
                 if !list.is_empty() {
                     let at = list.iter().position(|w| *w == weapon).unwrap_or(0) as i32;
-                    *screen = Screen::Gunsmith {
-                        weapon: list[(at + step).rem_euclid(list.len() as i32) as usize],
-                        slot,
-                        from,
-                    };
+                    *screen = Screen::Gunsmith { weapon: list[(at + step).rem_euclid(list.len() as i32) as usize], slot, from };
                 }
             }
             Act::Back => {
@@ -152,48 +103,17 @@ fn gunsmith_actions(
                     Back::Station { kind, page } => Screen::Station { kind, page },
                 }
             }
-            Act::Tab(step) => {
-                *screen = Screen::Gunsmith {
-                    weapon,
-                    slot: (slot as i32 + step).rem_euclid(SLOT_COUNT as i32) as u8,
-                    from,
-                }
-            }
+            Act::Tab(step) => *screen = Screen::Gunsmith { weapon, slot: (slot as i32 + step).rem_euclid(SLOT_COUNT as i32) as u8, from },
             _ => {}
         }
     }
 }
 
 fn track(parent: &mut ChildSpawnerCommands, index: usize) {
-    parent
-        .spawn((
-            Node {
-                width: Val::Px(170.0),
-                height: Val::Px(10.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.1, 0.14, 0.17, 0.9)),
-        ))
-        .with_children(|track| {
-            track.spawn((
-                StatFill(index),
-                Node {
-                    position_type: PositionType::Absolute,
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(ui::TEXT),
-            ));
-            track.spawn((
-                StatDelta(index),
-                Node {
-                    position_type: PositionType::Absolute,
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                BackgroundColor(ui::GOOD),
-            ));
-        });
+    parent.spawn((Node { width: Val::Px(170.0), height: Val::Px(10.0), ..default() }, BackgroundColor(Color::srgba(0.1, 0.14, 0.17, 0.9)))).with_children(|track| {
+        track.spawn((StatFill(index), Node { position_type: PositionType::Absolute, height: Val::Percent(100.0), ..default() }, BackgroundColor(ui::TEXT)));
+        track.spawn((StatDelta(index), Node { position_type: PositionType::Absolute, height: Val::Percent(100.0), ..default() }, BackgroundColor(ui::GOOD)));
+    });
 }
 
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
@@ -212,9 +132,7 @@ pub fn build_gunsmith(
     let Screen::Gunsmith { weapon, slot, .. } = *screen else {
         return;
     };
-    let (true, Some(content), Some(rules), Some(state), Ok(arsenal)) =
-        (dirty.0, content, rules, state, players.single())
-    else {
+    let (true, Some(content), Some(rules), Some(state), Ok(arsenal)) = (dirty.0, content, rules, state, players.single()) else {
         return;
     };
     let Some(def) = content.weapons.get(weapon as usize) else {
@@ -240,14 +158,7 @@ pub fn build_gunsmith(
         })
         .with_children(|top| {
             ui::label(top, "GUNSMITH", 30.0, ui::TEXT);
-            ui::sized_button(
-                top,
-                order,
-                format!("<  {}  >", def.name),
-                Act::Weapon(1),
-                Some(Act::Weapon(-1)),
-                Val::Auto,
-            );
+            ui::sized_button(top, order, format!("<  {}  >", def.name), Act::Weapon(1), Some(Act::Weapon(-1)), Val::Auto);
             ui::label(top, def.class.name(), 15.0, ui::ACCENT);
             if !free {
                 ui::label(top, format!("${}", state.stock.credits), 18.0, ui::GOOD);
@@ -271,23 +182,9 @@ pub fn build_gunsmith(
         .with_children(|left| {
             for (s, name) in SLOTS.iter().enumerate() {
                 let choices = options(def, &content.attachments, s);
-                let fitted = choices
-                    .iter()
-                    .find(|(i, ..)| *i == owned.equipped[s] as usize)
-                    .map_or("-", |(_, n, ..)| n);
-                let text = if choices.len() <= 1 {
-                    format!("{name}\n  {fitted}")
-                } else {
-                    format!("{name}  ({})\n  {fitted}", choices.len())
-                };
-                ui::chip(
-                    left,
-                    order,
-                    text,
-                    Act::GunSlot(s as u8),
-                    s == slot as usize,
-                    Val::Percent(100.0),
-                );
+                let fitted = choices.iter().find(|(i, ..)| *i == owned.equipped[s] as usize).map_or("-", |(_, n, ..)| n);
+                let text = if choices.len() <= 1 { format!("{name}\n  {fitted}") } else { format!("{name}  ({})\n  {fitted}", choices.len()) };
+                ui::chip(left, order, text, Act::GunSlot(s as u8), s == slot as usize, Val::Percent(100.0));
             }
         });
 
@@ -316,42 +213,12 @@ pub fn build_gunsmith(
                 } else {
                     format!("${cost}")
                 };
-                ui::chip(
-                    right,
-                    order,
-                    format!("{name:<18}{status}"),
-                    Act::Part(slot, variant as u8),
-                    fitted,
-                    Val::Percent(100.0),
-                );
+                ui::chip(right, order, format!("{name:<18}{status}"), Act::Part(slot, variant as u8), fitted, Val::Percent(100.0));
             }
-            right.spawn((
-                PartBlurb,
-                Text::new(""),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(ui::DIM),
-                Node {
-                    min_height: Val::Px(36.0),
-                    ..default()
-                },
-            ));
+            right.spawn((PartBlurb, Text::new(""), TextFont { font_size: 14.0, ..default() }, TextColor(ui::DIM), Node { min_height: Val::Px(36.0), ..default() }));
             for (index, name) in BARS.iter().enumerate() {
                 right.spawn(ui::row(10.0)).with_children(|row| {
-                    row.spawn((
-                        Text::new(*name),
-                        TextFont {
-                            font_size: 13.0,
-                            ..default()
-                        },
-                        TextColor(ui::DIM),
-                        Node {
-                            width: Val::Px(110.0),
-                            ..default()
-                        },
-                    ));
+                    row.spawn((Text::new(*name), TextFont { font_size: 13.0, ..default() }, TextColor(ui::DIM), Node { width: Val::Px(110.0), ..default() }));
                     track(row, index);
                 });
             }
@@ -368,11 +235,7 @@ pub fn build_gunsmith(
             ..default()
         })
         .with_children(|bottom| {
-            let hint = if controls.gamepad {
-                "RIGHT STICK ROTATE    LB / RB SLOT    A FIT    B BACK"
-            } else {
-                "DRAG THE GUN TO ROTATE    HOVER TO PREVIEW    CLICK TO FIT    ESC BACK"
-            };
+            let hint = if controls.gamepad { "RIGHT STICK ROTATE    LB / RB SLOT    A FIT    B BACK" } else { "DRAG THE GUN TO ROTATE    HOVER TO PREVIEW    CLICK TO FIT    ESC BACK" };
             ui::label(bottom, hint, 13.0, ui::DIM);
             ui::sized_button(bottom, order, "DONE", Act::Back, None, Val::Px(120.0));
         });
@@ -404,24 +267,15 @@ fn preview(
     let mut description = String::new();
     if let Some(Act::Part(s, v)) = &focused.0 {
         trial.equipped[*s as usize] = *v;
-        if let Some((_, name, text, _)) = options(def, &content.attachments, *s as usize)
-            .into_iter()
-            .find(|(i, ..)| *i == *v as usize)
-        {
+        if let Some((_, name, text, _)) = options(def, &content.attachments, *s as usize).into_iter().find(|(i, ..)| *i == *v as usize) {
             description = format!("{name}: {text}");
         }
     }
-    let wanted = Stage::Gun {
-        weapon,
-        parts: trial.equipped,
-    };
+    let wanted = Stage::Gun { weapon, parts: trial.equipped };
     if *stage != wanted {
         *stage = wanted;
     }
-    let (now, then) = (
-        bars(&resolve(def, &current, &content.attachments)),
-        bars(&resolve(def, &trial, &content.attachments)),
-    );
+    let (now, then) = (bars(&resolve(def, &current, &content.attachments)), bars(&resolve(def, &trial, &content.attachments)));
     for (fill, mut node) in &mut fills {
         let width = Val::Percent(now[fill.0].min(then[fill.0]) * 100.0);
         if node.width != width {
@@ -453,11 +307,7 @@ fn refresh(
         *last = None;
         return;
     };
-    let Some(owned) = players
-        .single()
-        .ok()
-        .and_then(|a| a.weapons.get(weapon as usize).copied())
-    else {
+    let Some(owned) = players.single().ok().and_then(|a| a.weapons.get(weapon as usize).copied()) else {
         return;
     };
     let signature = (weapon, owned.equipped, owned.purchased, state.stock.credits);

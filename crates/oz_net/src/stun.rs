@@ -10,12 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const SERVERS: [&str; 4] = [
-    "stun.l.google.com:19302",
-    "stun.cloudflare.com:3478",
-    "stun1.l.google.com:19302",
-    "stun.nextcloud.com:3478",
-];
+const SERVERS: [&str; 4] = ["stun.l.google.com:19302", "stun.cloudflare.com:3478", "stun1.l.google.com:19302", "stun.nextcloud.com:3478"];
 const COOKIE: u32 = 0x2112_A442;
 const ATTEMPTS: u32 = 8;
 
@@ -33,12 +28,7 @@ impl Stun {
         let servers = Arc::new(Mutex::new(Vec::new()));
         let shared = servers.clone();
         std::thread::spawn(move || {
-            let found: Vec<SocketAddr> = SERVERS
-                .iter()
-                .filter_map(|s| s.to_socket_addrs().ok())
-                .flatten()
-                .filter(|a| a.is_ipv4())
-                .collect();
+            let found: Vec<SocketAddr> = SERVERS.iter().filter_map(|s| s.to_socket_addrs().ok()).flatten().filter(|a| a.is_ipv4()).collect();
             if let Ok(mut slot) = shared.lock() {
                 *slot = found;
             }
@@ -48,13 +38,7 @@ impl Stun {
         let mut transaction = [0u8; 12];
         transaction[..8].copy_from_slice(&id);
         transaction[8..].copy_from_slice(&more[..4]);
-        Self {
-            servers,
-            transaction,
-            next: Instant::now(),
-            tries: 0,
-            public: None,
-        }
+        Self { servers, transaction, next: Instant::now(), tries: 0, public: None }
     }
 
     pub fn request(&self) -> [u8; 20] {
@@ -96,11 +80,7 @@ impl Stun {
 
 /// The mapped address in a binding success response for `transaction`.
 pub fn parse_response(packet: &[u8], transaction: &[u8; 12]) -> Option<SocketAddr> {
-    if packet.len() < 20
-        || packet[0..2] != [0x01, 0x01]
-        || packet[4..8] != COOKIE.to_be_bytes()
-        || packet[8..20] != transaction[..]
-    {
+    if packet.len() < 20 || packet[0..2] != [0x01, 0x01] || packet[4..8] != COOKIE.to_be_bytes() || packet[8..20] != transaction[..] {
         return None;
     }
     let length = u16::from_be_bytes([packet[2], packet[3]]) as usize;
@@ -172,14 +152,7 @@ mod tests {
         packet.extend_from_slice(&cookie);
         packet.extend_from_slice(&transaction);
         packet.extend_from_slice(&attr);
-        assert_eq!(
-            parse_response(&packet, &transaction),
-            Some(SocketAddr::new(IpAddr::V4(ip), port))
-        );
-        assert_eq!(
-            parse_response(&packet, &[0u8; 12]),
-            None,
-            "someone else's transaction"
-        );
+        assert_eq!(parse_response(&packet, &transaction), Some(SocketAddr::new(IpAddr::V4(ip), port)));
+        assert_eq!(parse_response(&packet, &[0u8; 12]), None, "someone else's transaction");
     }
 }

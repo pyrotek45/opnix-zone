@@ -69,10 +69,7 @@ pub fn file_name(sfx: Sfx) -> String {
 /// Folders searched for sound-pack WAV files.
 fn pack_folders() -> Vec<std::path::PathBuf> {
     let mut folders = vec![std::path::PathBuf::from("sounds")];
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|p| p.join("sounds")))
-    {
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|p| p.join("sounds"))) {
         folders.push(dir);
     }
     if let Some(dir) = crate::settings::config_dir() {
@@ -105,74 +102,34 @@ fn setup(mut commands: Commands, mut sources: ResMut<Assets<AudioSource>>) {
         // Recordings from a sound pack win over the synthesiser.
         let recorded = pack_takes(&folders, sfx);
         if !recorded.is_empty() {
-            info!(
-                "sound pack: {} take(s) for {}",
-                recorded.len(),
-                file_name(sfx)
-            );
-            let takes: Vec<Handle<AudioSource>> = recorded
-                .into_iter()
-                .map(|bytes| {
-                    sources.add(AudioSource {
-                        bytes: bytes.into(),
-                    })
-                })
-                .collect();
+            info!("sound pack: {} take(s) for {}", recorded.len(), file_name(sfx));
+            let takes: Vec<Handle<AudioSource>> = recorded.into_iter().map(|bytes| sources.add(AudioSource { bytes: bytes.into() })).collect();
             for space in [Space::Open, Space::Room, Space::Far] {
                 clips.insert((sfx, space), takes.clone());
             }
             continue;
         }
-        let spaces: &[Space] = if sfx.spatial_variants() {
-            &[Space::Open, Space::Room, Space::Far]
-        } else {
-            &[Space::Open]
-        };
+        let spaces: &[Space] = if sfx.spatial_variants() { &[Space::Open, Space::Room, Space::Far] } else { &[Space::Open] };
         for space in spaces {
-            let takes = (0..sfx.variants())
-                .map(|take| {
-                    sources.add(AudioSource {
-                        bytes: synth::wav(&synth::render_in(sfx, take, *space)).into(),
-                    })
-                })
-                .collect();
+            let takes = (0..sfx.variants()).map(|take| sources.add(AudioSource { bytes: synth::wav(&synth::render_in(sfx, take, *space)).into() })).collect();
             clips.insert((sfx, *space), takes);
         }
     }
     for sfx in [Sfx::Surf, Sfx::NightDrone, Sfx::Rain, Sfx::Wind, Sfx::Birds] {
-        commands.spawn((
-            Ambience(sfx),
-            AudioPlayer::new(clips[&(sfx, Space::Open)][0].clone()),
-            PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0)),
-        ));
+        commands.spawn((Ambience(sfx), AudioPlayer::new(clips[&(sfx, Space::Open)][0].clone()), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0))));
     }
-    commands.insert_resource(SoundBank {
-        clips,
-        last: HashMap::default(),
-    });
+    commands.insert_resource(SoundBank { clips, last: HashMap::default() });
 }
 
 /// The camera hears: give it ears.
-fn listen(
-    mut commands: Commands,
-    cameras: Query<Entity, (With<WorldCamera>, Without<SpatialListener>)>,
-) {
+fn listen(mut commands: Commands, cameras: Query<Entity, (With<WorldCamera>, Without<SpatialListener>)>) {
     for camera in &cameras {
         commands.entity(camera).insert(SpatialListener::new(0.35));
     }
 }
 
 fn footstep(sfx: Sfx) -> bool {
-    matches!(
-        sfx,
-        Sfx::Step
-            | Sfx::StepSoft
-            | Sfx::StepHeavy
-            | Sfx::StepWood
-            | Sfx::Crawl
-            | Sfx::Land
-            | Sfx::Jump
-    )
+    matches!(sfx, Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy | Sfx::StepWood | Sfx::Crawl | Sfx::Land | Sfx::Jump)
 }
 
 /// Is there a roof over this point?
@@ -203,21 +160,14 @@ fn play(
     *waiting = later;
     // A flashbang leaves the world muffled for a while.
     let deafened = view.as_ref().map_or(0.0, |v| v.blind.min(1.0));
-    let ears_inside = ears
-        .zip(statics.as_deref())
-        .is_some_and(|(at, s)| indoors(s, at - Vec3::Y * 1.5));
+    let ears_inside = ears.zip(statics.as_deref()).is_some_and(|(at, s)| indoors(s, at - Vec3::Y * 1.5));
 
     for (_, event) in due {
-        let distance = event
-            .at
-            .zip(ears)
-            .map_or(0.0, |(at, ears)| at.distance(ears));
+        let distance = event.at.zip(ears).map_or(0.0, |(at, ears)| at.distance(ears));
         if distance > 160.0 {
             continue;
         }
-        let bucket = event
-            .at
-            .map_or((0, 0), |at| ((at.x / 4.0) as i32, (at.z / 4.0) as i32));
+        let bucket = event.at.map_or((0, 0), |at| ((at.x / 4.0) as i32, (at.z / 4.0) as i32));
         let key = (event.sfx, bucket.0, bucket.1);
         if bank.last.get(&key).is_some_and(|last| now - last < 0.035) {
             continue;
@@ -226,9 +176,7 @@ fn play(
         let occluded = match (event.at, ears, statics.as_deref()) {
             (Some(at), Some(ears), Some(statics)) if distance > 2.0 => {
                 let span = at + Vec3::Y * 0.6 - ears;
-                statics
-                    .raycast(ears, span / distance.max(1e-3), distance - 0.8)
-                    .is_some()
+                statics.raycast(ears, span / distance.max(1e-3), distance - 0.8).is_some()
             }
             _ => false,
         };
@@ -243,38 +191,16 @@ fn play(
             };
             if inside { Space::Room } else { Space::Open }
         };
-        let Some(takes) = bank
-            .clips
-            .get(&(event.sfx, space))
-            .or_else(|| bank.clips.get(&(event.sfx, Space::Open)))
-        else {
-            continue;
-        };
+        let Some(takes) = bank.clips.get(&(event.sfx, space)).or_else(|| bank.clips.get(&(event.sfx, Space::Open))) else { continue };
         *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let clip = takes[(*seed >> 16) as usize % takes.len()].clone();
         bank.last.insert(key, now);
 
         let muffle = if occluded { 0.55 } else { 1.0 };
         // Nothing plays at exactly the same level twice.
-        let musical = matches!(
-            event.sfx,
-            Sfx::UiMove
-                | Sfx::UiAccept
-                | Sfx::UiDeny
-                | Sfx::Buy
-                | Sfx::Dawn
-                | Sfx::Horn
-                | Sfx::Kill
-                | Sfx::Streak
-                | Sfx::Medal
-                | Sfx::Headshot
-        );
+        let musical = matches!(event.sfx, Sfx::UiMove | Sfx::UiAccept | Sfx::UiDeny | Sfx::Buy | Sfx::Dawn | Sfx::Horn | Sfx::Kill | Sfx::Streak | Sfx::Medal | Sfx::Headshot);
         let jitter = ((*seed >> 4) & 0xfff) as f32 / 4096.0 - 0.5;
-        let level = if musical {
-            1.0
-        } else {
-            1.0 + jitter * if footstep(event.sfx) { 0.5 } else { 0.25 }
-        };
+        let level = if musical { 1.0 } else { 1.0 + jitter * if footstep(event.sfx) { 0.5 } else { 0.25 } };
         // 0.7 of headroom so a firefight's many layers do not clip when they stack.
         let gain = 0.7 * event.volume * level * settings.volume * muffle * (1.0 - deafened * 0.85);
         if gain < 0.01 {
@@ -282,21 +208,11 @@ fn play(
         }
         // A little random pitch stops repeated sounds from feeling machine-stamped.
         let wobble = (*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
-        let speed = if musical {
-            1.0
-        } else {
-            1.0 + wobble * if footstep(event.sfx) { 0.22 } else { 0.12 }
-        };
-        let playback = PlaybackSettings::DESPAWN
-            .with_volume(Volume::Linear(gain))
-            .with_speed(speed);
+        let speed = if musical { 1.0 } else { 1.0 + wobble * if footstep(event.sfx) { 0.22 } else { 0.12 } };
+        let playback = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain)).with_speed(speed);
         match event.at {
             Some(at) if distance > 0.5 => {
-                commands.spawn((
-                    AudioPlayer::new(clip),
-                    playback.with_spatial(true),
-                    Transform::from_translation(at),
-                ));
+                commands.spawn((AudioPlayer::new(clip), playback.with_spatial(true), Transform::from_translation(at)));
             }
             _ => {
                 commands.spawn((AudioPlayer::new(clip), playback));
@@ -320,51 +236,22 @@ fn ambience(
     mut levels: Local<HashMap<Sfx, f32>>,
 ) {
     let playing = *phase.get() == MatchPhase::Active;
-    let day = state
-        .as_ref()
-        .filter(|_| playing)
-        .map_or(1.0, |state| state.daylight);
-    let weather = if playing {
-        state.as_ref().map_or(Weather::Clear, |s| s.weather)
-    } else {
-        Weather::Clear
-    };
+    let day = state.as_ref().filter(|_| playing).map_or(1.0, |state| state.daylight);
+    let weather = if playing { state.as_ref().map_or(Weather::Clear, |s| s.weather) } else { Weather::Clear };
     let _ = &rules;
-    let inside = listener
-        .single()
-        .ok()
-        .zip(statics.as_deref())
-        .is_some_and(|(t, s)| indoors(s, t.translation - Vec3::Y * 1.5));
+    let inside = listener.single().ok().zip(statics.as_deref()).is_some_and(|(t, s)| indoors(s, t.translation - Vec3::Y * 1.5));
     let deafened = view.map_or(0.0, |v| v.blind.min(1.0));
     let roof = if inside { 0.35 } else { 1.0 };
     let dt = time.delta_secs();
     for (ambience, mut sink) in &mut loops {
         let wanted = match ambience.0 {
-            Sfx::Surf => {
-                if playing {
-                    0.22 * roof
-                } else {
-                    0.1
-                }
-            }
+            Sfx::Surf => if playing { 0.22 * roof } else { 0.1 },
             Sfx::NightDrone => (1.0 - day) * 0.4,
-            Sfx::Rain => {
-                if weather == Weather::Rain {
-                    0.55 * roof.max(0.5)
-                } else {
-                    0.0
-                }
-            }
+            Sfx::Rain => if weather == Weather::Rain { 0.55 * roof.max(0.5) } else { 0.0 },
             Sfx::Wind => match weather {
                 Weather::Rain | Weather::Overcast => 0.35 * roof,
                 Weather::Fog => 0.22 * roof,
-                Weather::Clear => {
-                    if playing {
-                        0.1 * roof
-                    } else {
-                        0.0
-                    }
-                }
+                Weather::Clear => if playing { 0.1 * roof } else { 0.0 },
             },
             Sfx::Birds if weather == Weather::Clear && playing => day * 0.3 * roof,
             _ => 0.0,
@@ -377,14 +264,7 @@ fn ambience(
 }
 
 /// Thunder rolls now and then while it rains.
-fn thunder(
-    time: Res<Time>,
-    state: Option<Res<MatchState>>,
-    phase: Res<State<MatchPhase>>,
-    mut wait: Local<f32>,
-    mut sounds: EventWriter<PlaySfx>,
-    mut seed: Local<u32>,
-) {
+fn thunder(time: Res<Time>, state: Option<Res<MatchState>>, phase: Res<State<MatchPhase>>, mut wait: Local<f32>, mut sounds: EventWriter<PlaySfx>, mut seed: Local<u32>) {
     if *phase.get() != MatchPhase::Active || state.is_none_or(|s| s.weather != Weather::Rain) {
         return;
     }
@@ -397,33 +277,15 @@ fn thunder(
 }
 
 /// Rockets and drones carry their own looping motors.
-fn engines(
-    mut commands: Commands,
-    bank: Res<SoundBank>,
-    settings: Res<Settings>,
-    shots: Query<(Entity, &Projectile), (Added<Projectile>, Without<Engine>)>,
-) {
+fn engines(mut commands: Commands, bank: Res<SoundBank>, settings: Res<Settings>, shots: Query<(Entity, &Projectile), (Added<Projectile>, Without<Engine>)>) {
     for (entity, shot) in &shots {
         let sfx = match shot.look {
             oz_core::content::ShotLook::Rocket => Sfx::RocketFly,
             oz_core::content::ShotLook::Drone => Sfx::DroneBuzz,
             _ => continue,
         };
-        let Some(clip) = bank
-            .clips
-            .get(&(sfx, Space::Open))
-            .and_then(|t| t.first())
-            .cloned()
-        else {
-            continue;
-        };
-        commands.entity(entity).insert(Engine).with_child((
-            AudioPlayer::new(clip),
-            PlaybackSettings::LOOP
-                .with_volume(Volume::Linear(0.5 * settings.volume))
-                .with_spatial(true),
-            Transform::IDENTITY,
-        ));
+        let Some(clip) = bank.clips.get(&(sfx, Space::Open)).and_then(|t| t.first()).cloned() else { continue };
+        commands.entity(entity).insert(Engine).with_child((AudioPlayer::new(clip), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.5 * settings.volume)).with_spatial(true), Transform::IDENTITY));
     }
 }
 

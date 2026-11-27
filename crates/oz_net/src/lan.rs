@@ -44,11 +44,7 @@ impl Beacon {
         while let Ok((n, from)) = self.socket.recv_from(&mut buffer) {
             if &buffer[..n] == ASK {
                 let clean = |s: &str| s.replace('|', " ").chars().take(32).collect::<String>();
-                let reply = format!(
-                    "{ANSWER}|{game_port}|{}|{}|{players}",
-                    clean(name),
-                    clean(mode)
-                );
+                let reply = format!("{ANSWER}|{game_port}|{}|{}|{players}", clean(name), clean(mode));
                 let _ = self.socket.send_to(reply.as_bytes(), from);
             }
         }
@@ -70,11 +66,7 @@ impl Finder {
         for target in [Ipv4Addr::BROADCAST, Ipv4Addr::LOCALHOST] {
             let _ = socket.send_to(ASK, (target, DISCOVERY_PORT));
         }
-        Ok(Self {
-            socket,
-            started: Instant::now(),
-            found: Vec::new(),
-        })
+        Ok(Self { socket, started: Instant::now(), found: Vec::new() })
     }
 
     /// Reads replies. Returns false once the search window has closed.
@@ -84,21 +76,10 @@ impl Finder {
             let text = String::from_utf8_lossy(&buffer[..n]).to_string();
             let fields: Vec<&str> = text.split('|').collect();
             if fields.len() == 5 && fields[0] == ANSWER {
-                let Ok(port) = fields[1].parse::<u16>() else {
-                    continue;
-                };
-                let found = Found {
-                    address: SocketAddr::new(from.ip(), port),
-                    name: fields[2].into(),
-                    mode: fields[3].into(),
-                    players: fields[4].parse().unwrap_or(0),
-                };
+                let Ok(port) = fields[1].parse::<u16>() else { continue };
+                let found = Found { address: SocketAddr::new(from.ip(), port), name: fields[2].into(), mode: fields[3].into(), players: fields[4].parse().unwrap_or(0) };
                 // The same host can answer on loopback and on its LAN address; keep one.
-                if !self
-                    .found
-                    .iter()
-                    .any(|f| f.name == found.name && f.address.port() == port)
-                {
+                if !self.found.iter().any(|f| f.name == found.name && f.address.port() == port) {
                     self.found.push(found);
                 }
             }
@@ -112,11 +93,7 @@ pub fn local_ip() -> Option<IpAddr> {
     // Connecting a UDP socket sends nothing; it only asks the OS which interface it would use.
     let socket = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
     socket.connect(("192.0.2.1", 9)).ok()?;
-    socket
-        .local_addr()
-        .ok()
-        .map(|a| a.ip())
-        .filter(|ip| !ip.is_unspecified())
+    socket.local_addr().ok().map(|a| a.ip()).filter(|ip| !ip.is_unspecified())
 }
 
 /// Progress of an automatic router port-forward.
@@ -145,28 +122,14 @@ pub fn open_port(port: u16) -> Arc<Mutex<PortStatus>> {
 #[cfg(feature = "upnp")]
 fn forward(port: u16) -> PortStatus {
     use igd_next::{PortMappingProtocol, SearchOptions, search_gateway};
-    let options = SearchOptions {
-        timeout: Some(Duration::from_secs(3)),
-        ..Default::default()
-    };
+    let options = SearchOptions { timeout: Some(Duration::from_secs(3)), ..Default::default() };
     let gateway = match search_gateway(options) {
         Ok(gateway) => gateway,
         Err(_) => return PortStatus::Unavailable("NO UPNP ROUTER FOUND".into()),
     };
-    let Some(IpAddr::V4(local)) = local_ip() else {
-        return PortStatus::Unavailable("NO LOCAL ADDRESS".into());
-    };
+    let Some(IpAddr::V4(local)) = local_ip() else { return PortStatus::Unavailable("NO LOCAL ADDRESS".into()) };
     let local = SocketAddr::new(IpAddr::V4(local), port);
-    if gateway
-        .add_port(
-            PortMappingProtocol::UDP,
-            port,
-            local,
-            4 * 3600,
-            "Opnix Zone",
-        )
-        .is_err()
-    {
+    if gateway.add_port(PortMappingProtocol::UDP, port, local, 4 * 3600, "Opnix Zone").is_err() {
         return PortStatus::Unavailable("ROUTER REFUSED THE PORT".into());
     }
     match gateway.get_external_ip() {
@@ -195,14 +158,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let game = finder.found.first().expect("the beacon should answer");
-        assert_eq!(
-            (
-                game.name.as_str(),
-                game.mode.as_str(),
-                game.players,
-                game.address.port()
-            ),
-            ("ADA'S GAME", "TEAM DEATHMATCH", 3, 27_650)
-        );
+        assert_eq!((game.name.as_str(), game.mode.as_str(), game.players, game.address.port()), ("ADA'S GAME", "TEAM DEATHMATCH", 3, 27_650));
     }
 }

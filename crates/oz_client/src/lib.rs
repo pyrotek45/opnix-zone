@@ -79,11 +79,7 @@ impl Plugin for ClientPlugin {
                     primary_window: Some(Window {
                         title: self.title.clone(),
                         resolution: (1280.0_f32, 720.0_f32).into(),
-                        present_mode: if settings.vsync {
-                            PresentMode::AutoVsync
-                        } else {
-                            PresentMode::AutoNoVsync
-                        },
+                        present_mode: if settings.vsync { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync },
                         ..default()
                     }),
                     ..default()

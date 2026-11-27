@@ -63,26 +63,13 @@ pub struct CoverPlugin;
 impl Plugin for CoverPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Cover>()
-            .add_systems(OnEnter(MatchPhase::Active), |mut cover: ResMut<Cover>| {
-                *cover = Cover::default()
-            })
-            .add_systems(
-                Update,
-                take_cover
-                    .in_set(ClientSet::Input)
-                    .after(crate::input::DrivePlayer)
-                    .run_if(in_state(MatchPhase::Active)),
-            );
+            .add_systems(OnEnter(MatchPhase::Active), |mut cover: ResMut<Cover>| *cover = Cover::default())
+            .add_systems(Update, take_cover.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
     }
 }
 
 /// Horizontal ray from `origin`: distance and the face it hit, if that face is a wall.
-fn wall_hit(
-    statics: &StaticWorld,
-    origin: Vec3,
-    dir: Vec3,
-    reach: f32,
-) -> Option<(f32, Vec3, f32)> {
+fn wall_hit(statics: &StaticWorld, origin: Vec3, dir: Vec3, reach: f32) -> Option<(f32, Vec3, f32)> {
     let (d, index) = statics.raycast(origin, dir, reach)?;
     let aabb = statics.aabb(index)?;
     let at = origin + dir * d;
@@ -115,14 +102,7 @@ fn find_wall(statics: &StaticWorld, feet: Vec3, yaw: f32) -> Option<(Vec3, Wall)
             let at = chest + dir * d;
             // Stand off the face along its normal.
             let spot = Vec3::new(at.x, feet.y, at.z) + normal * OFFSET;
-            best = Some((
-                d,
-                spot,
-                Wall {
-                    normal,
-                    low: top < feet.y + LOW,
-                },
-            ));
+            best = Some((d, spot, Wall { normal, low: top < feet.y + LOW }));
         }
     }
     best.map(|(_, spot, wall)| (spot, wall))
@@ -130,9 +110,7 @@ fn find_wall(statics: &StaticWorld, feet: Vec3, yaw: f32) -> Option<(Vec3, Wall)
 
 /// Is there still wall behind the player at `point` (chest height)?
 fn wall_behind(statics: &StaticWorld, point: Vec3, wall: &Wall) -> Option<f32> {
-    wall_hit(statics, point, -wall.normal, OFFSET + 0.5)
-        .filter(|(_, n, _)| n.dot(wall.normal) > 0.9)
-        .map(|(_, _, top)| top)
+    wall_hit(statics, point, -wall.normal, OFFSET + 0.5).filter(|(_, n, _)| n.dot(wall.normal) > 0.9).map(|(_, _, top)| top)
 }
 
 /// World direction -> the `movement` vector `PlayerInput` wants (x right, y forward).
@@ -163,19 +141,12 @@ fn take_cover(
         return;
     }
     let in_cover = cover.wall.is_some() || cover.entering.is_some();
-    let found = if in_cover {
-        None
-    } else {
-        find_wall(&statics, feet, input.yaw)
-    };
+    let found = if in_cover { None } else { find_wall(&statics, feet, input.yaw) };
     cover.available = found.is_some();
 
     // Cover lasts while the button is held.
     if in_cover && !controls.cover_held {
-        *cover = Cover {
-            available: cover.available,
-            ..default()
-        };
+        *cover = Cover { available: cover.available, ..default() };
         return;
     }
     if controls.cover
@@ -192,10 +163,7 @@ fn take_cover(
             input.buttons |= buttons::JUMP;
             input.lean = 0;
         }
-        *cover = Cover {
-            available: cover.available,
-            ..default()
-        };
+        *cover = Cover { available: cover.available, ..default() };
         return;
     }
 
@@ -209,11 +177,7 @@ fn take_cover(
             cover.entering = Some((spot, wall, waited + dt));
             input.movement = to_input(input.yaw, to.normalize() * (to.length() * 4.0).min(1.0));
             input.buttons &= !buttons::SPRINT;
-            input.stance = if wall.low {
-                stance::CROUCH
-            } else {
-                stance::STAND
-            };
+            input.stance = if wall.low { stance::CROUCH } else { stance::STAND };
             input.lean = 0;
             return;
         }
@@ -231,13 +195,11 @@ fn take_cover(
     };
     wall.low = top < feet.y + LOW;
     let along = Vec3::new(-wall.normal.z, 0.0, wall.normal.x);
-    cover.edges = [-1.0f32, 1.0]
-        .map(|side| wall_behind(&statics, chest + along * side * EDGE, &wall).is_none());
+    cover.edges = [-1.0f32, 1.0].map(|side| wall_behind(&statics, chest + along * side * EDGE, &wall).is_none());
 
     // Movement: only along the wall, never off its end. Pulling away leaves cover.
     let yaw = input.yaw;
-    let wish =
-        Quat::from_rotation_y(yaw) * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
+    let wish = Quat::from_rotation_y(yaw) * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
     let away = wish.dot(wall.normal);
     let mut slide = wish.dot(along);
     if away > 0.75 && slide.abs() < 0.4 {
@@ -274,19 +236,11 @@ fn take_cover(
                 [false, false] => 0.0,
             };
             input.stance = stance::STAND;
-            input.lean = if side == 0.0 {
-                0
-            } else {
-                (along * side).dot(right).signum() as i8
-            };
+            input.lean = if side == 0.0 { 0 } else { (along * side).dot(right).signum() as i8 };
         }
     } else {
         input.movement = to_input(yaw, along * slide * 0.8 + press);
-        input.stance = if wall.low {
-            stance::CROUCH
-        } else {
-            stance::STAND
-        };
+        input.stance = if wall.low { stance::CROUCH } else { stance::STAND };
         input.lean = 0;
         if input.held(buttons::FIRE) {
             // Blind fire: the gun goes over the top or round the nearest edge, the head stays put.
@@ -329,14 +283,8 @@ mod tests {
     fn finds_walls_and_their_edges() {
         let mut statics = StaticWorld::new(50.0);
         // A long tall wall along x at z = -2, and a low crate further on.
-        statics.add(Aabb::span(
-            Vec3::new(-3.0, 0.0, -2.2),
-            Vec3::new(3.0, 3.0, -2.0),
-        ));
-        statics.add(Aabb::span(
-            Vec3::new(10.0, 0.0, -2.5),
-            Vec3::new(11.0, 1.0, -1.5),
-        ));
+        statics.add(Aabb::span(Vec3::new(-3.0, 0.0, -2.2), Vec3::new(3.0, 3.0, -2.0)));
+        statics.add(Aabb::span(Vec3::new(10.0, 0.0, -2.5), Vec3::new(11.0, 1.0, -1.5)));
         let (spot, wall) = find_wall(&statics, Vec3::ZERO, 0.0).expect("the wall ahead");
         assert!(!wall.low && wall.normal.z > 0.9 && (spot.z - (-2.0 + OFFSET)).abs() < 0.01);
         // Behind the wall in its middle; past its end there is nothing.

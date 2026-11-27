@@ -2,9 +2,7 @@
 //! humans, remote clients and bots alike.
 
 use crate::{
-    combat::{
-        Grid, Hit, Impact, Projectile, Solid, ray_box, ray_sphere, spawn_projectile, splash, throw,
-    },
+    combat::{Grid, Hit, Impact, Projectile, Solid, ray_box, ray_sphere, spawn_projectile, splash, throw},
     lagcomp::{LagHistory, ViewTime},
     net::NetIds,
     player::{Arsenal, Health, Player, PlayerInput, buttons, damage_player, perk, stance},
@@ -59,34 +57,12 @@ impl Body {
         let forward = Vec3::new(-self.yaw.sin(), 0.0, -self.yaw.cos());
         let right = Vec3::new(self.yaw.cos(), 0.0, -self.yaw.sin());
         let (head, torso, arms, legs, torso_r) = match self.stance {
-            stance::PRONE => (
-                up(0.32) + forward * 0.62,
-                up(0.26) + forward * 0.05,
-                up(0.24) + forward * 0.45,
-                up(0.18) - forward * 0.6,
-                0.34,
-            ),
+            stance::PRONE => (up(0.32) + forward * 0.62, up(0.26) + forward * 0.05, up(0.24) + forward * 0.45, up(0.18) - forward * 0.6, 0.34),
             // Crouched, the head sits just under low cover (`worldgen::COVER_HEIGHT`).
-            stance::CROUCH => (
-                up(0.95) + self.lean,
-                up(0.62) + self.lean * 0.5,
-                up(0.72) + self.lean * 0.5 - forward * 0.05,
-                up(0.28),
-                0.36,
-            ),
-            _ => (
-                up(1.62) + self.lean,
-                up(1.05) + self.lean * 0.55,
-                up(1.18) + self.lean * 0.55,
-                up(0.45),
-                0.36,
-            ),
+            stance::CROUCH => (up(0.95) + self.lean, up(0.62) + self.lean * 0.5, up(0.72) + self.lean * 0.5 - forward * 0.05, up(0.28), 0.36),
+            _ => (up(1.62) + self.lean, up(1.05) + self.lean * 0.55, up(1.18) + self.lean * 0.55, up(0.45), 0.36),
         };
-        let arm_x = if self.stance == stance::PRONE {
-            0.28
-        } else {
-            0.36
-        };
+        let arm_x = if self.stance == stance::PRONE { 0.28 } else { 0.36 };
         [
             (head, 0.24, part::HEAD),
             (torso, torso_r, part::TORSO),
@@ -101,12 +77,8 @@ impl Body {
     fn hit(&self, origin: Vec3, dir: Vec3) -> Option<(f32, u8)> {
         self.spheres()
             .into_iter()
-            .filter(|(_, _, p)| {
-                crate::player::limb::of_part(*p).is_none_or(|bit| self.lost & bit == 0)
-            })
-            .filter_map(|(center, radius, part)| {
-                ray_sphere(origin, dir, center, radius).map(|d| (d, part))
-            })
+            .filter(|(_, _, p)| crate::player::limb::of_part(*p).is_none_or(|bit| self.lost & bit == 0))
+            .filter_map(|(center, radius, part)| ray_sphere(origin, dir, center, radius).map(|d| (d, part)))
             .min_by(|a, b| a.0.total_cmp(&b.0))
     }
 
@@ -116,14 +88,7 @@ impl Body {
 }
 
 /// How far a ray gets before something solid stops it.
-pub fn obstruction<F: bevy::ecs::query::QueryFilter>(
-    map: &Map,
-    statics: &StaticWorld,
-    solids: &Query<(&Transform, &Solid), F>,
-    origin: Vec3,
-    dir: Vec3,
-    range: f32,
-) -> f32 {
+pub fn obstruction<F: bevy::ecs::query::QueryFilter>(map: &Map, statics: &StaticWorld, solids: &Query<(&Transform, &Solid), F>, origin: Vec3, dir: Vec3, range: f32) -> f32 {
     let mut best = map.raycast(origin, dir, range);
     if let Some((d, _)) = statics.raycast(origin, dir, best) {
         best = best.min(d);
@@ -138,23 +103,13 @@ pub fn obstruction<F: bevy::ecs::query::QueryFilter>(
 
 /// Like [`obstruction`], but a piercing round may pass one thin wall.
 /// Returns (reach, damage multiplier at the target).
-fn reach_with_pierce<F: bevy::ecs::query::QueryFilter>(
-    map: &Map,
-    statics: &StaticWorld,
-    solids: &Query<(&Transform, &Solid), F>,
-    origin: Vec3,
-    dir: Vec3,
-    range: f32,
-    pierce: bool,
-) -> (f32, f32) {
+fn reach_with_pierce<F: bevy::ecs::query::QueryFilter>(map: &Map, statics: &StaticWorld, solids: &Query<(&Transform, &Solid), F>, origin: Vec3, dir: Vec3, range: f32, pierce: bool) -> (f32, f32) {
     let first = obstruction(map, statics, solids, origin, dir, range);
     if !pierce || first >= range {
         return (first, 1.0);
     }
     match statics.raycast(origin, dir, first + 0.01) {
-        Some((d, index))
-            if (d - first).abs() < 0.02 && statics.thickness(index, origin, dir) < PIERCE_DEPTH =>
-        {
+        Some((d, index)) if (d - first).abs() < 0.02 && statics.thickness(index, origin, dir) < PIERCE_DEPTH => {
             let exit = d + statics.thickness(index, origin, dir) + 0.02;
             let beyond = obstruction(map, statics, solids, origin + dir * exit, dir, range - exit);
             (exit + beyond, PIERCE_KEEP)
@@ -171,16 +126,7 @@ fn spread_dir(look: Quat, spread: f32, rng: &mut SimRng) -> Vec3 {
 
 fn hit_from(stats: &Resolved, target: Entity, amount: f32, player: u8) -> Hit {
     let venom = stats.venom + stats.burn;
-    Hit {
-        target,
-        amount,
-        by: Some(player),
-        frost: stats.frost,
-        venom,
-        arc: stats.arc,
-        scavenge: stats.scavenge,
-        repair: stats.repair,
-    }
+    Hit { target, amount, by: Some(player), frost: stats.frost, venom, arc: stats.arc, scavenge: stats.scavenge, repair: stats.repair }
 }
 
 /// Damage dealt to a player this frame: (victim, amount before the part multiplier, attacker index into bodies, burn, part hit).
@@ -198,32 +144,10 @@ pub fn fire_weapons(
     mut rng: ResMut<SimRng>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(
-        Entity,
-        &mut Player,
-        &Transform,
-        &PlayerInput,
-        &mut Arsenal,
-        &mut Health,
-        Option<&ViewTime>,
-    )>,
-    solids: Query<
-        (&Transform, &Solid),
-        (
-            Or<(
-                With<Structure>,
-                With<crate::breakables::Door>,
-                With<crate::breakables::ClutterPiece>,
-            )>,
-            Without<OreNode>,
-        ),
-    >,
+    mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health, Option<&ViewTime>)>,
+    solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<OreNode>)>,
     mut ores: Query<(&Transform, &mut OreNode)>,
-    (mut hits, mut traces, mut noises): (
-        EventWriter<Hit>,
-        EventWriter<crate::breakables::Trace>,
-        ResMut<crate::bots::Noises>,
-    ),
+    (mut hits, mut traces, mut noises): (EventWriter<Hit>, EventWriter<crate::breakables::Trace>, ResMut<crate::bots::Noises>),
     mut fx: EventWriter<FxEvent>,
     mut ore_carry: Local<[f32; 3]>,
 ) {
@@ -264,24 +188,9 @@ pub fn fire_weapons(
                 && let Some(gear) = content.gear.get(player.gear as usize)
                 && let Some((_, shot)) = throw(&gear.kind, Vec3::NEG_Y)
             {
-                let life = if matches!(gear.kind, GearKind::Knife { .. }) {
-                    shot.life
-                } else {
-                    (shot.life - cooked).max(0.05)
-                };
-                let shot = Projectile {
-                    velocity: Vec3::new(0.0, 1.0, 0.0),
-                    owner: Some(player.id),
-                    team: player.team,
-                    life,
-                    ..shot
-                };
-                spawn_projectile(
-                    &mut commands,
-                    &mut ids,
-                    transform.translation + Vec3::Y * 0.6,
-                    shot,
-                );
+                let life = if matches!(gear.kind, GearKind::Knife { .. }) { shot.life } else { (shot.life - cooked).max(0.05) };
+                let shot = Projectile { velocity: Vec3::new(0.0, 1.0, 0.0), owner: Some(player.id), team: player.team, life, ..shot };
+                spawn_projectile(&mut commands, &mut ids, transform.translation + Vec3::Y * 0.6, shot);
             }
             player.cooking = None;
             arsenal.reload = 0.0;
@@ -293,13 +202,9 @@ pub fn fire_weapons(
         let look = input.look();
         let me = bodies.iter().position(|body| body.entity == entity);
         // Lag compensation: remote shooters hit the world as they saw it.
-        let rewind_at = view
-            .filter(|_| !history.is_empty())
-            .map(|view| history.clamp(now, view.0));
+        let rewind_at = view.filter(|_| !history.is_empty()).map(|view| history.clamp(now, view.0));
         // Enemies as this shooter saw them (co-op guests), else as they are now.
-        let enemy_ray = |origin: Vec3, dir: Vec3, max: f32| match rewind_at
-            .and_then(|at| history.enemy_raycast(at, origin, dir, max))
-        {
+        let enemy_ray = |origin: Vec3, dir: Vec3, max: f32| match rewind_at.and_then(|at| history.enemy_raycast(at, origin, dir, max)) {
             Some(hit) => hit,
             None => grid.raycast(origin, dir, max),
         };
@@ -307,19 +212,9 @@ pub fn fire_weapons(
             bodies
                 .iter()
                 .filter_map(|b| match history.pose_at(at, b.entity) {
-                    Some(pose) if pose.alive => Some(Body {
-                        feet: pose.feet,
-                        stance: pose.stance,
-                        yaw: pose.yaw,
-                        lean: pose.lean,
-                        name: b.name.clone(),
-                        ..*b
-                    }),
+                    Some(pose) if pose.alive => Some(Body { feet: pose.feet, stance: pose.stance, yaw: pose.yaw, lean: pose.lean, name: b.name.clone(), ..*b }),
                     Some(_) => None,
-                    None => Some(Body {
-                        name: b.name.clone(),
-                        ..*b
-                    }),
+                    None => Some(Body { name: b.name.clone(), ..*b }),
                 })
                 .collect()
         });
@@ -345,31 +240,19 @@ pub fn fire_weapons(
                     player.gear_left -= 1;
                     health.hp = (health.hp + heal).min(health.max);
                     player.burn_time = 0.0;
-                    fx.write(FxEvent::Cue {
-                        to: player.id,
-                        sfx: Sfx::Buy,
-                    });
+                    fx.write(FxEvent::Cue { to: player.id, sfx: Sfx::Buy });
                 }
                 GearKind::Ammo { radius } => {
                     player.gear_left -= 1;
                     resupply.push((transform.translation, radius, player.team));
-                    fx.write(FxEvent::Sound {
-                        sfx: Sfx::Buy,
-                        at: Some(transform.translation),
-                    });
+                    fx.write(FxEvent::Sound { sfx: Sfx::Buy, at: Some(transform.translation) });
                 }
                 _ => {
                     player.cooking = Some(0.0);
                     arsenal.reload = 0.0;
                     arsenal.burst = 0;
-                    fx.write(FxEvent::Gear {
-                        by: player.id,
-                        stage: 0,
-                    });
-                    fx.write(FxEvent::Sound {
-                        sfx: Sfx::PinPull,
-                        at: Some(eye),
-                    });
+                    fx.write(FxEvent::Gear { by: player.id, stage: 0 });
+                    fx.write(FxEvent::Sound { sfx: Sfx::PinPull, at: Some(eye) });
                 }
             }
         }
@@ -383,53 +266,20 @@ pub fn fire_weapons(
                 // Pin back in: nothing used.
                 player.cooking = None;
                 player.reload_block = true;
-                fx.write(FxEvent::Gear {
-                    by: player.id,
-                    stage: 2,
-                });
+                fx.write(FxEvent::Gear { by: player.id, stage: 2 });
             } else if let Some((velocity, shot)) = template {
                 let cooked_off = !knife && matches!(shot.effect, Impact::Blast) && cooked >= fuse;
                 if !gear_held || cooked_off {
                     player.cooking = None;
                     player.gear_left = player.gear_left.saturating_sub(1);
-                    let life = if knife {
-                        shot.life
-                    } else {
-                        (shot.life - cooked).max(0.03)
-                    };
-                    let (velocity, life) = if cooked_off {
-                        (Vec3::ZERO, 0.01)
-                    } else {
-                        (velocity, life)
-                    };
-                    let shot = Projectile {
-                        velocity,
-                        owner: Some(player.id),
-                        team: player.team,
-                        life,
-                        ..shot
-                    };
+                    let life = if knife { shot.life } else { (shot.life - cooked).max(0.03) };
+                    let (velocity, life) = if cooked_off { (Vec3::ZERO, 0.01) } else { (velocity, life) };
+                    let shot = Projectile { velocity, owner: Some(player.id), team: player.team, life, ..shot };
                     let out = obstruction(&map, &statics, &solids, eye, dir, 0.7);
-                    spawn_projectile(
-                        &mut commands,
-                        &mut ids,
-                        eye + dir * (out - 0.15).max(0.0),
-                        shot,
-                    );
-                    fx.write(FxEvent::Gear {
-                        by: player.id,
-                        stage: 1,
-                    });
-                    fx.write(FxEvent::Sound {
-                        sfx: Sfx::Throw,
-                        at: Some(eye),
-                    });
-                    noises.0.push(crate::bots::Noise {
-                        at: eye,
-                        radius: 6.0,
-                        team: player.team,
-                        shout: false,
-                    });
+                    spawn_projectile(&mut commands, &mut ids, eye + dir * (out - 0.15).max(0.0), shot);
+                    fx.write(FxEvent::Gear { by: player.id, stage: 1 });
+                    fx.write(FxEvent::Sound { sfx: Sfx::Throw, at: Some(eye) });
+                    noises.0.push(crate::bots::Noise { at: eye, radius: 6.0, team: player.team, shout: false });
                 } else {
                     player.cooking = Some(cooked);
                 }
@@ -463,17 +313,7 @@ pub fn fire_weapons(
                         let to = body.chest() - eye;
                         let distance = to.length();
                         let facing = Vec3::new(to.x, 0.0, to.z).normalize_or_zero().dot(flat);
-                        (distance < 2.3
-                            && facing > 0.5
-                            && obstruction(
-                                &map,
-                                &statics,
-                                &solids,
-                                eye,
-                                to / distance.max(1e-3),
-                                distance,
-                            ) >= distance - 0.35)
-                            .then_some((distance, body.entity))
+                        (distance < 2.3 && facing > 0.5 && obstruction(&map, &statics, &solids, eye, to / distance.max(1e-3), distance) >= distance - 0.35).then_some((distance, body.entity))
                     })
                     .min_by(|a, b| a.0.total_cmp(&b.0));
                 if let Some((_, victim)) = victim {
@@ -485,20 +325,9 @@ pub fn fire_weapons(
                 hits.write(Hit::plain(item.entity, MELEE_DAMAGE, Some(player.id)));
                 landed = true;
             }
-            fx.write(FxEvent::Melee {
-                by: player.id,
-                hit: landed,
-            });
-            fx.write(FxEvent::Sound {
-                sfx: if landed { Sfx::ImpactMetal } else { Sfx::Swap },
-                at: Some(eye + dir),
-            });
-            noises.0.push(crate::bots::Noise {
-                at: eye,
-                radius: 7.0,
-                team: player.team,
-                shout: false,
-            });
+            fx.write(FxEvent::Melee { by: player.id, hit: landed });
+            fx.write(FxEvent::Sound { sfx: if landed { Sfx::ImpactMetal } else { Sfx::Swap }, at: Some(eye + dir) });
+            noises.0.push(crate::bots::Noise { at: eye, radius: 7.0, team: player.team, shout: false });
             arsenal.trigger = input.held(buttons::FIRE);
             continue;
         }
@@ -508,13 +337,7 @@ pub fn fire_weapons(
             arsenal.current = input.weapon;
             arsenal.reload = 0.0;
             arsenal.burst = 0;
-            let handling = content
-                .weapons
-                .get(input.weapon as usize)
-                .zip(arsenal.weapons.get(input.weapon as usize))
-                .map_or(1.0, |(def, state)| {
-                    resolve(def, state, &content.attachments).handling
-                });
+            let handling = content.weapons.get(input.weapon as usize).zip(arsenal.weapons.get(input.weapon as usize)).map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).handling);
             let quick = match perk(&content, &player) {
                 Some(PerkEffect::Handling(scale)) => scale,
                 _ => 1.0,
@@ -551,44 +374,22 @@ pub fn fire_weapons(
                 arsenal.reload -= dt;
                 if arsenal.reload <= 0.0 {
                     arsenal.reload = 0.0;
-                    finish_reload(
-                        def,
-                        &stats,
-                        weapon,
-                        &mut arsenal.reload,
-                        &mut arsenal.reload_total,
-                    );
+                    finish_reload(def, &stats, weapon, &mut arsenal.reload, &mut arsenal.reload_total);
                     if arsenal.reload > 0.0 {
-                        fx.write(FxEvent::Sound {
-                            sfx: Sfx::Reload,
-                            at: Some(transform.translation),
-                        });
+                        fx.write(FxEvent::Sound { sfx: Sfx::Reload, at: Some(transform.translation) });
                     }
                 }
                 continue;
             }
         }
         let weapon = arsenal.weapons[index];
-        let can_reload =
-            uses_ammo && weapon.ammo < stats.mag && (def.infinite_reserve || weapon.reserve > 0);
+        let can_reload = uses_ammo && weapon.ammo < stats.mag && (def.infinite_reserve || weapon.reserve > 0);
         let wants_fire = arsenal.burst > 0 || (fire_held && (def.auto() || pulled));
-        if arsenal.reload <= 0.0
-            && arsenal.burst == 0
-            && can_reload
-            && ((input.held(buttons::RELOAD) && !player.reload_block)
-                || (wants_fire && weapon.ammo == 0))
-        {
-            arsenal.reload_total = if def.reload_style == ReloadStyle::Single {
-                stats.reload
-            } else {
-                stats.reload + if weapon.ammo == 0 { 0.25 } else { 0.0 }
-            };
+        if arsenal.reload <= 0.0 && arsenal.burst == 0 && can_reload && ((input.held(buttons::RELOAD) && !player.reload_block) || (wants_fire && weapon.ammo == 0)) {
+            arsenal.reload_total = if def.reload_style == ReloadStyle::Single { stats.reload } else { stats.reload + if weapon.ammo == 0 { 0.25 } else { 0.0 } };
             arsenal.reload = arsenal.reload_total;
             arsenal.reload_empty = weapon.ammo == 0;
-            fx.write(FxEvent::Sound {
-                sfx: Sfx::Reload,
-                at: Some(transform.translation),
-            });
+            fx.write(FxEvent::Sound { sfx: Sfx::Reload, at: Some(transform.translation) });
             continue;
         }
         if !wants_fire || arsenal.cooldown > 0.0 {
@@ -597,10 +398,7 @@ pub fn fire_weapons(
         if uses_ammo && weapon.ammo == 0 {
             arsenal.burst = 0;
             arsenal.cooldown = 0.3;
-            fx.write(FxEvent::Sound {
-                sfx: Sfx::DryFire,
-                at: Some(transform.translation),
-            });
+            fx.write(FxEvent::Sound { sfx: Sfx::DryFire, at: Some(transform.translation) });
             continue;
         }
 
@@ -631,37 +429,15 @@ pub fn fire_weapons(
         };
         // Blind fire from cover: the gun is out, the eyes are not.
         let blind = if input.held(buttons::BLIND) { 3.2 } else { 1.0 };
-        let spread = (stats.spread
-            * if aiming { stats.ads_spread } else { hipfire }
-            * stance::steadiness(input.stance)
-            * blind)
-            .max(if blind > 1.0 { 0.045 } else { 0.0 });
-        noises.0.push(crate::bots::Noise {
-            at: eye,
-            radius: if stats.quiet { 9.0 } else { 80.0 },
-            team: player.team,
-            shout: false,
-        });
-        let shot = |to: Vec3, beam: bool| FxEvent::Shot {
-            by: player.id,
-            sound: def.sound,
-            from,
-            to,
-            beam,
-            tracer: stats.tracer,
-            quiet: stats.quiet,
-            local: false,
-        };
+        let spread = (stats.spread * if aiming { stats.ads_spread } else { hipfire } * stance::steadiness(input.stance) * blind).max(if blind > 1.0 { 0.045 } else { 0.0 });
+        noises.0.push(crate::bots::Noise { at: eye, radius: if stats.quiet { 9.0 } else { 80.0 }, team: player.team, shout: false });
+        let shot = |to: Vec3, beam: bool| FxEvent::Shot { by: player.id, sound: def.sound, from, to, beam, tracer: stats.tracer, quiet: stats.quiet, local: false };
         // Nearest enemy-team player along a ray, within `reach`.
         let player_hit = |dir: Vec3, reach: f32| {
             targets
                 .iter()
                 .filter(|body| body.team != player.team)
-                .filter_map(|body| {
-                    body.hit(eye, dir)
-                        .filter(|(d, _)| *d <= reach)
-                        .map(|(d, part)| (d, part, body.entity))
-                })
+                .filter_map(|body| body.hit(eye, dir).filter(|(d, _)| *d <= reach).map(|(d, part)| (d, part, body.entity)))
                 .min_by(|a, b| a.0.total_cmp(&b.0))
         };
 
@@ -681,15 +457,9 @@ pub fn fire_weapons(
                 };
                 // Never start past a wall the shooter is pressed against.
                 let out = obstruction(&map, &statics, &solids, eye, dir, 0.8);
-                spawn_projectile(
-                    &mut commands,
-                    &mut ids,
-                    eye + dir * (out - 0.15).max(0.0),
-                    projectile,
-                );
+                spawn_projectile(&mut commands, &mut ids, eye + dir * (out - 0.15).max(0.0), projectile);
                 // The launch flash stops at a wall too.
-                let flash =
-                    obstruction(&map, &statics, &solids, eye, dir, from.distance(eye) + 1.5);
+                let flash = obstruction(&map, &statics, &solids, eye, dir, from.distance(eye) + 1.5);
                 fx.write(shot(eye + dir * flash, false));
             }
             FireMode::Beam => {
@@ -699,11 +469,7 @@ pub fn fire_weapons(
                 let ore = ores
                     .iter_mut()
                     .filter(|(_, node)| node.amount > 0.0)
-                    .filter_map(|(t, node)| {
-                        ray_sphere(eye, dir, t.translation + Vec3::Y * 0.6, 1.3)
-                            .filter(|d| *d <= BEAM_RANGE)
-                            .map(|d| (d, t.translation, node))
-                    })
+                    .filter_map(|(t, node)| ray_sphere(eye, dir, t.translation + Vec3::Y * 0.6, 1.3).filter(|d| *d <= BEAM_RANGE).map(|d| (d, t.translation, node)))
                     .min_by(|a, b| a.0.total_cmp(&b.0));
                 let mut end = eye + dir * reach;
                 match (enemy, ore) {
@@ -713,8 +479,7 @@ pub fn fire_weapons(
                     }
                     (_, Some((d, at, mut node))) if def.mining > 0.0 => {
                         end = eye + dir * d;
-                        let power =
-                            def.mining * content.bonus(&state.upgrades, UpgradeEffect::MiningPower);
+                        let power = def.mining * content.bonus(&state.upgrades, UpgradeEffect::MiningPower);
                         let mined = (power * stats.interval).min(node.amount);
                         node.amount -= mined;
                         let slot = node.ore as usize;
@@ -722,22 +487,13 @@ pub fn fire_weapons(
                         if ore_carry[slot] >= 1.0 {
                             state.stock.add_ore(node.ore, ore_carry[slot] as u32);
                             ore_carry[slot] = ore_carry[slot].fract();
-                            fx.write(FxEvent::Mined {
-                                at: at + Vec3::Y * 0.8,
-                                ore: node.ore as u8,
-                            });
+                            fx.write(FxEvent::Mined { at: at + Vec3::Y * 0.8, ore: node.ore as u8 });
                         }
                     }
                     _ => {
                         if let (Some((d, _, victim)), Some(me)) = (player_hit(dir, reach), me) {
                             end = eye + dir * d;
-                            struck.push((
-                                victim,
-                                stats.damage,
-                                me,
-                                0.0,
-                                crate::player::part::TORSO,
-                            ));
+                            struck.push((victim, stats.damage, me, 0.0, crate::player::part::TORSO));
                         }
                     }
                 }
@@ -746,82 +502,37 @@ pub fn fire_weapons(
             FireMode::Hitscan => {
                 for _ in 0..stats.pellets {
                     let dir = spread_dir(look, spread, &mut rng);
-                    let (mut reach, kept) = reach_with_pierce(
-                        &map,
-                        &statics,
-                        &solids,
-                        eye,
-                        dir,
-                        stats.range,
-                        stats.pierce,
-                    );
+                    let (mut reach, kept) = reach_with_pierce(&map, &statics, &solids, eye, dir, stats.range, stats.pierce);
                     // Damage falls off over the last 40% of the range.
-                    let falloff = |d: f32| {
-                        kept * (1.0 - 0.5 * ((d / stats.range - 0.6) / 0.4).clamp(0.0, 1.0))
-                    };
+                    let falloff = |d: f32| kept * (1.0 - 0.5 * ((d / stats.range - 0.6) / 0.4).clamp(0.0, 1.0));
                     let body = player_hit(dir, reach);
                     if let Some((d, ..)) = body {
                         reach = d;
                     }
                     let end = eye + dir * reach;
                     // Doors, glass and clutter along the way find out about it.
-                    traces.write(crate::breakables::Trace {
-                        origin: eye,
-                        dir,
-                        reach,
-                        damage: stats.damage * falloff(reach),
-                        by: player.id,
-                    });
+                    traces.write(crate::breakables::Trace { origin: eye, dir, reach, damage: stats.damage * falloff(reach), by: player.id });
                     let mut end_at = end;
                     if let Some((d, item)) = enemy_ray(eye, dir, reach) {
                         end_at = eye + dir * d;
-                        hits.write(hit_from(
-                            &stats,
-                            item.entity,
-                            stats.damage * falloff(d),
-                            player.id,
-                        ));
+                        hits.write(hit_from(&stats, item.entity, stats.damage * falloff(d), player.id));
                         if stats.splash > 0.0 {
-                            splash(
-                                &grid,
-                                &mut hits,
-                                end_at,
-                                stats.splash,
-                                stats.damage * 0.5,
-                                Some(player.id),
-                                Some(item.entity),
-                            );
+                            splash(&grid, &mut hits, end_at, stats.splash, stats.damage * 0.5, Some(player.id), Some(item.entity));
                         }
                     } else if let (Some((d, head, victim)), Some(me)) = (body, me) {
                         struck.push((victim, stats.damage * falloff(d), me, stats.burn, head));
                     } else if stats.splash > 0.0 && reach < stats.range {
-                        splash(
-                            &grid,
-                            &mut hits,
-                            end,
-                            stats.splash,
-                            stats.damage * 0.5,
-                            Some(player.id),
-                            None,
-                        );
+                        splash(&grid, &mut hits, end, stats.splash, stats.damage * 0.5, Some(player.id), None);
                     }
                     // Explosive rounds also catch nearby players.
                     if stats.splash > 0.0
                         && rules.pvp
                         && let Some(me) = me
                     {
-                        for body in targets.iter().filter(|b| {
-                            b.team != player.team && Some(b.entity) != body.map(|h| h.2)
-                        }) {
+                        for body in targets.iter().filter(|b| b.team != player.team && Some(b.entity) != body.map(|h| h.2)) {
                             let distance = body.chest().distance(end_at);
                             if distance < stats.splash {
-                                struck.push((
-                                    body.entity,
-                                    stats.damage * 0.4 * (1.0 - distance / stats.splash),
-                                    me,
-                                    0.0,
-                                    crate::player::part::BLAST,
-                                ));
+                                struck.push((body.entity, stats.damage * 0.4 * (1.0 - distance / stats.splash), me, 0.0, crate::player::part::BLAST));
                             }
                         }
                     }
@@ -833,8 +544,7 @@ pub fn fire_weapons(
 
     for (at, radius, team) in resupply {
         for (_, player, transform, _, mut arsenal, health, _) in &mut players {
-            if player.team == team && health.alive() && transform.translation.distance(at) <= radius
-            {
+            if player.team == team && health.alive() && transform.translation.distance(at) <= radius {
                 top_up(&mut arsenal, &content.weapons);
             }
         }
@@ -852,46 +562,22 @@ pub fn fire_weapons(
             crate::player::wound_limb(&mut player, part, damage, attacker.id, &mut fx);
             player.last_hit = part;
             let amount = damage * crate::player::part::multiplier(part);
-            damage_player(
-                &mut health,
-                &mut player,
-                amount,
-                Some((&attacker.name, attacker.team, attacker.id)),
-                &mut state,
-                &mut fx,
-            );
+            damage_player(&mut health, &mut player, amount, Some((&attacker.name, attacker.team, attacker.id)), &mut state, &mut fx);
             player.last_hit = crate::player::part::TORSO;
         }
     }
 }
 
 /// End of one reload step. Shell-by-shell reloads queue the next round.
-fn finish_reload(
-    def: &WeaponDef,
-    stats: &Resolved,
-    weapon: &mut WeaponState,
-    reload: &mut f32,
-    total: &mut f32,
-) {
+fn finish_reload(def: &WeaponDef, stats: &Resolved, weapon: &mut WeaponState, reload: &mut f32, total: &mut f32) {
     let wanted = stats.mag.saturating_sub(weapon.ammo);
-    let per_step = if def.reload_style == ReloadStyle::Single {
-        wanted.min(1)
-    } else {
-        wanted
-    };
-    let loaded = if def.infinite_reserve {
-        per_step
-    } else {
-        per_step.min(weapon.reserve)
-    };
+    let per_step = if def.reload_style == ReloadStyle::Single { wanted.min(1) } else { wanted };
+    let loaded = if def.infinite_reserve { per_step } else { per_step.min(weapon.reserve) };
     weapon.ammo += loaded;
     if !def.infinite_reserve {
         weapon.reserve -= loaded;
     }
-    if def.reload_style == ReloadStyle::Single
-        && weapon.ammo < stats.mag
-        && (def.infinite_reserve || weapon.reserve > 0)
-    {
+    if def.reload_style == ReloadStyle::Single && weapon.ammo < stats.mag && (def.infinite_reserve || weapon.reserve > 0) {
         *reload = stats.reload;
         *total = stats.reload;
     }

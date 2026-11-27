@@ -106,9 +106,7 @@ impl Settings {
         if self.token != 0 {
             return;
         }
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(1, |d| d.as_nanos() as u64);
+        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
         let mut x = time ^ ((std::process::id() as u64) << 32) ^ (self as *const Self as u64);
         // splitmix64 finaliser
         x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
@@ -136,12 +134,7 @@ impl Settings {
             self.last_address
         );
         let text = text + &format!("token={}\n", self.token) + &self.bindings.save_lines();
-        let text = text
-            + &self
-                .classes
-                .iter()
-                .map(|c| format!("class={c}\n"))
-                .collect::<String>();
+        let text = text + &self.classes.iter().map(|c| format!("class={c}\n")).collect::<String>();
         if let Some(dir) = path.parent() {
             let _ = fs::create_dir_all(dir);
         }
@@ -150,8 +143,5 @@ impl Settings {
 }
 
 pub fn sanitize(text: &str, max: usize) -> String {
-    text.chars()
-        .filter(|c| c.is_ascii_graphic() || *c == ' ')
-        .take(max)
-        .collect()
+    text.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(max).collect()
 }

@@ -9,10 +9,7 @@ use crate::{
     player::{Arsenal, Health, Player, PlayerInput, respawn},
     session::{Content, Map},
     sim_dt,
-    state::{
-        CommandEvent, FxEvent, LobbyAction, MatchState, Phase, PlayerCommand, RosterEntry, Rules,
-        SimRng,
-    },
+    state::{CommandEvent, FxEvent, LobbyAction, MatchState, Phase, PlayerCommand, RosterEntry, Rules, SimRng},
 };
 use bevy::prelude::*;
 use oz_core::synth::Sfx;
@@ -23,20 +20,11 @@ pub const MAX_TEAM: u8 = 6;
 /// A full day and night, in seconds.
 const DAY_CYCLE: f32 = 480.0;
 pub const TIME_MODES: [&str; 4] = ["DAY", "DUSK", "NIGHT", "DAY / NIGHT CYCLE"];
-pub const WEATHER_MODES: [&str; 6] = [
-    "MAP'S OWN",
-    "CLEAR",
-    "OVERCAST",
-    "RAIN",
-    "FOG",
-    "RANDOM FRONTS",
-];
+pub const WEATHER_MODES: [&str; 6] = ["MAP'S OWN", "CLEAR", "OVERCAST", "RAIN", "FOG", "RANDOM FRONTS"];
 
 /// Terrorist hunt: how many hostiles hold the map for a squad of `squad`.
 pub fn hunt_hostiles(rules: &Rules, squad: u8) -> usize {
-    ((14.0 + 6.0 * squad as f32) * rules.difficulty)
-        .round()
-        .clamp(8.0, 50.0) as usize
+    ((14.0 + 6.0 * squad as f32) * rules.difficulty).round().clamp(8.0, 50.0) as usize
 }
 
 /// Respawns the squad shares in a terrorist hunt.
@@ -44,11 +32,7 @@ pub const HUNT_LIVES: u16 = 5;
 
 /// A guard post for a hostile: somewhere to stand on the far side of the map from the
 /// squad's base - in the streets, in a building, or up on an upper floor.
-pub fn hunt_post(
-    map: &crate::session::Map,
-    statics: &oz_core::collide::StaticWorld,
-    rng: &mut SimRng,
-) -> Vec3 {
+pub fn hunt_post(map: &crate::session::Map, statics: &oz_core::collide::StaticWorld, rng: &mut SimRng) -> Vec3 {
     let base = map.team_spawns[0].first().copied().unwrap_or(map.spawn);
     let mut fallback = None;
     for _ in 0..80 {
@@ -85,32 +69,20 @@ pub fn update_roster(
 ) {
     let pvp = rules.is_some_and(|r| r.pvp);
     for id in std::mem::take(&mut state.credits) {
-        if let Some((mut player, _, _, mut arsenal, _)) =
-            players.iter_mut().find(|(p, ..)| p.id == id)
-        {
+        if let Some((mut player, _, _, mut arsenal, _)) = players.iter_mut().find(|(p, ..)| p.id == id) {
             player.kills += 1;
             if pvp {
                 player.streak += 1;
                 let chosen = player.streaks;
-                if let Some(def) = crate::killstreak::STREAKS
-                    .iter()
-                    .find(|s| s.kills == player.streak && chosen.contains(&s.id))
-                {
+                if let Some(def) = crate::killstreak::STREAKS.iter().find(|s| s.kills == player.streak && chosen.contains(&s.id)) {
                     crate::killstreak::push(&mut player.rewards, def.id);
-                    fx.write(FxEvent::Streak {
-                        player: id,
-                        reward: def.id,
-                    });
+                    fx.write(FxEvent::Streak { player: id, reward: def.id });
                 }
             }
             // Scavengers pull spare rounds off whoever they drop.
-            if matches!(
-                crate::player::perk(&content, &player),
-                Some(oz_core::content::PerkEffect::Scavenger)
-            ) {
+            if matches!(crate::player::perk(&content, &player), Some(oz_core::content::PerkEffect::Scavenger)) {
                 let index = arsenal.current as usize;
-                if let (Some(state), Some(def)) =
-                    (arsenal.weapons.get_mut(index), content.weapons.get(index))
+                if let (Some(state), Some(def)) = (arsenal.weapons.get_mut(index), content.weapons.get(index))
                     && !def.infinite_reserve
                 {
                     state.reserve = state.reserve.saturating_add(def.mag.max(1));
@@ -131,10 +103,7 @@ pub fn update_roster(
             deaths: p.deaths,
             ping: p.ping,
             weapon: input.weapon,
-            parts: arsenal
-                .weapons
-                .get(input.weapon as usize)
-                .map_or([0; oz_core::arsenal::SLOT_COUNT], |w| w.equipped),
+            parts: arsenal.weapons.get(input.weapon as usize).map_or([0; oz_core::arsenal::SLOT_COUNT], |w| w.equipped),
         })
         .collect();
     roster.sort_by_key(|entry| (entry.team, entry.bot, entry.id));
@@ -171,37 +140,18 @@ pub fn fill_teams(
     // Ids handed out this frame are not in the query yet, so track them too.
     let mut taken: Vec<u8> = players.iter().map(|(_, player, _)| player.id).collect();
     for team in 0..2u8 {
-        let wanted = if rules.hunt && team == 1 {
-            hunt_hostiles(&rules, squad)
-        } else {
-            squad as usize
-        };
-        let members: Vec<_> = players
-            .iter()
-            .filter(|(_, player, _)| player.team == team)
-            .collect();
+        let wanted = if rules.hunt && team == 1 { hunt_hostiles(&rules, squad) } else { squad as usize };
+        let members: Vec<_> = players.iter().filter(|(_, player, _)| player.team == team).collect();
         if members.len() < wanted {
             if let Some(id) = (FIRST_BOT_ID..=254).find(|id| !taken.contains(id)) {
                 taken.push(id);
-                let bot = spawn_bot(
-                    &mut commands,
-                    &mut ids,
-                    &content,
-                    &rules,
-                    &map,
-                    &mut rng,
-                    id,
-                    team,
-                );
+                let bot = spawn_bot(&mut commands, &mut ids, &content, &rules, &map, &mut rng, id, team);
                 if rules.hunt && team == 1 {
                     // A hostile: a sentry at its own post.
                     let post = hunt_post(&map, &statics, &mut rng);
                     let yaw = rng.0.range(0.0, std::f32::consts::TAU);
                     let brain = Bot::sentry(post);
-                    commands.entity(bot).insert((
-                        brain,
-                        Transform::from_translation(post).with_rotation(Quat::from_rotation_y(yaw)),
-                    ));
+                    commands.entity(bot).insert((brain, Transform::from_translation(post).with_rotation(Quat::from_rotation_y(yaw))));
                 }
             }
         } else if members.len() > wanted {
@@ -222,14 +172,7 @@ pub fn run_versus(
     map: Res<Map>,
     mut state: ResMut<MatchState>,
     mut orders: EventReader<CommandEvent>,
-    mut players: Query<(
-        &mut Player,
-        &mut Health,
-        &mut Transform,
-        &mut Arsenal,
-        &mut PlayerInput,
-        Option<&Bot>,
-    )>,
+    mut players: Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput, Option<&Bot>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let dt = sim_dt(&time);
@@ -248,60 +191,34 @@ pub fn run_versus(
         let host = order.player == 0;
         match action {
             LobbyAction::ToggleReady => {
-                if let Some((mut player, ..)) =
-                    players.iter_mut().find(|(p, ..)| p.id == order.player)
-                {
+                if let Some((mut player, ..)) = players.iter_mut().find(|(p, ..)| p.id == order.player) {
                     player.ready = !player.ready;
                 }
             }
             LobbyAction::Start if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
                 state.countdown = COUNTDOWN;
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::UiAccept,
-                    at: None,
-                });
+                fx.write(FxEvent::Sound { sfx: Sfx::UiAccept, at: None });
             }
             LobbyAction::SwitchTeam if state.phase == Phase::Lobby => {
-                let humans_on = |team: u8,
-                                 players: &Query<(
-                    &mut Player,
-                    &mut Health,
-                    &mut Transform,
-                    &mut Arsenal,
-                    &mut PlayerInput,
-                    Option<&Bot>,
-                )>| {
-                    players
-                        .iter()
-                        .filter(|(p, .., bot)| p.team == team && bot.is_none())
-                        .count()
+                let humans_on = |team: u8, players: &Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput, Option<&Bot>)>| {
+                    players.iter().filter(|(p, .., bot)| p.team == team && bot.is_none()).count()
                 };
-                if let Some(current) = players
-                    .iter()
-                    .find(|(p, ..)| p.id == order.player)
-                    .map(|(p, ..)| p.team)
-                    .filter(|_| !rules.hunt)
-                {
+                if let Some(current) = players.iter().find(|(p, ..)| p.id == order.player).map(|(p, ..)| p.team).filter(|_| !rules.hunt) {
                     let other = 1 - current.min(1);
                     if humans_on(other, &players) < state.team_size as usize
-                        && let Some((mut player, _, mut transform, ..)) =
-                            players.iter_mut().find(|(p, ..)| p.id == order.player)
+                        && let Some((mut player, _, mut transform, ..)) = players.iter_mut().find(|(p, ..)| p.id == order.player)
                     {
                         player.team = other;
-                        transform.translation =
-                            crate::player::spawn_point(&map, player.id, Some(other));
+                        transform.translation = crate::player::spawn_point(&map, player.id, Some(other));
                     }
                 }
             }
             LobbyAction::TimeOfDay(step) if host && state.phase == Phase::Lobby => {
-                state.time_mode = (state.time_mode as i32 + step as i32)
-                    .rem_euclid(TIME_MODES.len() as i32) as u8;
+                state.time_mode = (state.time_mode as i32 + step as i32).rem_euclid(TIME_MODES.len() as i32) as u8;
                 state.clock = 0.0;
             }
             LobbyAction::Weather(step) if host && state.phase == Phase::Lobby => {
-                state.weather_mode = (state.weather_mode as i32 + step as i32)
-                    .rem_euclid(WEATHER_MODES.len() as i32)
-                    as u8;
+                state.weather_mode = (state.weather_mode as i32 + step as i32).rem_euclid(WEATHER_MODES.len() as i32) as u8;
                 state.weather = match state.weather_mode {
                     0 | 5 => rules.recipe.weather,
                     n => oz_core::worldgen::Weather::ALL[(n - 1) as usize],
@@ -325,10 +242,7 @@ pub fn run_versus(
             let before = state.countdown.ceil();
             state.countdown -= dt;
             if state.countdown.ceil() < before && state.countdown > 0.0 {
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::UiMove,
-                    at: None,
-                });
+                fx.write(FxEvent::Sound { sfx: Sfx::UiMove, at: None });
             }
             if state.countdown <= 0.0 {
                 state.countdown = 0.0;
@@ -338,44 +252,22 @@ pub fn run_versus(
                 state.clock = 0.0;
                 state.timer = 60.0;
                 state.lives = HUNT_LIVES;
-                for (mut player, mut health, mut transform, mut arsenal, mut input, bot) in
-                    &mut players
-                {
+                for (mut player, mut health, mut transform, mut arsenal, mut input, bot) in &mut players {
                     player.kills = 0;
                     player.deaths = 0;
                     player.ready = false;
-                    respawn(
-                        &content,
-                        &map,
-                        &rules,
-                        &state,
-                        &mut player,
-                        &mut health,
-                        &mut transform,
-                        &mut arsenal,
-                        &mut input,
-                    );
+                    respawn(&content, &map, &rules, &state, &mut player, &mut health, &mut transform, &mut arsenal, &mut input);
                     // Hostiles start back at their posts.
                     if let Some(bot) = bot.filter(|b| b.sentry) {
                         transform.translation = bot.post;
                     }
                 }
-                fx.write(FxEvent::notice(if rules.hunt {
-                    "CLEAR THE MAP"
-                } else {
-                    "FIGHT"
-                }));
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::Horn,
-                    at: None,
-                });
+                fx.write(FxEvent::notice(if rules.hunt { "CLEAR THE MAP" } else { "FIGHT" }));
+                fx.write(FxEvent::Sound { sfx: Sfx::Horn, at: None });
             }
         }
         Phase::Live if rules.hunt => {
-            let hostiles = players
-                .iter()
-                .filter(|(p, h, ..)| p.team == 1 && h.alive())
-                .count();
+            let hostiles = players.iter().filter(|(p, h, ..)| p.team == 1 && h.alive()).count();
             let posted = players.iter().filter(|(p, ..)| p.team == 1).count();
             let squad_up = players.iter().any(|(p, h, ..)| p.team == 0 && h.alive());
             state.hostiles = hostiles as u16;
@@ -391,10 +283,7 @@ pub fn run_versus(
                 state.winner = winner;
                 state.timer = POST_MATCH;
                 fx.write(FxEvent::notice(line));
-                fx.write(FxEvent::Sound {
-                    sfx: if winner == 0 { Sfx::Dawn } else { Sfx::Alarm },
-                    at: None,
-                });
+                fx.write(FxEvent::Sound { sfx: if winner == 0 { Sfx::Dawn } else { Sfx::Alarm }, at: None });
             }
         }
         Phase::Live => {
@@ -402,9 +291,7 @@ pub fn run_versus(
             if state.weather_mode == 5 {
                 state.timer -= dt;
                 if state.timer <= 0.0 {
-                    let seed = (state.clock * 1000.0) as u64
-                        ^ (state.scores[0] as u64 * 31)
-                        ^ (state.scores[1] as u64 * 97);
+                    let seed = (state.clock * 1000.0) as u64 ^ (state.scores[0] as u64 * 31) ^ (state.scores[1] as u64 * 97);
                     let next = oz_core::worldgen::Weather::ALL[(seed % 4) as usize];
                     state.timer = 70.0 + (seed % 80) as f32;
                     if next != state.weather {
@@ -426,10 +313,7 @@ pub fn run_versus(
                     state.timer = POST_MATCH;
                     let name = ["TEAL", "CORAL"][team];
                     fx.write(FxEvent::notice(format!("TEAM {name} WINS")));
-                    fx.write(FxEvent::Sound {
-                        sfx: Sfx::Dawn,
-                        at: None,
-                    });
+                    fx.write(FxEvent::Sound { sfx: Sfx::Dawn, at: None });
                     break;
                 }
             }
@@ -439,20 +323,8 @@ pub fn run_versus(
             if state.timer <= 0.0 {
                 // Back to the lobby with everyone alive at their base.
                 state.phase = Phase::Lobby;
-                for (mut player, mut health, mut transform, mut arsenal, mut input, _) in
-                    &mut players
-                {
-                    respawn(
-                        &content,
-                        &map,
-                        &rules,
-                        &state,
-                        &mut player,
-                        &mut health,
-                        &mut transform,
-                        &mut arsenal,
-                        &mut input,
-                    );
+                for (mut player, mut health, mut transform, mut arsenal, mut input, _) in &mut players {
+                    respawn(&content, &map, &rules, &state, &mut player, &mut health, &mut transform, &mut arsenal, &mut input);
                 }
             }
         }
@@ -469,9 +341,6 @@ mod tests {
         assert_eq!(team_for_newcomer([(0, false)].into_iter()), 1);
         assert_eq!(team_for_newcomer([(0, false), (1, false)].into_iter()), 0);
         // Bots do not count: they make room.
-        assert_eq!(
-            team_for_newcomer([(0, false), (1, true), (1, true)].into_iter()),
-            1
-        );
+        assert_eq!(team_for_newcomer([(0, false), (1, true), (1, true)].into_iter()), 1);
     }
 }

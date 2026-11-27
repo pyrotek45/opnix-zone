@@ -75,9 +75,7 @@ impl LagHistory {
 
     /// Where `entity` was at `time`, interpolated between recorded frames.
     pub fn pose_at(&self, time: f32, entity: Entity) -> Option<Pose> {
-        let find = |frame: &(f32, Vec<Pose>, Vec<GridItem>)| {
-            frame.1.iter().find(|p| p.entity == entity).copied()
-        };
+        let find = |frame: &(f32, Vec<Pose>, Vec<GridItem>)| frame.1.iter().find(|p| p.entity == entity).copied();
         let after = self.frames.iter().position(|(t, ..)| *t >= time);
         match after {
             None => self.frames.back().and_then(find),
@@ -92,14 +90,7 @@ impl LagHistory {
                         if pa.feet.distance(pb.feet) > 4.0 {
                             return Some(if k < 0.5 { pa } else { pb });
                         }
-                        Some(Pose {
-                            feet: pa.feet.lerp(pb.feet, k),
-                            stance: if k < 0.5 { pa.stance } else { pb.stance },
-                            yaw: pb.yaw,
-                            alive: pa.alive && pb.alive,
-                            lean: pa.lean.lerp(pb.lean, k),
-                            ..pb
-                        })
+                        Some(Pose { feet: pa.feet.lerp(pb.feet, k), stance: if k < 0.5 { pa.stance } else { pb.stance }, yaw: pb.yaw, alive: pa.alive && pb.alive, lean: pa.lean.lerp(pb.lean, k), ..pb })
                     }
                     (one, other) => one.or(other),
                 }
@@ -109,18 +100,8 @@ impl LagHistory {
 
     /// The first enemy a ray hits, with every enemy where it was at `time`.
     /// `None` when nothing was recorded for then (fall back to the live grid).
-    pub fn enemy_raycast(
-        &self,
-        time: f32,
-        origin: Vec3,
-        dir: Vec3,
-        max: f32,
-    ) -> Option<Option<(f32, GridItem)>> {
-        let index = self
-            .frames
-            .iter()
-            .position(|(t, ..)| *t >= time)
-            .unwrap_or(self.frames.len().saturating_sub(1));
+    pub fn enemy_raycast(&self, time: f32, origin: Vec3, dir: Vec3, max: f32) -> Option<Option<(f32, GridItem)>> {
+        let index = self.frames.iter().position(|(t, ..)| *t >= time).unwrap_or(self.frames.len().saturating_sub(1));
         let (_, _, enemies) = self.frames.get(index)?;
         if enemies.is_empty() {
             return None;
@@ -128,11 +109,7 @@ impl LagHistory {
         Some(
             enemies
                 .iter()
-                .filter_map(|item| {
-                    ray_sphere(origin, dir, item.pos, item.radius)
-                        .filter(|d| *d <= max)
-                        .map(|d| (d, *item))
-                })
+                .filter_map(|item| ray_sphere(origin, dir, item.pos, item.radius).filter(|d| *d <= max).map(|d| (d, *item)))
                 .min_by(|a, b| a.0.total_cmp(&b.0)),
         )
     }
@@ -156,25 +133,12 @@ pub fn record_history(
     let poses = players
         .iter()
         .map(|(entity, transform, input, health, remote)| {
-            let (feet, yaw) = remote
-                .and_then(|r| r.latest())
-                .unwrap_or((transform.translation, input.yaw));
-            Pose {
-                entity,
-                feet,
-                stance: input.stance,
-                yaw,
-                alive: health.alive(),
-                lean: crate::player::lean_offset(&statics, feet, &PlayerInput { yaw, ..*input }),
-            }
+            let (feet, yaw) = remote.and_then(|r| r.latest()).unwrap_or((transform.translation, input.yaw));
+            Pose { entity, feet, stance: input.stance, yaw, alive: health.alive(), lean: crate::player::lean_offset(&statics, feet, &PlayerInput { yaw, ..*input }) }
         })
         .collect();
     // Enemies are only worth remembering when someone is shooting at them from across the network.
-    let enemies = if link.remote_players() > 0 {
-        grid.items()
-    } else {
-        Vec::new()
-    };
+    let enemies = if link.remote_players() > 0 { grid.items() } else { Vec::new() };
     history.record_with_enemies(time.elapsed_secs(), poses, enemies);
 }
 
@@ -186,14 +150,7 @@ mod tests {
     fn rewinds_between_frames_and_respects_teleports() {
         let mut world = World::new();
         let e = world.spawn_empty().id();
-        let pose = |x: f32| Pose {
-            entity: e,
-            feet: Vec3::new(x, 0.0, 0.0),
-            stance: 0,
-            yaw: 0.0,
-            alive: true,
-            lean: Vec3::ZERO,
-        };
+        let pose = |x: f32| Pose { entity: e, feet: Vec3::new(x, 0.0, 0.0), stance: 0, yaw: 0.0, alive: true, lean: Vec3::ZERO };
         let mut history = LagHistory::default();
         for i in 0..=10 {
             history.record(i as f32 * 0.1, vec![pose(i as f32)]);
@@ -216,35 +173,13 @@ mod tests {
         // An enemy running along +x at 10 m/s.
         for i in 0..=10 {
             let t = i as f32 * 0.1;
-            history.record_with_enemies(
-                t,
-                Vec::new(),
-                vec![GridItem {
-                    entity: e,
-                    pos: Vec3::new(t * 10.0, 1.0, -20.0),
-                    radius: 0.6,
-                }],
-            );
+            history.record_with_enemies(t, Vec::new(), vec![GridItem { entity: e, pos: Vec3::new(t * 10.0, 1.0, -20.0), radius: 0.6 }]);
         }
         // Aimed at where it was 0.3 s ago: a hit then, a miss now.
         let (origin, dir) = (Vec3::new(7.0, 1.0, 0.0), Vec3::NEG_Z);
-        assert!(
-            history
-                .enemy_raycast(0.7, origin, dir, 50.0)
-                .unwrap()
-                .is_some_and(|(_, item)| item.entity == e)
-        );
-        assert!(
-            history
-                .enemy_raycast(1.0, origin, dir, 50.0)
-                .unwrap()
-                .is_none()
-        );
+        assert!(history.enemy_raycast(0.7, origin, dir, 50.0).unwrap().is_some_and(|(_, item)| item.entity == e));
+        assert!(history.enemy_raycast(1.0, origin, dir, 50.0).unwrap().is_none());
         // Nothing recorded (no guests): fall back to the live grid.
-        assert!(
-            LagHistory::default()
-                .enemy_raycast(0.5, origin, dir, 50.0)
-                .is_none()
-        );
+        assert!(LagHistory::default().enemy_raycast(0.5, origin, dir, 50.0).is_none());
     }
 }

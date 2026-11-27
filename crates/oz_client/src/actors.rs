@@ -38,13 +38,7 @@ impl Plugin for ActorsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Models>()
             .add_systems(OnEnter(MatchPhase::Active), bake_models)
-            .add_systems(
-                Update,
-                (attach, track_motion, animate_legs, animate_parts, size_ore)
-                    .chain()
-                    .in_set(ClientSet::Present)
-                    .run_if(in_state(MatchPhase::Active)),
-            );
+            .add_systems(Update, (attach, track_motion, animate_legs, animate_parts, size_ore).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -63,32 +57,12 @@ fn ore_model(ore: Ore) -> BlockModel {
         .shard(glow, [-0.36, 0.95, -0.2], [0.09, 0.15, 0.09])
 }
 
-fn bake_models(
-    content: Res<Content>,
-    art: Res<Art>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut models: ResMut<Models>,
-) {
+fn bake_models(content: Res<Content>, art: Res<Art>, mut meshes: ResMut<Assets<Mesh>>, mut models: ResMut<Models>) {
     *models = Models {
-        enemies: content
-            .enemies
-            .iter()
-            .map(|e| art.bake(&e.model, &mut meshes))
-            .collect(),
-        structures: content
-            .structures
-            .iter()
-            .map(|s| art.bake(&s.model, &mut meshes))
-            .collect(),
-        stations: content
-            .stations
-            .iter()
-            .map(|s| art.bake(&s.model, &mut meshes))
-            .collect(),
-        ore: Ore::ALL
-            .into_iter()
-            .map(|ore| art.bake(&ore_model(ore), &mut meshes))
-            .collect(),
+        enemies: content.enemies.iter().map(|e| art.bake(&e.model, &mut meshes)).collect(),
+        structures: content.structures.iter().map(|s| art.bake(&s.model, &mut meshes)).collect(),
+        stations: content.stations.iter().map(|s| art.bake(&s.model, &mut meshes)).collect(),
+        ore: Ore::ALL.into_iter().map(|ore| art.bake(&ore_model(ore), &mut meshes)).collect(),
     };
 }
 
@@ -107,38 +81,20 @@ fn attach(
 ) {
     for entity in &mines {
         let look = oz_core::content::ShotLook::Mine;
-        commands
-            .entity(entity)
-            .insert(Visibility::Inherited)
-            .with_children(|parent| {
-                parent.spawn((
-                    Mesh3d(art.primitive(Shape::Shard)),
-                    MeshMaterial3d(art.paint(look.paint())),
-                    Transform::from_scale(Vec3::from_array(look.scale())),
-                    NotShadowCaster,
-                ));
-            });
+        commands.entity(entity).insert(Visibility::Inherited).with_children(|parent| {
+            parent.spawn((Mesh3d(art.primitive(Shape::Shard)), MeshMaterial3d(art.paint(look.paint())), Transform::from_scale(Vec3::from_array(look.scale())), NotShadowCaster));
+        });
     }
     for (entity, enemy, transform) in &enemies {
-        let Some(baked) = models.enemies.get(enemy.kind as usize) else {
-            continue;
-        };
+        let Some(baked) = models.enemies.get(enemy.kind as usize) else { continue };
         art.spawn(&mut commands, entity, baked);
         let stride = content.enemies[enemy.kind as usize].radius * 0.3;
-        commands.entity(entity).insert(Motion {
-            last: transform.translation,
-            stride,
-            counter: enemy.attacks,
-            ..default()
-        });
+        commands.entity(entity).insert(Motion { last: transform.translation, stride, counter: enemy.attacks, ..default() });
     }
     for (entity, structure) in &structures {
         if let Some(baked) = models.structures.get(structure.kind as usize) {
             art.spawn(&mut commands, entity, baked);
-            commands.entity(entity).insert(Motion {
-                counter: structure.shots,
-                ..default()
-            });
+            commands.entity(entity).insert(Motion { counter: structure.shots, ..default() });
         }
     }
     for (entity, station) in &stations {
@@ -150,34 +106,25 @@ fn attach(
         art.spawn(&mut commands, entity, &models.ore[node.ore as usize]);
     }
     for (entity, shot) in &shots {
-        commands
-            .entity(entity)
-            .insert(Visibility::Inherited)
-            .with_children(|parent| {
-                parent.spawn((
-                    Mesh3d(art.primitive(Shape::Shard)),
-                    MeshMaterial3d(art.paint(shot.look.paint())),
-                    Transform::from_scale(Vec3::from_array(shot.look.scale())),
-                    NotShadowCaster,
-                ));
-            });
+        commands.entity(entity).insert(Visibility::Inherited).with_children(|parent| {
+            parent.spawn((
+                Mesh3d(art.primitive(Shape::Shard)),
+                MeshMaterial3d(art.paint(shot.look.paint())),
+                Transform::from_scale(Vec3::from_array(shot.look.scale())),
+                NotShadowCaster,
+            ));
+        });
     }
 }
 
-fn track_motion(
-    time: Res<Time>,
-    mut roots: Query<(&Transform, &mut Motion, Option<&Enemy>, Option<&Structure>)>,
-) {
+fn track_motion(time: Res<Time>, mut roots: Query<(&Transform, &mut Motion, Option<&Enemy>, Option<&Structure>)>) {
     let dt = time.delta_secs().max(1e-4);
     for (transform, mut motion, enemy, structure) in &mut roots {
         let moved = (transform.translation - motion.last).xz().length();
         motion.last = transform.translation;
         motion.phase += moved / (motion.stride.max(0.05) * 9.0);
         motion.kick = (motion.kick - dt * 5.0).max(0.0);
-        let counter = enemy
-            .map(|e| e.attacks)
-            .or(structure.map(|s| s.shots))
-            .unwrap_or(0);
+        let counter = enemy.map(|e| e.attacks).or(structure.map(|s| s.shots)).unwrap_or(0);
         if counter != motion.counter {
             motion.counter = counter;
             motion.kick = 1.0;
@@ -188,38 +135,24 @@ fn track_motion(
 /// Each leg group swings as a unit: forward and up, then back along the ground.
 fn animate_legs(roots: Query<&Motion>, mut legs: Query<(&ChildOf, &LegGroup, &mut Transform)>) {
     for (child_of, group, mut transform) in &mut legs {
-        let Ok(motion) = roots.get(child_of.parent()) else {
-            continue;
-        };
+        let Ok(motion) = roots.get(child_of.parent()) else { continue };
         let cycle = motion.phase * std::f32::consts::TAU + group.0 as f32 * std::f32::consts::PI;
-        let target = Vec3::new(
-            0.0,
-            cycle.cos().max(0.0) * motion.stride * 0.6,
-            cycle.sin() * motion.stride,
-        );
+        let target = Vec3::new(0.0, cycle.cos().max(0.0) * motion.stride * 0.6, cycle.sin() * motion.stride);
         if transform.translation.distance_squared(target) > 1e-6 {
             transform.translation = target;
         }
     }
 }
 
-fn animate_parts(
-    time: Res<Time>,
-    roots: Query<&Motion>,
-    mut parts: Query<(&ChildOf, &AnimPart, &mut Transform)>,
-) {
+fn animate_parts(time: Res<Time>, roots: Query<&Motion>, mut parts: Query<(&ChildOf, &AnimPart, &mut Transform)>) {
     let t = time.elapsed_secs();
     for (child_of, part, mut transform) in &mut parts {
         match part.anim {
-            Anim::Spin { speed } => {
-                transform.rotation = part.base.rotation * Quat::from_rotation_y(t * speed)
-            }
+            Anim::Spin { speed } => transform.rotation = part.base.rotation * Quat::from_rotation_y(t * speed),
             Anim::Pulse => transform.scale = part.base.scale * (1.0 + 0.14 * (t * 4.0).sin()),
             Anim::Bob => transform.translation.y = part.base.translation.y + (t * 2.0).sin() * 0.12,
             Anim::Recoil => {
-                let kick = roots
-                    .get(child_of.parent())
-                    .map_or(0.0, |motion| motion.kick);
+                let kick = roots.get(child_of.parent()).map_or(0.0, |motion| motion.kick);
                 transform.translation = part.base.translation + Vec3::Z * 0.22 * kick;
             }
             Anim::None | Anim::Leg { .. } | Anim::Mag | Anim::Slide => {}

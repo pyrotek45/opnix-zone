@@ -71,24 +71,14 @@ impl Nav {
         for z in 0..side {
             for x in 0..side {
                 start.push(floor.len() as u32);
-                let p = Vec2::new(
-                    -half + (x as f32 + 0.5) * CELL,
-                    -half + (z as f32 + 0.5) * CELL,
-                );
+                let p = Vec2::new(-half + (x as f32 + 0.5) * CELL, -half + (z as f32 + 0.5) * CELL);
                 if !map.walkable(p.x, p.y) {
                     continue;
                 }
-                let terrain = map
-                    .height(p.x, p.y)
-                    .max(map.water - oz_core::worldgen::WADE_DEPTH);
+                let terrain = map.height(p.x, p.y).max(map.water - oz_core::worldgen::WADE_DEPTH);
                 heights.clear();
                 heights.push(terrain);
-                heights.extend(
-                    statics
-                        .tops_at(p.x, p.y)
-                        .into_iter()
-                        .filter(|top| *top > terrain - 0.05),
-                );
+                heights.extend(statics.tops_at(p.x, p.y).into_iter().filter(|top| *top > terrain - 0.05));
                 heights.sort_by(f32::total_cmp);
                 // Surfaces closer together than a step are one surface: you stand on the higher.
                 let mut merged: Vec<f32> = Vec::new();
@@ -107,13 +97,7 @@ impl Nav {
             }
         }
         start.push(floor.len() as u32);
-        Nav {
-            half,
-            side,
-            start,
-            floor,
-            column,
-        }
+        Nav { half, side, start, floor, column }
     }
 
     pub fn walkable_cells(&self) -> usize {
@@ -123,8 +107,7 @@ impl Nav {
     fn column_at(&self, p: Vec2) -> Option<usize> {
         let x = ((p.x + self.half) / CELL).floor();
         let z = ((p.y + self.half) / CELL).floor();
-        (x >= 0.0 && z >= 0.0 && (x as usize) < self.side && (z as usize) < self.side)
-            .then(|| z as usize * self.side + x as usize)
+        (x >= 0.0 && z >= 0.0 && (x as usize) < self.side && (z as usize) < self.side).then(|| z as usize * self.side + x as usize)
     }
 
     fn nodes(&self, column: usize) -> std::ops::Range<usize> {
@@ -133,28 +116,17 @@ impl Nav {
 
     fn center(&self, node: usize) -> Vec3 {
         let c = self.column[node] as usize;
-        Vec3::new(
-            -self.half + ((c % self.side) as f32 + 0.5) * CELL,
-            self.floor[node],
-            -self.half + ((c / self.side) as f32 + 0.5) * CELL,
-        )
+        Vec3::new(-self.half + ((c % self.side) as f32 + 0.5) * CELL, self.floor[node], -self.half + ((c / self.side) as f32 + 0.5) * CELL)
     }
 
     /// The node in `column` you can step to from height `from`, if any.
     fn step_into(&self, column: usize, from: f32) -> Option<usize> {
-        self.nodes(column)
-            .filter(|n| (self.floor[*n] - from).abs() <= MAX_RISE)
-            .min_by(|a, b| {
-                (self.floor[*a] - from)
-                    .abs()
-                    .total_cmp(&(self.floor[*b] - from).abs())
-            })
+        self.nodes(column).filter(|n| (self.floor[*n] - from).abs() <= MAX_RISE).min_by(|a, b| (self.floor[*a] - from).abs().total_cmp(&(self.floor[*b] - from).abs()))
     }
 
     /// Is there a surface to stand on near this point (at about its height)?
     pub fn walkable(&self, p: Vec3) -> bool {
-        self.column_at(p.xz())
-            .is_some_and(|c| self.nodes(c).any(|n| (self.floor[n] - p.y).abs() < 1.0))
+        self.column_at(p.xz()).is_some_and(|c| self.nodes(c).any(|n| (self.floor[n] - p.y).abs() < 1.0))
     }
 
     /// The closest node within a few metres, preferring the same floor.
@@ -165,12 +137,7 @@ impl Nav {
             let at = self.center(n);
             let dy = at.y - p.y;
             // Being under the point is fine (we fall); being well above it is not.
-            at.xz().distance_squared(p.xz())
-                + if dy > 0.6 {
-                    dy * dy * 25.0
-                } else {
-                    dy * dy * 2.0
-                }
+            at.xz().distance_squared(p.xz()) + if dy > 0.6 { dy * dy * 25.0 } else { dy * dy * 2.0 }
         };
         let mut best: Option<(f32, usize)> = None;
         for radius in 0..12i32 {
@@ -202,16 +169,12 @@ impl Nav {
     /// Can you walk straight from `a` to `b` (staying on walkable ground, stepping
     /// only up and down steps)?
     pub fn line_clear(&self, a: Vec3, b: Vec3) -> bool {
-        let Some(mut node) = self.nearest(a) else {
-            return false;
-        };
+        let Some(mut node) = self.nearest(a) else { return false };
         let span = b.xz() - a.xz();
         let steps = (span.length() / (CELL * 0.35)).ceil().max(1.0) as usize;
         for i in 1..=steps {
             let p = a.xz() + span * (i as f32 / steps as f32);
-            let Some(column) = self.column_at(p) else {
-                return false;
-            };
+            let Some(column) = self.column_at(p) else { return false };
             if self.column[node] as usize == column {
                 continue;
             }
@@ -231,29 +194,17 @@ impl Nav {
         }
         let n = self.floor.len();
         if scratch.stamp.len() != n {
-            *scratch = NavScratch {
-                stamp: vec![0; n],
-                generation: 0,
-                cost: vec![0; n],
-                came: vec![0; n],
-                closed: vec![0; n],
-            };
+            *scratch = NavScratch { stamp: vec![0; n], generation: 0, cost: vec![0; n], came: vec![0; n], closed: vec![0; n] };
         }
         scratch.generation = scratch.generation.wrapping_add(1).max(1);
         let generation = scratch.generation;
         let side = self.side as i32;
         let goal_column = self.column[goal] as usize;
-        let goal_xz = (
-            (goal_column % self.side) as i32,
-            (goal_column / self.side) as i32,
-        );
+        let goal_xz = ((goal_column % self.side) as i32, (goal_column / self.side) as i32);
         let goal_y = self.floor[goal];
         let heuristic = |node: usize| {
             let c = self.column[node] as usize;
-            let (dx, dz) = (
-                ((c % self.side) as i32 - goal_xz.0).unsigned_abs(),
-                ((c / self.side) as i32 - goal_xz.1).unsigned_abs(),
-            );
+            let (dx, dz) = (((c % self.side) as i32 - goal_xz.0).unsigned_abs(), ((c / self.side) as i32 - goal_xz.1).unsigned_abs());
             // Changing floors costs at least the climb.
             let climb = ((self.floor[node] - goal_y).abs() / CELL * STRAIGHT as f32 * 0.5) as u32;
             STRAIGHT * dx.max(dz) + (DIAGONAL - STRAIGHT) * dx.min(dz) + climb
@@ -283,29 +234,15 @@ impl Nav {
             let here = self.floor[current];
             let c = self.column[current] as usize;
             let (cx, cz) = ((c % self.side) as i32, (c / self.side) as i32);
-            for (dx, dz) in [
-                (1, 0),
-                (-1, 0),
-                (0, 1),
-                (0, -1),
-                (1, 1),
-                (1, -1),
-                (-1, 1),
-                (-1, -1),
-            ] {
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                 let (x, z) = (cx + dx, cz + dz);
                 if x < 0 || z < 0 || x >= side || z >= side {
                     continue;
                 }
-                let Some(next) = self.step_into((z * side + x) as usize, here) else {
-                    continue;
-                };
+                let Some(next) = self.step_into((z * side + x) as usize, here) else { continue };
                 let diagonal = dx != 0 && dz != 0;
                 // No cutting corners past walls.
-                if diagonal
-                    && (self.step_into((cz * side + x) as usize, here).is_none()
-                        || self.step_into((z * side + cx) as usize, here).is_none())
-                {
+                if diagonal && (self.step_into((cz * side + x) as usize, here).is_none() || self.step_into((z * side + cx) as usize, here).is_none()) {
                     continue;
                 }
                 let cost = scratch.cost[current] + if diagonal { DIAGONAL } else { STRAIGHT };
@@ -373,45 +310,30 @@ mod tests {
         assert!(nav.walkable_cells() > 5_000);
         let ground = |p: Vec2| Vec3::new(p.x, map.height(p.x, p.y), p.y);
         let (a, b) = (ground(map.team_spawns[0][2]), ground(map.team_spawns[1][2]));
-        let path = nav
-            .path(&mut scratch, a, b)
-            .expect("bases must be connected");
+        let path = nav.path(&mut scratch, a, b).expect("bases must be connected");
         assert!(path.len() >= 2 && path.last().unwrap().xz().distance(b.xz()) < 1.5);
         // Every leg of the smoothed path is walkable in a straight line.
         let mut at = a;
         for p in &path {
-            assert!(
-                nav.line_clear(at, *p) || at.distance(*p) < 1.5,
-                "blocked leg {at:?} -> {p:?}"
-            );
+            assert!(nav.line_clear(at, *p) || at.distance(*p) < 1.5, "blocked leg {at:?} -> {p:?}");
             at = *p;
         }
 
         // A plain wall: the path must go around it.
         let flat = GameMap::generate(WorldRecipe::town(3, Biome::IronShoals));
         let mut walls = StaticWorld::new(flat.recipe.half_extent);
-        walls.add(Aabb::span(
-            Vec3::new(-0.5, 0.0, -20.0),
-            Vec3::new(0.5, 6.0, 20.0),
-        ));
+        walls.add(Aabb::span(Vec3::new(-0.5, 0.0, -20.0), Vec3::new(0.5, 6.0, 20.0)));
         let nav = Nav::build(&flat, &walls);
         let at = |x: f32| Vec3::new(x, flat.height(x, 0.0), 0.0);
         let route = nav.path(&mut scratch, at(-6.0), at(6.0)).unwrap();
-        assert!(
-            route.iter().any(|p| p.z.abs() > 19.0),
-            "path should detour around the wall end: {route:?}"
-        );
+        assert!(route.iter().any(|p| p.z.abs() > 19.0), "path should detour around the wall end: {route:?}");
     }
 
     #[test]
     fn bots_can_cross_the_fixed_maps() {
         use oz_core::worldgen::{Layout, Weather};
         for layout in [Layout::Crossroads, Layout::Dockyard] {
-            let map = GameMap::generate(WorldRecipe::preset(
-                layout,
-                Biome::IronShoals,
-                Weather::Clear,
-            ));
+            let map = GameMap::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear));
             let mut statics = StaticWorld::new(map.recipe.half_extent);
             for aabb in map.solids() {
                 statics.add(aabb);
@@ -420,9 +342,7 @@ mod tests {
             let mut scratch = NavScratch::default();
             let ground = |p: Vec2| Vec3::new(p.x, map.height(p.x, p.y), p.y);
             let (a, b) = (ground(map.team_spawns[0][2]), ground(map.team_spawns[1][2]));
-            let path = nav
-                .path(&mut scratch, a, b)
-                .unwrap_or_else(|| panic!("{layout:?}: the bases are not connected"));
+            let path = nav.path(&mut scratch, a, b).unwrap_or_else(|| panic!("{layout:?}: the bases are not connected"));
             assert!(path.last().unwrap().xz().distance(b.xz()) < 1.5);
         }
     }
@@ -440,9 +360,7 @@ mod tests {
         let upstairs: Vec<Vec3> = (0..nav.floor.len())
             .filter(|n| {
                 let column = nav.nodes(nav.column[*n] as usize);
-                let below = column
-                    .clone()
-                    .any(|m| (nav.floor[*n] - nav.floor[m] - 3.2).abs() < 0.2);
+                let below = column.clone().any(|m| (nav.floor[*n] - nav.floor[m] - 3.2).abs() < 0.2);
                 let above = column.clone().any(|m| nav.floor[m] > nav.floor[*n] + 2.5);
                 below && above
             })
@@ -463,9 +381,6 @@ mod tests {
                 }
             }
         }
-        assert!(
-            reached >= 6,
-            "only {reached} of 12 upstairs spots were reachable"
-        );
+        assert!(reached >= 6, "only {reached} of 12 upstairs spots were reachable");
     }
 }

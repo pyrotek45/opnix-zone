@@ -30,11 +30,7 @@ impl Bind {
         }
     }
 
-    pub fn just_pressed(
-        self,
-        keys: &ButtonInput<KeyCode>,
-        mouse: &ButtonInput<MouseButton>,
-    ) -> bool {
+    pub fn just_pressed(self, keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
         match self {
             Bind::Key(key) => keys.just_pressed(key),
             Bind::Mouse(button) => mouse.just_pressed(button),
@@ -50,19 +46,13 @@ impl Bind {
             Bind::Mouse(MouseButton::Back) => "MOUSE4".into(),
             Bind::Mouse(MouseButton::Forward) => "MOUSE5".into(),
             Bind::Mouse(MouseButton::Other(n)) => format!("MOUSE{}", n as u32 + 6),
-            Bind::Key(key) => KEYS
-                .iter()
-                .find(|(code, _)| *code == key)
-                .map_or("?".into(), |(_, name)| (*name).into()),
+            Bind::Key(key) => KEYS.iter().find(|(code, _)| *code == key).map_or("?".into(), |(_, name)| (*name).into()),
         }
     }
 
     pub fn parse(text: &str) -> Option<Bind> {
         let text = text.trim();
-        if let Some(n) = text
-            .strip_prefix("MOUSE")
-            .and_then(|n| n.parse::<u16>().ok())
-        {
+        if let Some(n) = text.strip_prefix("MOUSE").and_then(|n| n.parse::<u16>().ok()) {
             return Some(Bind::Mouse(match n {
                 1 => MouseButton::Left,
                 2 => MouseButton::Right,
@@ -72,9 +62,7 @@ impl Bind {
                 n => MouseButton::Other(n.saturating_sub(6)),
             }));
         }
-        KEYS.iter()
-            .find(|(_, name)| *name == text)
-            .map(|(code, _)| Bind::Key(*code))
+        KEYS.iter().find(|(_, name)| *name == text).map(|(code, _)| Bind::Key(*code))
     }
 }
 
@@ -341,19 +329,13 @@ impl Bindings {
         let Some(id) = key.strip_prefix("bind.") else {
             return;
         };
-        if let (Some(action), Some(bind)) = (
-            Action::ALL.iter().find(|a| a.id() == id),
-            Bind::parse(value),
-        ) {
+        if let (Some(action), Some(bind)) = (Action::ALL.iter().find(|a| a.id() == id), Bind::parse(value)) {
             self.0[*action as usize] = bind;
         }
     }
 
     pub fn save_lines(&self) -> String {
-        Action::ALL
-            .iter()
-            .map(|a| format!("bind.{}={}\n", a.id(), self.get(*a).name()))
-            .collect()
+        Action::ALL.iter().map(|a| format!("bind.{}={}\n", a.id(), self.get(*a).name())).collect()
     }
 }
 
@@ -369,14 +351,7 @@ pub struct BindingsPlugin;
 
 impl Plugin for BindingsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Capture>().add_systems(
-            Update,
-            (capture, binding_actions)
-                .chain()
-                .in_set(ClientSet::Input)
-                .after(crate::input::ReadDevices)
-                .before(crate::menu::MenuActions),
-        );
+        app.init_resource::<Capture>().add_systems(Update, (capture, binding_actions).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices).before(crate::menu::MenuActions));
     }
 }
 
@@ -400,11 +375,7 @@ fn capture(
         capture.armed = keys.get_pressed().next().is_none() && mouse.get_pressed().next().is_none();
         return;
     }
-    let pressed = keys
-        .get_just_pressed()
-        .next()
-        .map(|k| Bind::Key(*k))
-        .or_else(|| mouse.get_just_pressed().next().map(|m| Bind::Mouse(*m)));
+    let pressed = keys.get_just_pressed().next().map(|k| Bind::Key(*k)).or_else(|| mouse.get_just_pressed().next().map(|m| Bind::Mouse(*m)));
     let Some(bind) = pressed else { return };
     capture.action = None;
     dirty.0 = true;
@@ -417,20 +388,12 @@ fn capture(
     }
 }
 
-fn binding_actions(
-    mut events: EventReader<ActEvent>,
-    mut capture: ResMut<Capture>,
-    mut settings: ResMut<Settings>,
-    mut dirty: ResMut<UiDirty>,
-) {
+fn binding_actions(mut events: EventReader<ActEvent>, mut capture: ResMut<Capture>, mut settings: ResMut<Settings>, mut dirty: ResMut<UiDirty>) {
     for ActEvent(act) in events.read() {
         match act {
             Act::Rebind(index) => {
                 if let Some(action) = Action::ALL.get(*index as usize) {
-                    *capture = Capture {
-                        action: Some(*action),
-                        armed: false,
-                    };
+                    *capture = Capture { action: Some(*action), armed: false };
                     dirty.0 = true;
                 }
             }
@@ -445,75 +408,28 @@ fn binding_actions(
 }
 
 /// The CONTROLS screen: two columns of actions and their keys.
-pub fn build_controls(
-    mut commands: Commands,
-    dirty: Res<UiDirty>,
-    screen: Res<Screen>,
-    settings: Res<Settings>,
-    capture: Res<Capture>,
-    phase: Res<State<MatchPhase>>,
-) {
+pub fn build_controls(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Screen>, settings: Res<Settings>, capture: Res<Capture>, phase: Res<State<MatchPhase>>) {
     if *screen != Screen::Controls || !dirty.0 {
         return;
     }
     let mut order = Order::default();
     let order = &mut order;
     let in_match = *phase.get() == MatchPhase::Active;
-    let mut root = if in_match {
-        ui::root(&mut commands, 0.75)
-    } else {
-        ui::root_left(&mut commands, 0.0)
-    };
+    let mut root = if in_match { ui::root(&mut commands, 0.75) } else { ui::root_left(&mut commands, 0.0) };
     root.with_children(|root| {
         ui::label(root, "CONTROLS", 34.0, ui::TEXT);
         root.spawn(ui::panel(700.0)).with_children(|panel| {
             panel.spawn(ui::row(8.0)).with_children(|grid| {
                 for (index, action) in Action::ALL.iter().enumerate() {
-                    let key = if capture.action == Some(*action) {
-                        "PRESS KEY".to_string()
-                    } else {
-                        settings.bindings.label(*action)
-                    };
-                    ui::sized_button(
-                        grid,
-                        order,
-                        format!("{:<20} {key}", action.title()),
-                        Act::Rebind(index as u8),
-                        None,
-                        Val::Px(320.0),
-                    );
+                    let key = if capture.action == Some(*action) { "PRESS KEY".to_string() } else { settings.bindings.label(*action) };
+                    ui::sized_button(grid, order, format!("{:<20} {key}", action.title()), Act::Rebind(index as u8), None, Val::Px(320.0));
                 }
             });
-            let hint = if capture.action.is_some() {
-                "PRESS ANY KEY OR MOUSE BUTTON.  ESC CANCELS."
-            } else {
-                "CLICK AN ACTION, THEN PRESS ITS NEW KEY. A KEY IN USE SWAPS PLACES."
-            };
-            ui::label(
-                panel,
-                hint,
-                13.0,
-                if capture.action.is_some() {
-                    ui::GOOD
-                } else {
-                    ui::DIM
-                },
-            );
-            ui::label(
-                panel,
-                "1-9 / SCROLL WEAPONS    ESC PAUSE    GAMEPAD: SEE README",
-                13.0,
-                ui::DIM,
-            );
+            let hint = if capture.action.is_some() { "PRESS ANY KEY OR MOUSE BUTTON.  ESC CANCELS." } else { "CLICK AN ACTION, THEN PRESS ITS NEW KEY. A KEY IN USE SWAPS PLACES." };
+            ui::label(panel, hint, 13.0, if capture.action.is_some() { ui::GOOD } else { ui::DIM });
+            ui::label(panel, "1-9 / SCROLL WEAPONS    ESC PAUSE    GAMEPAD: SEE README", 13.0, ui::DIM);
             panel.spawn(ui::row(8.0)).with_children(|row| {
-                ui::sized_button(
-                    row,
-                    order,
-                    "RESET TO DEFAULTS",
-                    Act::ResetBindings,
-                    None,
-                    Val::Px(320.0),
-                );
+                ui::sized_button(row, order, "RESET TO DEFAULTS", Act::ResetBindings, None, Val::Px(320.0));
                 ui::sized_button(row, order, "BACK", Act::Back, None, Val::Px(320.0));
             });
         });
@@ -527,23 +443,10 @@ mod tests {
     #[test]
     fn names_round_trip_and_rebinding_swaps() {
         for (code, _) in KEYS {
-            assert_eq!(
-                Bind::parse(&Bind::Key(*code).name()),
-                Some(Bind::Key(*code))
-            );
+            assert_eq!(Bind::parse(&Bind::Key(*code).name()), Some(Bind::Key(*code)));
         }
-        for button in [
-            MouseButton::Left,
-            MouseButton::Right,
-            MouseButton::Middle,
-            MouseButton::Back,
-            MouseButton::Forward,
-            MouseButton::Other(3),
-        ] {
-            assert_eq!(
-                Bind::parse(&Bind::Mouse(button).name()),
-                Some(Bind::Mouse(button))
-            );
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle, MouseButton::Back, MouseButton::Forward, MouseButton::Other(3)] {
+            assert_eq!(Bind::parse(&Bind::Mouse(button).name()), Some(Bind::Mouse(button)));
         }
         let mut binds = Bindings::default();
         binds.set(Action::Jump, Bind::Key(KeyCode::KeyC));

@@ -152,15 +152,8 @@ pub struct PlayerRobot;
 #[derive(Component)]
 pub struct OwnRobot;
 
-fn show_own_robot(
-    view: Res<crate::view::ViewState>,
-    mut robot: Query<&mut Visibility, With<OwnRobot>>,
-) {
-    let wanted = if view.third > 0.4 {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+fn show_own_robot(view: Res<crate::view::ViewState>, mut robot: Query<&mut Visibility, With<OwnRobot>>) {
+    let wanted = if view.third > 0.4 { Visibility::Inherited } else { Visibility::Hidden };
     for mut visibility in &mut robot {
         if *visibility != wanted {
             *visibility = wanted;
@@ -176,24 +169,10 @@ pub struct AnimateRigs;
 
 impl Plugin for AvatarPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GunCache>()
-            .add_systems(Startup, bake_robots)
-            .add_systems(
-                Update,
-                (
-                    (
-                        attach_to_players,
-                        pose_players,
-                        react_to_shots,
-                        hold_weapons,
-                        show_own_robot,
-                    )
-                        .run_if(in_state(MatchPhase::Active)),
-                    animate_rigs.in_set(AnimateRigs),
-                )
-                    .chain()
-                    .in_set(ClientSet::Present),
-            );
+        app.init_resource::<GunCache>().add_systems(Startup, bake_robots).add_systems(
+            Update,
+            ((attach_to_players, pose_players, react_to_shots, hold_weapons, show_own_robot).run_if(in_state(MatchPhase::Active)), animate_rigs.in_set(AnimateRigs)).chain().in_set(ClientSet::Present),
+        );
     }
 }
 
@@ -204,9 +183,7 @@ fn eye(paint: Paint, x: f32, y: f32) -> BlockModel {
 /// The face layer drawn on the TV screen, in neck-pivot space.
 fn face_model(expression: usize) -> BlockModel {
     let z = -0.15;
-    let pixel = |m: BlockModel, paint: Paint, x: f32, y: f32, w: f32, h: f32| {
-        m.cube(paint, [x, y, z], [w, h, 0.008])
-    };
+    let pixel = |m: BlockModel, paint: Paint, x: f32, y: f32, w: f32, h: f32| m.cube(paint, [x, y, z], [w, h, 0.008]);
     let smile_mouth = |m: BlockModel, paint: Paint| {
         let m = pixel(m, paint, -0.055, 0.135, 0.024, 0.024);
         let m = pixel(m, paint, -0.028, 0.118, 0.026, 0.022);
@@ -240,9 +217,7 @@ fn face_model(expression: usize) -> BlockModel {
             let paint = Paint::Red;
             let mut m = BlockModel::new();
             for x in [-0.065, 0.065] {
-                m = m
-                    .segment(paint, [x - 0.03, 0.23, z], [x + 0.03, 0.17, z], 0.016)
-                    .segment(paint, [x + 0.03, 0.23, z], [x - 0.03, 0.17, z], 0.016);
+                m = m.segment(paint, [x - 0.03, 0.23, z], [x + 0.03, 0.17, z], 0.016).segment(paint, [x + 0.03, 0.23, z], [x - 0.03, 0.17, z], 0.016);
             }
             pixel(m, paint, 0.0, 0.12, 0.09, 0.016)
         }
@@ -254,9 +229,7 @@ fn face_model(expression: usize) -> BlockModel {
         }
         _ => {
             let paint = Paint::Aether;
-            let m = BlockModel::new()
-                .merged(&eye(paint, -0.06, 0.2), [0.0; 3])
-                .merged(&eye(paint, 0.06, 0.2), [0.0; 3]);
+            let m = BlockModel::new().merged(&eye(paint, -0.06, 0.2), [0.0; 3]).merged(&eye(paint, 0.06, 0.2), [0.0; 3]);
             smile_mouth(m, paint)
         }
     }
@@ -316,41 +289,16 @@ fn torso_model(team: Paint, light: Paint) -> BlockModel {
 }
 
 fn arm_model(team: Paint, light: Paint, right: bool) -> BlockModel {
-    let (shoulder, elbow, hand) = if right {
-        (
-            [0.27, 0.02, 0.0],
-            [0.25, -0.2, -0.1],
-            [GRIP.x, GRIP.y, GRIP.z + 0.03],
-        )
-    } else {
-        (
-            [-0.27, 0.02, 0.0],
-            [-0.2, -0.17, -0.3],
-            [0.06, -0.08, -0.66],
-        )
-    };
-    BlockModel::new()
-        .segment(team, shoulder, elbow, 0.1)
-        .segment(Paint::Dark, elbow, hand, 0.085)
-        .shard(light, elbow, [0.07, 0.07, 0.07])
-        .cube(Paint::Dark, hand, [0.09, 0.09, 0.09])
+    let (shoulder, elbow, hand) = if right { ([0.27, 0.02, 0.0], [0.25, -0.2, -0.1], [GRIP.x, GRIP.y, GRIP.z + 0.03]) } else { ([-0.27, 0.02, 0.0], [-0.2, -0.17, -0.3], [0.06, -0.08, -0.66]) };
+    BlockModel::new().segment(team, shoulder, elbow, 0.1).segment(Paint::Dark, elbow, hand, 0.085).shard(light, elbow, [0.07, 0.07, 0.07]).cube(Paint::Dark, hand, [0.09, 0.09, 0.09])
 }
 
 fn thigh_model(team: Paint) -> BlockModel {
-    BlockModel::new()
-        .cube(team, [0.0, -THIGH * 0.5, 0.0], [0.16, THIGH, 0.18])
-        .cube(
-            Paint::Steel,
-            [0.0, -THIGH + 0.02, -0.095],
-            [0.13, 0.1, 0.03],
-        )
+    BlockModel::new().cube(team, [0.0, -THIGH * 0.5, 0.0], [0.16, THIGH, 0.18]).cube(Paint::Steel, [0.0, -THIGH + 0.02, -0.095], [0.13, 0.1, 0.03])
 }
 
 fn shin_model(light: Paint) -> BlockModel {
-    BlockModel::new()
-        .cube(Paint::Dark, [0.0, -0.2, 0.0], [0.14, 0.4, 0.16])
-        .cube(light, [0.0, -0.2, -0.081], [0.05, 0.22, 0.006])
-        .cube(Paint::Steel, [0.0, -0.44, -0.05], [0.17, 0.08, 0.29])
+    BlockModel::new().cube(Paint::Dark, [0.0, -0.2, 0.0], [0.14, 0.4, 0.16]).cube(light, [0.0, -0.2, -0.081], [0.05, 0.22, 0.006]).cube(Paint::Steel, [0.0, -0.44, -0.05], [0.17, 0.08, 0.29])
 }
 
 fn bake_robots(mut commands: Commands, art: Res<Art>, mut meshes: ResMut<Assets<Mesh>>) {
@@ -359,23 +307,13 @@ fn bake_robots(mut commands: Commands, art: Res<Art>, mut meshes: ResMut<Assets<
             let paint = team_paint(team);
             let light = team_light(team);
             RobotMeshes {
-                hips: art.bake(
-                    &BlockModel::new()
-                        .cube(Paint::Dark, [0.0, 0.0, 0.0], [0.36, 0.16, 0.22])
-                        .cube(light, [0.0, 0.0, -0.112], [0.3, 0.03, 0.006]),
-                    &mut meshes,
-                ),
+                hips: art.bake(&BlockModel::new().cube(Paint::Dark, [0.0, 0.0, 0.0], [0.36, 0.16, 0.22]).cube(light, [0.0, 0.0, -0.112], [0.3, 0.03, 0.006]), &mut meshes),
                 thigh: art.bake(&thigh_model(paint), &mut meshes),
                 shin: art.bake(&shin_model(light), &mut meshes),
                 torso: art.bake(&torso_model(paint, light), &mut meshes),
                 head: art.bake(&head_model(paint, light), &mut meshes),
-                arms: [
-                    art.bake(&arm_model(paint, light, false), &mut meshes),
-                    art.bake(&arm_model(paint, light, true), &mut meshes),
-                ],
-                faces: (0..face::COUNT)
-                    .map(|f| art.bake(&face_model(f), &mut meshes))
-                    .collect(),
+                arms: [art.bake(&arm_model(paint, light, false), &mut meshes), art.bake(&arm_model(paint, light, true), &mut meshes)],
+                faces: (0..face::COUNT).map(|f| art.bake(&face_model(f), &mut meshes)).collect(),
             }
         })
         .collect();
@@ -393,24 +331,11 @@ fn meshes_of(art: &Art, baked: &Baked) -> Vec<(Handle<Mesh>, Handle<StandardMate
     out
 }
 
-fn joint(
-    commands: &mut Commands,
-    art: &Art,
-    parent: Entity,
-    at: Vec3,
-    baked: Option<&Baked>,
-) -> Entity {
-    let entity = commands
-        .spawn((
-            Transform::from_translation(at),
-            Visibility::Inherited,
-            ChildOf(parent),
-        ))
-        .id();
+fn joint(commands: &mut Commands, art: &Art, parent: Entity, at: Vec3, baked: Option<&Baked>) -> Entity {
+    let entity = commands.spawn((Transform::from_translation(at), Visibility::Inherited, ChildOf(parent))).id();
     if let Some(baked) = baked {
         for (mesh, material, unlit) in meshes_of(art, baked) {
-            let mut part =
-                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), ChildOf(entity)));
+            let mut part = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), ChildOf(entity)));
             if unlit {
                 part.insert(NotShadowCaster);
             }
@@ -420,14 +345,7 @@ fn joint(
 }
 
 /// Builds a robot under `root` and returns its rig. `gun` is placed in its hands.
-pub fn spawn_robot(
-    commands: &mut Commands,
-    art: &Art,
-    parts: &RobotParts,
-    root: Entity,
-    team: u8,
-    gun: Option<&Baked>,
-) -> Rig {
+pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root: Entity, team: u8, gun: Option<&Baked>) -> Rig {
     let m = &parts.teams[(team as usize).min(2)];
     commands.entity(root).insert(Visibility::Inherited);
     let body = joint(commands, art, root, Vec3::ZERO, None);
@@ -435,37 +353,18 @@ pub fn spawn_robot(
     let mut thighs = [Entity::PLACEHOLDER; 2];
     let mut shins = [Entity::PLACEHOLDER; 2];
     for (i, side) in [-1.0, 1.0].into_iter().enumerate() {
-        thighs[i] = joint(
-            commands,
-            art,
-            hips,
-            Vec3::new(0.12 * side, -0.02, 0.0),
-            Some(&m.thigh),
-        );
-        shins[i] = joint(
-            commands,
-            art,
-            thighs[i],
-            Vec3::new(0.0, -THIGH, 0.0),
-            Some(&m.shin),
-        );
+        thighs[i] = joint(commands, art, hips, Vec3::new(0.12 * side, -0.02, 0.0), Some(&m.thigh));
+        shins[i] = joint(commands, art, thighs[i], Vec3::new(0.0, -THIGH, 0.0), Some(&m.shin));
     }
     let torso = joint(commands, art, hips, Vec3::Y * 0.06, Some(&m.torso));
     let head = joint(commands, art, torso, Vec3::Y * NECK, Some(&m.head));
     let faces: [Entity; face::COUNT] = std::array::from_fn(|f| {
         let entity = joint(commands, art, head, Vec3::ZERO, Some(&m.faces[f]));
-        commands.entity(entity).insert(if f == face::SMILE {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        });
+        commands.entity(entity).insert(if f == face::SMILE { Visibility::Inherited } else { Visibility::Hidden });
         entity
     });
     let aim = joint(commands, art, torso, Vec3::Y * SHOULDER, None);
-    let arms = [
-        joint(commands, art, aim, Vec3::ZERO, Some(&m.arms[0])),
-        joint(commands, art, aim, Vec3::ZERO, Some(&m.arms[1])),
-    ];
+    let arms = [joint(commands, art, aim, Vec3::ZERO, Some(&m.arms[0])), joint(commands, art, aim, Vec3::ZERO, Some(&m.arms[1]))];
     let gun_root = joint(commands, art, aim, GRIP, gun);
     Rig {
         body,
@@ -491,10 +390,7 @@ pub fn spawn_robot(
         crouch: 0.0,
         prone: 0.0,
         moving: 0.0,
-        hip: Spring {
-            value: HIP,
-            velocity: 0.0,
-        },
+        hip: Spring { value: HIP, velocity: 0.0 },
         kick: Spring::default(),
         reload_t: 0.0,
         slapped: false,
@@ -512,21 +408,9 @@ pub fn spawn_robot(
 pub struct GunCache(HashMap<(u8, [u8; SLOT_COUNT]), Baked>);
 
 impl GunCache {
-    pub fn get(
-        &mut self,
-        art: &Art,
-        meshes: &mut Assets<Mesh>,
-        content: &Content,
-        weapon: u8,
-        parts: [u8; SLOT_COUNT],
-    ) -> Option<Baked> {
+    pub fn get(&mut self, art: &Art, meshes: &mut Assets<Mesh>, content: &Content, weapon: u8, parts: [u8; SLOT_COUNT]) -> Option<Baked> {
         let def = content.weapons.get(weapon as usize)?;
-        Some(
-            self.0
-                .entry((weapon, parts))
-                .or_insert_with(|| art.bake(&assemble(def, &parts), meshes))
-                .clone(),
-        )
+        Some(self.0.entry((weapon, parts)).or_insert_with(|| art.bake(&assemble(def, &parts), meshes)).clone())
     }
 
     pub fn clear(&mut self) {
@@ -548,14 +432,10 @@ fn attach_to_players(
     for (entity, player, transform, local) in &added {
         let mut rig = spawn_robot(&mut commands, &art, &parts, entity, player.team, None);
         rig.last_pos = transform.translation;
-        commands
-            .entity(entity)
-            .insert((rig, Pose::default(), PlayerRobot));
+        commands.entity(entity).insert((rig, Pose::default(), PlayerRobot));
         if local {
             // Your own robot only shows when the camera is outside your head (cover).
-            commands
-                .entity(entity)
-                .insert((OwnRobot, Visibility::Hidden));
+            commands.entity(entity).insert((OwnRobot, Visibility::Hidden));
         }
     }
 }
@@ -572,21 +452,12 @@ fn hold_weapons(
 ) {
     for (mut rig, input, player, arsenal) in &mut robots {
         // The host knows real attachments; clients learn them from the roster.
-        let roster = state
-            .roster
-            .iter()
-            .find(|r| r.id == player.id && r.weapon == input.weapon)
-            .map(|r| r.parts);
+        let roster = state.roster.iter().find(|r| r.id == player.id && r.weapon == input.weapon).map(|r| r.parts);
         let parts = arsenal
             .and_then(|a| a.weapons.get(input.weapon as usize))
             .map(|w| w.equipped)
             .or(roster)
-            .or_else(|| {
-                content
-                    .weapons
-                    .get(input.weapon as usize)
-                    .map(|d| d.defaults)
-            })
+            .or_else(|| content.weapons.get(input.weapon as usize).map(|d| d.defaults))
             .unwrap_or([0; SLOT_COUNT]);
         let wanted = Some((input.weapon, parts));
         if rig.held == wanted {
@@ -604,18 +475,7 @@ fn hold_weapons(
 
 fn pose_players(
     time: Res<Time>,
-    mut robots: Query<
-        (
-            &mut Rig,
-            &mut Pose,
-            &Transform,
-            &Player,
-            &PlayerInput,
-            &Health,
-            Has<LocalPlayer>,
-        ),
-        With<PlayerRobot>,
-    >,
+    mut robots: Query<(&mut Rig, &mut Pose, &Transform, &Player, &PlayerInput, &Health, Has<LocalPlayer>), With<PlayerRobot>>,
     mut sounds: EventWriter<crate::fx::PlaySfx>,
 ) {
     let dt = time.delta_secs().max(1e-4);
@@ -632,23 +492,14 @@ fn pose_players(
                     _ if pose.sprinting => (Sfx::StepHeavy, 1.6),
                     _ => (Sfx::Step, 1.2),
                 };
-                sounds
-                    .write(crate::fx::PlaySfx::new(sfx, Some(transform.translation)).quiet(volume));
+                sounds.write(crate::fx::PlaySfx::new(sfx, Some(transform.translation)).quiet(volume));
             }
         }
-        let moved = if rig.last_pos.is_finite() {
-            transform.translation - rig.last_pos
-        } else {
-            Vec3::ZERO
-        };
+        let moved = if rig.last_pos.is_finite() { transform.translation - rig.last_pos } else { Vec3::ZERO };
         rig.last_pos = transform.translation;
         let forward = transform.rotation * Vec3::NEG_Z;
         let speed = moved.xz().length() / dt;
-        let along = if moved.xz().dot(forward.xz()) < -0.01 {
-            -1.0
-        } else {
-            1.0
-        };
+        let along = if moved.xz().dot(forward.xz()) < -0.01 { -1.0 } else { 1.0 };
         // Smooth jittery network movement into a steady gait.
         pose.speed += (speed.min(9.0) * along - pose.speed) * (1.0 - (-dt * 10.0).exp());
         pose.stance = input.stance.max(player.flags & flags::STANCE);
@@ -657,16 +508,8 @@ fn pose_players(
         pose.reloading = player.flags & flags::RELOADING != 0;
         pose.sprinting = player.flags & flags::SPRINTING != 0;
         pose.dead = !health.alive();
-        let lean = if input.lean != 0 {
-            input.lean
-        } else {
-            flags::lean(player.flags)
-        };
-        let lean = if pose.stance == stance::PRONE || pose.dead {
-            0.0
-        } else {
-            lean as f32
-        };
+        let lean = if input.lean != 0 { input.lean } else { flags::lean(player.flags) };
+        let lean = if pose.stance == stance::PRONE || pose.dead { 0.0 } else { lean as f32 };
         pose.lean += (lean - pose.lean) * (1.0 - (-dt * 12.0).exp());
         if health.hp < rig.last_hp - 0.5 {
             rig.hurt = 0.6;
@@ -706,13 +549,7 @@ fn react_to_shots(mut events: EventReader<FxEvent>, mut robots: Query<(&mut Rig,
     }
 }
 
-fn set(
-    transforms: &mut Query<&mut Transform, Without<Rig>>,
-    entity: Entity,
-    translation: Vec3,
-    rotation: Quat,
-    blend: f32,
-) {
+fn set(transforms: &mut Query<&mut Transform, Without<Rig>>, entity: Entity, translation: Vec3, rotation: Quat, blend: f32) {
     if let Ok(mut t) = transforms.get_mut(entity) {
         t.translation = t.translation.lerp(translation, blend);
         t.rotation = t.rotation.slerp(rotation, blend);
@@ -725,12 +562,7 @@ fn set(
 /// in, the hips ride a spring so crouching and popping up have weight, gait
 /// cycles scale with speed, the reload is a sequence of offsets driven by a
 /// timer, and recoil is an impulse on a bouncy spring.
-pub fn animate_rigs(
-    time: Res<Time>,
-    mut rigs: Query<(&mut Rig, &Pose)>,
-    mut transforms: Query<&mut Transform, Without<Rig>>,
-    mut visibility: Query<&mut Visibility, Without<Rig>>,
-) {
+pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut transforms: Query<&mut Transform, Without<Rig>>, mut visibility: Query<&mut Visibility, Without<Rig>>) {
     let dt = time.delta_secs().min(0.05);
     let blend = 1.0 - (-dt * 22.0).exp();
     let rot = |x: f32| Quat::from_rotation_x(x);
@@ -760,14 +592,8 @@ pub fn animate_rigs(
         }
 
         // Stance weights ease toward the target over about a fifth of a second.
-        let towards = |current: f32, target: f32, rate: f32| {
-            current + (target - current) * (1.0 - (-dt * rate).exp())
-        };
-        rig.crouch = towards(
-            rig.crouch,
-            (pose.stance == stance::CROUCH) as u8 as f32,
-            11.0,
-        );
+        let towards = |current: f32, target: f32, rate: f32| current + (target - current) * (1.0 - (-dt * rate).exp());
+        rig.crouch = towards(rig.crouch, (pose.stance == stance::CROUCH) as u8 as f32, 11.0);
         rig.prone = towards(rig.prone, (pose.stance == stance::PRONE) as u8 as f32, 7.0);
         rig.moving = towards(rig.moving, (k * 3.0).min(1.0), 8.0);
         let (c, pr) = (rig.crouch, rig.prone);
@@ -778,20 +604,13 @@ pub fn animate_rigs(
         let (body_at, body_rot) = if pose.dead {
             // Topple the way the killing blow pushed: fast, a small bounce on landing, then still.
             let t = rig.dead_for;
-            let fall = ease(t / 0.4)
-                + (t * 18.0).sin()
-                    * 0.08
-                    * (-(t - 0.4).max(0.0) * 8.0).exp()
-                    * (t > 0.4) as u8 as f32;
+            let fall = ease(t / 0.4) + (t * 18.0).sin() * 0.08 * (-(t - 0.4).max(0.0) * 8.0).exp() * (t > 0.4) as u8 as f32;
             let dir = Vec3::new(rig.fall.x, 0.0, rig.fall.z).normalize_or(Vec3::Z);
             let axis = Vec3::Y.cross(dir).normalize_or(Vec3::X);
             let slump = Vec3::new(0.0, 0.18, 0.0) + dir * 0.35;
             (slump * fall, Quat::from_axis_angle(axis, FRAC_PI_2 * fall))
         } else {
-            (
-                Vec3::new(0.0, 0.2, 1.08) * pr,
-                Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr),
-            )
+            (Vec3::new(0.0, 0.2, 1.08) * pr, Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr))
         };
         set(&mut transforms, rig.body, body_at, body_rot, blend);
 
@@ -801,54 +620,24 @@ pub fn animate_rigs(
         let crouch_hip = 0.45 + 0.1 * moving - p.cos().abs() * 0.02 * k;
         let hip_target = st * stand_hip + c * crouch_hip + pr * HIP;
         let hip_y = rig.hip.update(hip_target, 260.0, 0.62, dt);
-        set(
-            &mut transforms,
-            rig.hips,
-            Vec3::Y * hip_y,
-            Quat::IDENTITY,
-            1.0,
-        );
+        set(&mut transforms, rig.hips, Vec3::Y * hip_y, Quat::IDENTITY, 1.0);
 
         for side in 0..2 {
             let sign = if side == 0 { 1.0 } else { -1.0 };
             let s = swing * sign;
-            let lift = if side == 0 {
-                (p - 1.2).sin()
-            } else {
-                (p - 1.2 + PI).sin()
-            }
-            .max(0.0);
+            let lift = if side == 0 { (p - 1.2).sin() } else { (p - 1.2 + PI).sin() }.max(0.0);
             // Standing walk / run: a long reach forward, the trailing knee folding high.
             let stand = (s * (0.78 * k).min(0.95), -lift * (1.05 * k).min(1.25));
             // Crouch-walk: knees well bent, short quick steps; blends into a kneel when still.
             let crouch_walk = (0.85 + s * 0.42, -1.35 - lift * 0.55);
-            let kneel = if side == 0 {
-                (1.45, -1.45)
-            } else {
-                (-0.05, -1.5)
-            };
-            let crouch = (
-                kneel.0 + (crouch_walk.0 - kneel.0) * moving,
-                kneel.1 + (crouch_walk.1 - kneel.1) * moving,
-            );
+            let kneel = if side == 0 { (1.45, -1.45) } else { (-0.05, -1.5) };
+            let crouch = (kneel.0 + (crouch_walk.0 - kneel.0) * moving, kneel.1 + (crouch_walk.1 - kneel.1) * moving);
             // Prone: legs out straight with a slow crawl.
             let prone = (s * 0.15 * k.min(1.0), -lift * 0.3 * k.min(1.0));
             let thigh = st * stand.0 + c * crouch.0 + pr * prone.0;
             let shin = st * stand.1 + c * crouch.1 + pr * prone.1;
-            set(
-                &mut transforms,
-                rig.thighs[side],
-                Vec3::new(-0.12 * sign, -0.02, 0.0),
-                rot(thigh),
-                blend,
-            );
-            set(
-                &mut transforms,
-                rig.shins[side],
-                Vec3::new(0.0, -THIGH, 0.0),
-                rot(shin),
-                blend,
-            );
+            set(&mut transforms, rig.thighs[side], Vec3::new(-0.12 * sign, -0.02, 0.0), rot(thigh), blend);
+            set(&mut transforms, rig.shins[side], Vec3::new(0.0, -THIGH, 0.0), rot(shin), blend);
         }
 
         // Reload: tip the gun in, drop the magazine, slap a fresh one home, bring it back up.
@@ -864,71 +653,27 @@ pub fn animate_rigs(
         }
         rig.reload = towards(rig.reload, pose.reloading as u8 as f32, 9.0);
         let r = rig.reload;
-        let fumble = if pose.reloading {
-            (rig.reload_t * 9.0).sin()
-                * 0.04
-                * ease((rig.reload_t - 0.2) / 0.2)
-                * (1.0 - ease((rig.reload_t - 0.7) / 0.1))
-        } else {
-            0.0
-        };
+        let fumble = if pose.reloading { (rig.reload_t * 9.0).sin() * 0.04 * ease((rig.reload_t - 0.2) / 0.2) * (1.0 - ease((rig.reload_t - 0.7) / 0.1)) } else { 0.0 };
         let kick = rig.kick.update(0.0, 420.0, 0.35, dt);
 
         // Upper body: lean into the run, peek out of cover, aim where the player looks.
         let prone = pr > 0.5 && !pose.dead;
-        let torso_lean =
-            st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.24 - 0.1 * moving);
+        let torso_lean = st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.24 - 0.1 * moving);
         // Leaning out to aim rolls the whole torso; blind fire (leaning without aiming) keeps
         // the body in and only pushes the gun round the corner.
         let roll = Quat::from_rotation_z(-pose.lean * if pose.aiming { 0.3 } else { 0.06 });
         let twist = Quat::from_rotation_y(swing * 0.08 * k.min(1.0) * st);
-        set(
-            &mut transforms,
-            rig.torso,
-            Vec3::Y * 0.06,
-            roll * rot(torso_lean) * twist,
-            blend,
-        );
-        let carry = if pose.sprinting && !pose.aiming {
-            -0.75
-        } else {
-            0.0
-        } - 0.5 * r;
+        set(&mut transforms, rig.torso, Vec3::Y * 0.06, roll * rot(torso_lean) * twist, blend);
+        let carry = if pose.sprinting && !pose.aiming { -0.75 } else { 0.0 } - 0.5 * r;
         let correction = pr * FRAC_PI_2 - (1.0 - pr) * torso_lean;
-        let aim_pitch = if pose.dead {
-            -0.9
-        } else {
-            (pose.pitch + carry).clamp(-1.3, 1.3) + correction + kick * 0.12
-        };
+        let aim_pitch = if pose.dead { -0.9 } else { (pose.pitch + carry).clamp(-1.3, 1.3) + correction + kick * 0.12 };
         let tilt = Quat::from_rotation_z(0.45 * r + fumble * 2.0);
-        let melee = if rig.melee_t < 0.42 {
-            (rig.melee_t / 0.42 * PI).sin()
-        } else {
-            0.0
-        };
+        let melee = if rig.melee_t < 0.42 { (rig.melee_t / 0.42 * PI).sin() } else { 0.0 };
         let aim_at = Vec3::Y * SHOULDER
-            + if pose.aiming {
-                Vec3::new(-0.04, 0.03, -0.04)
-            } else {
-                Vec3::new(pose.lean * 0.4, 0.0, 0.0)
-            }
+            + if pose.aiming { Vec3::new(-0.04, 0.03, -0.04) } else { Vec3::new(pose.lean * 0.4, 0.0, 0.0) }
             + Vec3::new(0.0, 0.05, -0.3) * melee
-            + Vec3::new(
-                0.0,
-                -0.05 * r + fumble,
-                0.07 * kick.max(0.0) - 0.03 * kick.min(0.0),
-            );
-        set(
-            &mut transforms,
-            rig.aim,
-            aim_at,
-            rot(aim_pitch + 0.4 * melee) * Quat::from_rotation_y(0.5 * melee) * tilt,
-            if prone {
-                blend
-            } else {
-                1.0 - (-dt * 30.0).exp()
-            },
-        );
+            + Vec3::new(0.0, -0.05 * r + fumble, 0.07 * kick.max(0.0) - 0.03 * kick.min(0.0));
+        set(&mut transforms, rig.aim, aim_at, rot(aim_pitch + 0.4 * melee) * Quat::from_rotation_y(0.5 * melee) * tilt, if prone { blend } else { 1.0 - (-dt * 30.0).exp() });
         // The left arm: wound back over the shoulder while a grenade cooks, then an overarm throw.
         let arm = if rig.cook {
             rot(2.2) * Quat::from_rotation_z(0.3)
@@ -940,18 +685,8 @@ pub fn animate_rigs(
         };
         set(&mut transforms, rig.arms[0], Vec3::ZERO, arm, blend);
         // The head follows the aim, and glances down at the gun while reloading.
-        let head_pitch = if pose.dead {
-            0.0
-        } else {
-            pose.pitch * 0.8 + correction - 0.35 * r
-        };
-        set(
-            &mut transforms,
-            rig.head,
-            Vec3::Y * NECK,
-            rot(head_pitch),
-            blend,
-        );
+        let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r };
+        set(&mut transforms, rig.head, Vec3::Y * NECK, rot(head_pitch), blend);
 
         // Face: dead > hurt > angry > blink > smile.
         let current = pose.face.unwrap_or(if pose.dead {
@@ -967,11 +702,7 @@ pub fn animate_rigs(
         });
         for (index, entity) in rig.faces.iter().enumerate() {
             if let Ok(mut v) = visibility.get_mut(*entity) {
-                let wanted = if index == current {
-                    Visibility::Inherited
-                } else {
-                    Visibility::Hidden
-                };
+                let wanted = if index == current { Visibility::Inherited } else { Visibility::Hidden };
                 if *v != wanted {
                     *v = wanted;
                 }

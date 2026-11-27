@@ -36,23 +36,9 @@ pub struct PredictPlugin;
 impl Plugin for PredictPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Prediction>()
-            .add_systems(
-                OnEnter(MatchPhase::Active),
-                |mut prediction: ResMut<Prediction>| *prediction = Prediction::default(),
-            )
-            .add_systems(
-                Update,
-                predict
-                    .in_set(ClientSet::Input)
-                    .after(crate::input::ReadDevices)
-                    .run_if(in_state(MatchPhase::Active)),
-            )
-            .add_systems(
-                Update,
-                (fly_ghosts, hide_echoes)
-                    .in_set(ClientSet::Present)
-                    .run_if(in_state(MatchPhase::Active)),
-            );
+            .add_systems(OnEnter(MatchPhase::Active), |mut prediction: ResMut<Prediction>| *prediction = Prediction::default())
+            .add_systems(Update, predict.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
+            .add_systems(Update, (fly_ghosts, hide_echoes).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -84,17 +70,8 @@ fn predict(
     // Thrown gear leaves the hand the moment it is let go (after cooking); the host's copy stays hidden for us.
     let gear_held = input.held(buttons::GEAR) && *screen == Screen::None;
     let live = health.alive() && state.phase != Phase::Lobby && !state.over();
-    let template = content.gear.get(player.gear as usize).and_then(|gear| {
-        oz_sim::combat::throw(&gear.kind, dir)
-            .map(|t| (t, matches!(gear.kind, GearKind::Knife { .. })))
-    });
-    if gear_held
-        && !p.gear_latch
-        && player.gear_left > 0
-        && live
-        && template.is_some()
-        && p.cook.is_none()
-    {
+    let template = content.gear.get(player.gear as usize).and_then(|gear| oz_sim::combat::throw(&gear.kind, dir).map(|t| (t, matches!(gear.kind, GearKind::Knife { .. }))));
+    if gear_held && !p.gear_latch && player.gear_left > 0 && live && template.is_some() && p.cook.is_none() {
         p.cook = Some(0.0);
     }
     p.gear_latch = gear_held;
@@ -110,21 +87,8 @@ fn predict(
                 if gear_held {
                     // Cooked off in the hand: the host's blast says it all.
                 } else {
-                    let life = if knife {
-                        shot.life
-                    } else {
-                        (shot.life - cooked).max(0.03)
-                    };
-                    commands.spawn((
-                        MatchEntity,
-                        Ghost,
-                        Projectile {
-                            owner: Some(player.id),
-                            life,
-                            ..shot
-                        },
-                        Transform::from_translation(eye + dir * 0.7),
-                    ));
+                    let life = if knife { shot.life } else { (shot.life - cooked).max(0.03) };
+                    commands.spawn((MatchEntity, Ghost, Projectile { owner: Some(player.id), life, ..shot }, Transform::from_translation(eye + dir * 0.7)));
                 }
             }
         }
@@ -145,12 +109,7 @@ fn predict(
     let held = input.held(buttons::FIRE) && *screen == Screen::None;
     let pulled = held && !p.trigger;
     p.trigger = held;
-    let blocked = !health.alive()
-        || arsenal.reload > 0.0
-        || !weapon.owned
-        || state.over()
-        || state.phase == Phase::Lobby
-        || input.weapon != arsenal.current;
+    let blocked = !health.alive() || arsenal.reload > 0.0 || !weapon.owned || state.over() || state.phase == Phase::Lobby || input.weapon != arsenal.current;
     let wants = p.burst > 0 || (held && (def.auto() || pulled));
     let ammo = weapon.ammo.saturating_sub(p.pending);
     if blocked || !wants || p.cooldown > 0.0 || (def.mag > 0 && ammo == 0) {
@@ -188,12 +147,7 @@ fn predict(
             life: 6.0,
             effect: oz_sim::combat::Impact::Blast,
         };
-        commands.spawn((
-            MatchEntity,
-            Ghost,
-            shot,
-            Transform::from_translation(eye + dir * 0.8),
-        ));
+        commands.spawn((MatchEntity, Ghost, shot, Transform::from_translation(eye + dir * 0.8)));
     }
     let reach = match def.mode {
         FireMode::Projectile { .. } => 1.5,
@@ -205,16 +159,7 @@ fn predict(
         end = end.min(d);
     }
     let from = eye + look * Vec3::new(0.16, -0.13, -(0.4 + stats.length * 0.62));
-    fx.write(FxEvent::Shot {
-        by: player.id,
-        sound: def.sound,
-        from,
-        to: eye + dir * end,
-        beam: def.mode == FireMode::Beam,
-        tracer: stats.tracer,
-        quiet: stats.quiet,
-        local: true,
-    });
+    fx.write(FxEvent::Shot { by: player.id, sound: def.sound, from, to: eye + dir * end, beam: def.mode == FireMode::Beam, tracer: stats.tracer, quiet: stats.quiet, local: true });
 }
 
 /// A locally predicted projectile: pure visuals, flown until it would land.
@@ -238,17 +183,8 @@ fn fly_ghosts(
         let length = step.length().max(1e-4);
         let dir = step / length;
         let to = from + step;
-        let hit_player = players.iter().any(|(t, p, h)| {
-            Some(p.id) != shot.owner
-                && h.alive()
-                && oz_sim::combat::ray_sphere(from, dir, t.translation + Vec3::Y, 0.6)
-                    .is_some_and(|d| d <= length)
-        });
-        if shot.life <= 0.0
-            || to.y <= map.height(to.x, to.z)
-            || statics.raycast(from, dir, length).is_some()
-            || hit_player
-        {
+        let hit_player = players.iter().any(|(t, p, h)| Some(p.id) != shot.owner && h.alive() && oz_sim::combat::ray_sphere(from, dir, t.translation + Vec3::Y, 0.6).is_some_and(|d| d <= length));
+        if shot.life <= 0.0 || to.y <= map.height(to.x, to.z) || statics.raycast(from, dir, length).is_some() || hit_player {
             // The host's impact effect arrives on its own; just vanish.
             commands.entity(entity).despawn();
             continue;
@@ -259,11 +195,7 @@ fn fly_ghosts(
 }
 
 /// Hides the host's copies of projectiles this machine already predicted.
-fn hide_echoes(
-    role: Res<NetRole>,
-    local: Query<&Player, With<LocalPlayer>>,
-    mut shots: Query<(&Projectile, &mut Visibility), Without<Ghost>>,
-) {
+fn hide_echoes(role: Res<NetRole>, local: Query<&Player, With<LocalPlayer>>, mut shots: Query<(&Projectile, &mut Visibility), Without<Ghost>>) {
     if *role != NetRole::Client {
         return;
     }

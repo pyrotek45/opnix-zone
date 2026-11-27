@@ -109,28 +109,13 @@ impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Controls>()
             .init_resource::<Steady>()
-            .add_systems(
-                Update,
-                (
-                    read_devices.in_set(ReadDevices),
-                    grab_cursor,
-                    drive_player
-                        .in_set(DrivePlayer)
-                        .run_if(in_state(MatchPhase::Active)),
-                )
-                    .chain()
-                    .in_set(ClientSet::Input),
-            );
+            .add_systems(Update, (read_devices.in_set(ReadDevices), grab_cursor, drive_player.in_set(DrivePlayer).run_if(in_state(MatchPhase::Active))).chain().in_set(ClientSet::Input));
     }
 }
 
 fn stick(value: Vec2) -> Vec2 {
     let length = value.length();
-    if length < 0.18 {
-        Vec2::ZERO
-    } else {
-        value / length * ((length - 0.18) / 0.82).min(1.0)
-    }
+    if length < 0.18 { Vec2::ZERO } else { value / length * ((length - 0.18) / 0.82).min(1.0) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -146,25 +131,15 @@ fn read_devices(
     mut stick_nav: Local<[bool; 4]>,
 ) {
     let was_gamepad = controls.gamepad;
-    let mut c = Controls {
-        gamepad: was_gamepad,
-        ..default()
-    };
+    let mut c = Controls { gamepad: was_gamepad, ..default() };
     let tap = |code| keys.just_pressed(code);
 
     // Keyboard and mouse, through the player's bindings.
     let binds = &settings.bindings;
     let down = |action| binds.get(action).pressed(&keys, &mouse);
     let hit = |action| binds.get(action).just_pressed(&keys, &mouse);
-    c.movement = Vec2::new(
-        (down(Action::Right) as i8 - down(Action::Left) as i8) as f32,
-        (down(Action::Forward) as i8 - down(Action::Back) as i8) as f32,
-    );
-    let ads_scale = if down(Action::Aim) {
-        settings.ads_sensitivity
-    } else {
-        1.0
-    };
+    c.movement = Vec2::new((down(Action::Right) as i8 - down(Action::Left) as i8) as f32, (down(Action::Forward) as i8 - down(Action::Back) as i8) as f32);
+    let ads_scale = if down(Action::Aim) { settings.ads_sensitivity } else { 1.0 };
     c.look = motion.delta * 0.0022 * settings.sensitivity * ads_scale;
     c.fire = down(Action::Fire);
     c.fire_pressed = hit(Action::Fire);
@@ -198,17 +173,7 @@ fn read_devices(
     } else {
         0
     };
-    let digits = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-        KeyCode::Digit7,
-        KeyCode::Digit8,
-        KeyCode::Digit9,
-    ];
+    let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
     c.weapon_slot = digits.iter().position(|code| tap(*code)).map(|i| i as u8);
     c.ui = UiNav {
         up: tap(KeyCode::ArrowUp),
@@ -220,10 +185,7 @@ fn read_devices(
         tab_prev: tap(KeyCode::PageUp),
         tab_next: tap(KeyCode::PageDown) || tap(KeyCode::Tab),
     };
-    if keys.get_just_pressed().next().is_some()
-        || mouse.get_just_pressed().next().is_some()
-        || motion.delta != Vec2::ZERO
-    {
+    if keys.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some() || motion.delta != Vec2::ZERO {
         c.gamepad = false;
     }
 
@@ -241,16 +203,7 @@ fn read_devices(
         }
         let aiming = held(GamepadButton::LeftTrigger2);
         // Squared response for fine aim, slower while aiming down sights.
-        let turn = right
-            * right.length()
-            * 3.4
-            * settings.sensitivity
-            * if aiming {
-                0.45 * settings.ads_sensitivity
-            } else {
-                1.0
-            }
-            * time.delta_secs();
+        let turn = right * right.length() * 3.4 * settings.sensitivity * if aiming { 0.45 * settings.ads_sensitivity } else { 1.0 } * time.delta_secs();
         c.look += Vec2::new(turn.x, -turn.y);
         c.fire |= held(GamepadButton::RightTrigger2);
         c.fire_pressed |= hit(GamepadButton::RightTrigger2);
@@ -298,20 +251,12 @@ fn read_devices(
 }
 
 /// The mouse is captured only while actually playing.
-fn grab_cursor(
-    screen: Res<Screen>,
-    phase: Res<State<MatchPhase>>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
-) {
+fn grab_cursor(screen: Res<Screen>, phase: Res<State<MatchPhase>>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
     let playing = *phase.get() == MatchPhase::Active && *screen == Screen::None && window.focused;
-    let wanted = if playing {
-        CursorGrabMode::Locked
-    } else {
-        CursorGrabMode::None
-    };
+    let wanted = if playing { CursorGrabMode::Locked } else { CursorGrabMode::None };
     if window.cursor_options.grab_mode != wanted {
         window.cursor_options.grab_mode = wanted;
         window.cursor_options.visible = !playing;
@@ -378,11 +323,7 @@ fn stance_from_buttons(body: &mut Body, held: bool, prone_pressed: bool, dt: f32
         body.crouch_for += dt;
         if body.crouch_for >= HOLD_FOR_PRONE {
             body.crouch_done = true;
-            body.stance = if body.crouch_from == stance::PRONE {
-                stance::STAND
-            } else {
-                stance::PRONE
-            };
+            body.stance = if body.crouch_from == stance::PRONE { stance::STAND } else { stance::PRONE };
         }
     }
     if !held && body.crouch_was && !body.crouch_done {
@@ -395,11 +336,7 @@ fn stance_from_buttons(body: &mut Body, held: bool, prone_pressed: bool, dt: f32
     }
     body.crouch_was = held;
     if prone_pressed {
-        body.stance = if body.stance == stance::PRONE {
-            stance::CROUCH
-        } else {
-            stance::PRONE
-        };
+        body.stance = if body.stance == stance::PRONE { stance::CROUCH } else { stance::PRONE };
     }
 }
 
@@ -413,10 +350,7 @@ fn drive_player(
     placing: Res<crate::stations::Placement>,
     (map, statics): (Res<Map>, Res<Statics>),
     mut steady: ResMut<Steady>,
-    mut players: Query<
-        (&Transform, &mut PlayerInput, &Arsenal, &Health, &Mover),
-        With<LocalPlayer>,
-    >,
+    mut players: Query<(&Transform, &mut PlayerInput, &Arsenal, &Health, &Mover), With<LocalPlayer>>,
     mut body: Local<Body>,
 ) {
     let Ok((transform, mut input, arsenal, health, mover)) = players.single_mut() else {
@@ -449,16 +383,9 @@ fn drive_player(
     // Jump from low: vault whatever is in front if there is something, else stand up.
     let mut jump = controls.jump && body.stance == stance::STAND;
     if controls.jump_pressed && body.stance != stance::STAND && mover.vault.is_none() {
-        let wish = Quat::from_rotation_y(input.yaw)
-            * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
-        let dir = if wish.length() > 0.2 {
-            wish
-        } else {
-            Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z
-        };
-        if body.stance == stance::CROUCH
-            && oz_sim::player::vault_target(&map, &statics, transform.translation, dir).is_some()
-        {
+        let wish = Quat::from_rotation_y(input.yaw) * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
+        let dir = if wish.length() > 0.2 { wish } else { Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z };
+        if body.stance == stance::CROUCH && oz_sim::player::vault_target(&map, &statics, transform.translation, dir).is_some() {
             jump = true;
         }
         body.stance = stance::STAND;
@@ -477,11 +404,7 @@ fn drive_player(
     // Magnified optics sway. Going low steadies them, and stabilizing (L3 / Shift) locks the
     // servos: the sway slows to a stop where it is - the crosshair never jumps - for a few
     // seconds (longer crouched, longest prone), then needs a moment before it can lock again.
-    let stats = content
-        .weapons
-        .get(arsenal.current as usize)
-        .zip(arsenal.state())
-        .map(|(def, state)| resolve(def, state, &content.attachments));
+    let stats = content.weapons.get(arsenal.current as usize).zip(arsenal.state()).map(|(def, state)| resolve(def, state, &content.attachments));
     let scoped = controls.aim && stats.is_some_and(|s| s.scope > 0) && arsenal.reload <= 0.0;
     steady.cooldown = (steady.cooldown - dt).max(0.0);
     if scoped {
@@ -498,19 +421,11 @@ fn drive_player(
         }
         let wanted = if steady.left > 0.0 { 1.0 } else { 0.0 };
         steady.hold += (wanted - steady.hold) * (1.0 - (-dt * 6.0).exp());
-        let amplitude = [0.012, 0.006, 0.0025][body.stance.min(2) as usize]
-            * if stats.is_some_and(|s| s.scope == 1) {
-                0.5
-            } else {
-                1.0
-            };
+        let amplitude = [0.012, 0.006, 0.0025][body.stance.min(2) as usize] * if stats.is_some_and(|s| s.scope == 1) { 0.5 } else { 1.0 };
         // Slowing the sway's clock (rather than shrinking it) is what keeps the aim from moving.
         body.sway_time += dt * (1.0 - steady.hold);
         let t = body.sway_time;
-        let sway = Vec2::new(
-            (t * 0.8).sin() + 0.4 * (t * 2.1).sin(),
-            0.5 * (t * 1.6).sin() + 0.3 * (t * 0.7).cos(),
-        ) * amplitude;
+        let sway = Vec2::new((t * 0.8).sin() + 0.4 * (t * 2.1).sin(), 0.5 * (t * 1.6).sin() + 0.3 * (t * 0.7).cos()) * amplitude;
         look += sway - body.sway;
         body.sway = sway;
     } else {
@@ -544,13 +459,8 @@ fn drive_player(
     input.buttons = held;
 
     // Weapon selection only ever lands on owned weapons.
-    let owned: Vec<u8> = (0..arsenal.weapons.len() as u8)
-        .filter(|i| arsenal.owns(*i as usize))
-        .collect();
-    if let Some(slot) = controls
-        .weapon_slot
-        .and_then(|slot| owned.get(slot as usize))
-    {
+    let owned: Vec<u8> = (0..arsenal.weapons.len() as u8).filter(|i| arsenal.owns(*i as usize)).collect();
+    if let Some(slot) = controls.weapon_slot.and_then(|slot| owned.get(slot as usize)) {
         input.weapon = *slot;
     } else if controls.weapon_step != 0 && !owned.is_empty() {
         let at = owned.iter().position(|i| *i == input.weapon).unwrap_or(0) as i32;

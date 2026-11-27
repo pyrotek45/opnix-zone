@@ -31,14 +31,7 @@ pub struct Reconnect {
 impl Reconnect {
     /// A line for the main menu while retrying.
     pub fn status(&self) -> Option<String> {
-        (self.lost && self.attempts > 0 && self.attempts <= ATTEMPTS && !self.gave_up()).then(
-            || {
-                format!(
-                    "LOST THE HOST - RECONNECTING ({}/{ATTEMPTS})...",
-                    self.attempts
-                )
-            },
-        )
+        (self.lost && self.attempts > 0 && self.attempts <= ATTEMPTS && !self.gave_up()).then(|| format!("LOST THE HOST - RECONNECTING ({}/{ATTEMPTS})...", self.attempts))
     }
 
     pub fn gave_up(&self) -> bool {
@@ -51,41 +44,21 @@ pub struct ReconnectPlugin;
 impl Plugin for ReconnectPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Reconnect>()
-            .add_systems(
-                OnEnter(MatchPhase::Active),
-                |mut reconnect: ResMut<Reconnect>, mut commands: Commands| {
-                    *reconnect = Reconnect::default();
-                    commands.remove_resource::<LostHost>();
-                },
-            )
-            .add_systems(
-                Update,
-                (retry, manual)
-                    .in_set(ClientSet::Input)
-                    .run_if(not(in_state(MatchPhase::Active))),
-            );
+            .add_systems(OnEnter(MatchPhase::Active), |mut reconnect: ResMut<Reconnect>, mut commands: Commands| {
+                *reconnect = Reconnect::default();
+                commands.remove_resource::<LostHost>();
+            })
+            .add_systems(Update, (retry, manual).in_set(ClientSet::Input).run_if(not(in_state(MatchPhase::Active))));
     }
 }
 
-fn retry(
-    time: Res<Time<Real>>,
-    lost: Option<Res<LostHost>>,
-    joining: Option<Res<Joining>>,
-    join: Res<JoinStatus>,
-    mut reconnect: ResMut<Reconnect>,
-    mut dirty: ResMut<UiDirty>,
-    mut commands: Commands,
-) {
+fn retry(time: Res<Time<Real>>, lost: Option<Res<LostHost>>, joining: Option<Res<Joining>>, join: Res<JoinStatus>, mut reconnect: ResMut<Reconnect>, mut dirty: ResMut<UiDirty>, mut commands: Commands) {
     let Some(lost) = lost else {
         reconnect.lost = false;
         return;
     };
     if !reconnect.lost {
-        *reconnect = Reconnect {
-            lost: true,
-            attempts: 0,
-            wait: 1.0,
-        };
+        *reconnect = Reconnect { lost: true, attempts: 0, wait: 1.0 };
     }
     // One attempt at a time; wait for the last to finish.
     if joining.is_some() || matches!(*join, JoinStatus::Connecting | JoinStatus::Finding(_)) {
@@ -112,12 +85,7 @@ fn retry(
     dirty.0 = true;
 }
 
-fn manual(
-    mut events: EventReader<ActEvent>,
-    lost: Option<Res<LostHost>>,
-    mut reconnect: ResMut<Reconnect>,
-    mut dirty: ResMut<UiDirty>,
-) {
+fn manual(mut events: EventReader<ActEvent>, lost: Option<Res<LostHost>>, mut reconnect: ResMut<Reconnect>, mut dirty: ResMut<UiDirty>) {
     for ActEvent(act) in events.read() {
         if *act == Act::Reconnect && lost.is_some() {
             reconnect.attempts = ATTEMPTS - 1;

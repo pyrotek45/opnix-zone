@@ -27,13 +27,7 @@ pub struct Structure {
 
 impl Structure {
     pub fn new(kind: u16, node: Option<Entity>) -> Self {
-        Self {
-            kind,
-            cooldown: 0.5,
-            node,
-            carry: 0.0,
-            shots: 0,
-        }
+        Self { kind, cooldown: 0.5, node, carry: 0.0, shots: 0 }
     }
 }
 
@@ -48,11 +42,7 @@ pub struct OreNode {
 /// so the box stays axis-aligned and only swaps its X/Z extents.
 pub fn oriented_half(half: Vec3, yaw: f32) -> Vec3 {
     let quarter_turns = (yaw / std::f32::consts::FRAC_PI_2).round() as i32;
-    if quarter_turns.rem_euclid(2) == 1 {
-        Vec3::new(half.z, half.y, half.x)
-    } else {
-        half
-    }
+    if quarter_turns.rem_euclid(2) == 1 { Vec3::new(half.z, half.y, half.x) } else { half }
 }
 
 pub fn snap_yaw(yaw: f32) -> f32 {
@@ -76,19 +66,13 @@ pub fn run_structures(
     for (entity, mut transform, mut structure, health) in &mut structures {
         let def = &content.structures[structure.kind as usize];
         if !health.alive() {
-            fx.write(FxEvent::StructureLost {
-                at: transform.translation + Vec3::Y * def.half.y,
-            });
+            fx.write(FxEvent::StructureLost { at: transform.translation + Vec3::Y * def.half.y });
             commands.entity(entity).despawn();
             continue;
         }
         structure.cooldown -= dt;
         match def.kind {
-            StructureKind::Turret {
-                range,
-                damage,
-                interval,
-            } => {
+            StructureKind::Turret { range, damage, interval } => {
                 if structure.cooldown > 0.0 {
                     continue;
                 }
@@ -100,25 +84,14 @@ pub fn run_structures(
                         structure.cooldown = interval;
                         structure.shots = structure.shots.wrapping_add(1);
                         hits.write(Hit::plain(target.entity, damage * turret_bonus, None));
-                        fx.write(FxEvent::Shot {
-                            by: 255,
-                            sound: 7,
-                            from: muzzle + to.normalize_or_zero() * 0.9,
-                            to: target.pos,
-                            beam: false,
-                            tracer: oz_core::model::Paint::Blue,
-                            quiet: false,
-                            local: false,
-                        });
+                        fx.write(FxEvent::Shot { by: 255, sound: 7, from: muzzle + to.normalize_or_zero() * 0.9, to: target.pos, beam: false, tracer: oz_core::model::Paint::Blue, quiet: false, local: false });
                     }
                     // Nothing in range: check again shortly instead of every frame.
                     None => structure.cooldown = 0.25,
                 }
             }
             StructureKind::Drill { rate } => {
-                let Some(mut node) = structure.node.and_then(|node| ores.get_mut(node).ok()) else {
-                    continue;
-                };
+                let Some(mut node) = structure.node.and_then(|node| ores.get_mut(node).ok()) else { continue };
                 let mined = (rate * drill_bonus * dt).min(node.amount);
                 node.amount -= mined;
                 structure.carry += mined;

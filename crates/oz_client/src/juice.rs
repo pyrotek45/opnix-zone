@@ -57,38 +57,17 @@ impl Plugin for JuicePlugin {
             .init_resource::<KillMemory>()
             .add_systems(
                 OnEnter(MatchPhase::Active),
-                (
-                    spawn_banner,
-                    |mut memory: ResMut<KillMemory>, mut banners: ResMut<Banners>| {
-                        *memory = KillMemory::default();
-                        *banners = Banners::default();
-                    },
-                ),
+                (spawn_banner, |mut memory: ResMut<KillMemory>, mut banners: ResMut<Banners>| {
+                    *memory = KillMemory::default();
+                    *banners = Banners::default();
+                }),
             )
-            .add_systems(
-                Update,
-                call_in
-                    .in_set(ClientSet::Input)
-                    .after(crate::input::ReadDevices)
-                    .run_if(in_state(MatchPhase::Active)),
-            )
-            .add_systems(
-                Update,
-                (medals, heartbeat, show_banner)
-                    .chain()
-                    .in_set(ClientSet::Present)
-                    .run_if(in_state(MatchPhase::Active)),
-            );
+            .add_systems(Update, call_in.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
+            .add_systems(Update, (medals, heartbeat, show_banner).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
-fn call_in(
-    controls: Res<Controls>,
-    screen: Res<Screen>,
-    players: Query<&Player, With<LocalPlayer>>,
-    mut orders: EventWriter<CommandEvent>,
-    mut sounds: EventWriter<PlaySfx>,
-) {
+fn call_in(controls: Res<Controls>, screen: Res<Screen>, players: Query<&Player, With<LocalPlayer>>, mut orders: EventWriter<CommandEvent>, mut sounds: EventWriter<PlaySfx>) {
     if !controls.killstreak || *screen != Screen::None {
         return;
     }
@@ -97,10 +76,7 @@ fn call_in(
         sounds.write(PlaySfx::ui(Sfx::UiDeny));
         return;
     }
-    orders.write(CommandEvent {
-        player: player.id,
-        command: PlayerCommand::UseStreak,
-    });
+    orders.write(CommandEvent { player: player.id, command: PlayerCommand::UseStreak });
 }
 
 fn spawn_banner(mut commands: Commands) {
@@ -108,38 +84,13 @@ fn spawn_banner(mut commands: Commands) {
         .spawn((
             MatchEntity,
             BannerRoot,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                top: Val::Percent(24.0),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                ..default()
-            },
+            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), top: Val::Percent(24.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() },
             Visibility::Hidden,
             GlobalZIndex(30),
         ))
         .with_children(|root| {
-            root.spawn((
-                BannerTitle,
-                Text::new(""),
-                TextFont {
-                    font_size: 40.0,
-                    ..default()
-                },
-                TextColor(ui::TEXT),
-                TextShadow::default(),
-            ));
-            root.spawn((
-                BannerSubtitle,
-                Text::new(""),
-                TextFont {
-                    font_size: 17.0,
-                    ..default()
-                },
-                TextColor(ui::ACCENT),
-                TextShadow::default(),
-            ));
+            root.spawn((BannerTitle, Text::new(""), TextFont { font_size: 40.0, ..default() }, TextColor(ui::TEXT), TextShadow::default()));
+            root.spawn((BannerSubtitle, Text::new(""), TextFont { font_size: 17.0, ..default() }, TextColor(ui::ACCENT), TextShadow::default()));
         });
 }
 
@@ -162,18 +113,10 @@ fn medals(
         return;
     };
     let now = time.elapsed_secs();
-    let name_of = |id: u8| {
-        state
-            .roster
-            .iter()
-            .find(|r| r.id == id)
-            .map_or("SOMEONE".to_string(), |r| r.name.clone())
-    };
+    let name_of = |id: u8| state.roster.iter().find(|r| r.id == id).map_or("SOMEONE".to_string(), |r| r.name.clone());
     for event in events.read() {
         match event {
-            FxEvent::Killed {
-                victim, by, head, ..
-            } => {
+            FxEvent::Killed { victim, by, head, .. } => {
                 let first = !memory.first_blood;
                 memory.first_blood = true;
                 if *by != me.id || *victim == me.id {
@@ -204,15 +147,7 @@ fn medals(
                 let subtitle = format!("{}  +{}", name_of(*victim), 100 + 50 * titles.len());
                 if let Some((title, rest)) = titles.split_first() {
                     let more = rest.join("  +  ");
-                    banners.push(
-                        *title,
-                        if more.is_empty() {
-                            subtitle
-                        } else {
-                            format!("{more}   {subtitle}")
-                        },
-                        ui::GOOD,
-                    );
+                    banners.push(*title, if more.is_empty() { subtitle } else { format!("{more}   {subtitle}") }, ui::GOOD);
                     sounds.write(PlaySfx::new(Sfx::Medal, None));
                 } else {
                     banners.push("", subtitle, ui::TEXT);
@@ -226,21 +161,13 @@ fn medals(
                     l::LEFT_LEG => ("LEFT LEG", "MOVING SLOWER"),
                     _ => ("RIGHT LEG", "MOVING SLOWER"),
                 };
-                banners.push(
-                    format!("{what} DESTROYED"),
-                    effect,
-                    Color::srgb(1.0, 0.45, 0.3),
-                );
+                banners.push(format!("{what} DESTROYED"), effect, Color::srgb(1.0, 0.45, 0.3));
                 sounds.write(PlaySfx::new(Sfx::Alarm, None));
             }
             FxEvent::Streak { player, reward } if *player == me.id => {
                 let def = killstreak::def(*reward);
                 let kills = def.map_or(0, |d| d.kills);
-                banners.push(
-                    format!("{kills} KILL STREAK"),
-                    format!("{} READY", killstreak::name(*reward)),
-                    Color::srgb(1.0, 0.8, 0.35),
-                );
+                banners.push(format!("{kills} KILL STREAK"), format!("{} READY", killstreak::name(*reward)), Color::srgb(1.0, 0.8, 0.35));
                 sounds.write(PlaySfx::new(Sfx::Streak, None));
             }
             FxEvent::StreakUsed { name, team, reward } => {
@@ -248,14 +175,7 @@ fn medals(
                 let what = killstreak::name(*reward);
                 if ours {
                     notices.push(format!("{name}: {what} INCOMING"));
-                    sounds.write(PlaySfx::new(
-                        if *reward == killstreak::reward::UAV {
-                            Sfx::Radar
-                        } else {
-                            Sfx::UiAccept
-                        },
-                        None,
-                    ));
+                    sounds.write(PlaySfx::new(if *reward == killstreak::reward::UAV { Sfx::Radar } else { Sfx::UiAccept }, None));
                 } else {
                     let warning = match *reward {
                         killstreak::reward::UAV => "ENEMY UAV OVERHEAD",
@@ -274,21 +194,13 @@ fn medals(
 }
 
 /// Thump thump when you are nearly dead.
-fn heartbeat(
-    time: Res<Time>,
-    mut memory: ResMut<KillMemory>,
-    players: Query<&Health, With<LocalPlayer>>,
-    mut sounds: EventWriter<PlaySfx>,
-) {
+fn heartbeat(time: Res<Time>, mut memory: ResMut<KillMemory>, players: Query<&Health, With<LocalPlayer>>, mut sounds: EventWriter<PlaySfx>) {
     let Ok(health) = players.single() else { return };
     memory.heartbeat -= time.delta_secs();
     if health.alive() && health.fraction() < 0.3 && memory.heartbeat <= 0.0 {
         // Faster the closer to death.
         memory.heartbeat = 0.6 + health.fraction() * 1.5;
-        sounds.write(PlaySfx {
-            volume: 0.8,
-            ..PlaySfx::new(Sfx::Heartbeat, None)
-        });
+        sounds.write(PlaySfx { volume: 0.8, ..PlaySfx::new(Sfx::Heartbeat, None) });
     }
 }
 
@@ -300,12 +212,7 @@ fn show_banner(
     mut title: Query<(&mut Text, &mut TextColor), (With<BannerTitle>, Without<BannerSubtitle>)>,
     mut subtitle: Query<&mut Text, (With<BannerSubtitle>, Without<BannerTitle>)>,
 ) {
-    let (
-        Ok((mut visibility, mut transform)),
-        Ok((mut title_text, mut title_color)),
-        Ok(mut subtitle_text),
-    ) = (root.single_mut(), title.single_mut(), subtitle.single_mut())
-    else {
+    let (Ok((mut visibility, mut transform)), Ok((mut title_text, mut title_color)), Ok(mut subtitle_text)) = (root.single_mut(), title.single_mut(), subtitle.single_mut()) else {
         return;
     };
     let dt = time.delta_secs();

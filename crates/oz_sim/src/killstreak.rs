@@ -44,36 +44,11 @@ pub struct StreakDef {
 
 /// Every reward, cheapest first.
 pub const STREAKS: [StreakDef; 5] = [
-    StreakDef {
-        kills: 3,
-        id: reward::UAV,
-        name: "RECON UAV",
-        blurb: "Every enemy shows on your team's radar for 30 seconds",
-    },
-    StreakDef {
-        kills: 4,
-        id: reward::SUPPLY,
-        name: "SUPPLY DROP",
-        blurb: "Heals and rearms your whole team, gear included",
-    },
-    StreakDef {
-        kills: 5,
-        id: reward::AIRSTRIKE,
-        name: "AIRSTRIKE",
-        blurb: "A jet drops a line of bombs where you aim",
-    },
-    StreakDef {
-        kills: 7,
-        id: reward::DRONE,
-        name: "ATTACK DRONE",
-        blurb: "Hovers over you for 30 seconds, shooting enemies it sees",
-    },
-    StreakDef {
-        kills: 9,
-        id: reward::ARTILLERY,
-        name: "ARTILLERY BARRAGE",
-        blurb: "Shells rain down around where you aim",
-    },
+    StreakDef { kills: 3, id: reward::UAV, name: "RECON UAV", blurb: "Every enemy shows on your team's radar for 30 seconds" },
+    StreakDef { kills: 4, id: reward::SUPPLY, name: "SUPPLY DROP", blurb: "Heals and rearms your whole team, gear included" },
+    StreakDef { kills: 5, id: reward::AIRSTRIKE, name: "AIRSTRIKE", blurb: "A jet drops a line of bombs where you aim" },
+    StreakDef { kills: 7, id: reward::DRONE, name: "ATTACK DRONE", blurb: "Hovers over you for 30 seconds, shooting enemies it sees" },
+    StreakDef { kills: 9, id: reward::ARTILLERY, name: "ARTILLERY BARRAGE", blurb: "Shells rain down around where you aim" },
 ];
 
 /// The three streaks a class carries when it does not choose.
@@ -105,11 +80,7 @@ pub fn chosen(streaks: [u8; 3]) -> [u8; 3] {
 
 /// The reward the next call-in will use: the newest one earned.
 pub fn next(rewards: &[u8; STACK]) -> Option<&'static StreakDef> {
-    rewards
-        .iter()
-        .rev()
-        .find(|id| **id != 0)
-        .and_then(|id| def(*id))
+    rewards.iter().rev().find(|id| **id != 0).and_then(|id| def(*id))
 }
 
 /// Puts a freshly earned reward on top of the stack; a full stack drops its oldest.
@@ -178,13 +149,7 @@ pub fn use_streaks(
     mut state: ResMut<MatchState>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(
-        &mut Player,
-        &Transform,
-        &PlayerInput,
-        &mut Health,
-        &mut Arsenal,
-    )>,
+    mut players: Query<(&mut Player, &Transform, &PlayerInput, &mut Health, &mut Arsenal)>,
     content: Res<Content>,
     mut fx: EventWriter<FxEvent>,
 ) {
@@ -192,18 +157,11 @@ pub fn use_streaks(
         if order.command != PlayerCommand::UseStreak {
             continue;
         }
-        let Some((mut player, transform, input, health, _)) =
-            players.iter_mut().find(|(p, ..)| p.id == order.player)
-        else {
+        let Some((mut player, transform, input, health, _)) = players.iter_mut().find(|(p, ..)| p.id == order.player) else {
             continue;
         };
-        let Some(def) = next(&player.rewards)
-            .filter(|_| rules.pvp && health.alive() && state.phase == Phase::Live)
-        else {
-            fx.write(FxEvent::Cue {
-                to: order.player,
-                sfx: Sfx::UiDeny,
-            });
+        let Some(def) = next(&player.rewards).filter(|_| rules.pvp && health.alive() && state.phase == Phase::Live) else {
+            fx.write(FxEvent::Cue { to: order.player, sfx: Sfx::UiDeny });
             continue;
         };
         pop(&mut player.rewards);
@@ -216,10 +174,7 @@ pub fn use_streaks(
             if let Some((d, _)) = statics.raycast(eye, dir, reach) {
                 reach = reach.min(d);
             }
-            (
-                eye + dir * reach,
-                Vec3::new(dir.x, 0.0, dir.z).normalize_or(Vec3::NEG_Z),
-            )
+            (eye + dir * reach, Vec3::new(dir.x, 0.0, dir.z).normalize_or(Vec3::NEG_Z))
         };
         match def.id {
             reward::UAV => state.uav[(team as usize).min(1)] = UAV_SECONDS,
@@ -229,71 +184,26 @@ pub fn use_streaks(
                         health.hp = health.max;
                         mate.burn_time = 0.0;
                         crate::weapons::top_up(&mut arsenal, &content.weapons);
-                        mate.gear_left = content
-                            .gear
-                            .get(mate.gear as usize)
-                            .map_or(mate.gear_left, |g| g.count.max(mate.gear_left));
+                        mate.gear_left = content.gear.get(mate.gear as usize).map_or(mate.gear_left, |g| g.count.max(mate.gear_left));
                     }
                 }
-                fx.write(FxEvent::Sound {
-                    sfx: Sfx::Buy,
-                    at: None,
-                });
+                fx.write(FxEvent::Sound { sfx: Sfx::Buy, at: None });
             }
             reward::ARTILLERY => {
                 let (at, dir) = aim(transform, input);
-                commands.spawn((
-                    MatchEntity,
-                    Airstrike {
-                        at,
-                        dir,
-                        owner: id,
-                        team,
-                        timer: BARRAGE_DELAY,
-                        flown: true,
-                        dropped: 0,
-                        barrage: true,
-                    },
-                ));
+                commands.spawn((MatchEntity, Airstrike { at, dir, owner: id, team, timer: BARRAGE_DELAY, flown: true, dropped: 0, barrage: true }));
             }
             reward::AIRSTRIKE => {
                 // Bombs fall along the line you are looking down, centred where you aim.
                 let (at, flat) = aim(transform, input);
-                commands.spawn((
-                    MatchEntity,
-                    Airstrike {
-                        at,
-                        dir: flat,
-                        owner: id,
-                        team,
-                        timer: STRIKE_DELAY,
-                        flown: false,
-                        dropped: 0,
-                        barrage: false,
-                    },
-                ));
+                commands.spawn((MatchEntity, Airstrike { at, dir: flat, owner: id, team, timer: STRIKE_DELAY, flown: false, dropped: 0, barrage: false }));
             }
             _ => {
                 let at = transform.translation + Vec3::Y * 4.5;
-                commands.spawn((
-                    MatchEntity,
-                    ids.next(),
-                    Drone {
-                        owner: id,
-                        team,
-                        life: DRONE_SECONDS,
-                        cooldown: 1.0,
-                        orbit: 0.0,
-                    },
-                    Transform::from_translation(at),
-                ));
+                commands.spawn((MatchEntity, ids.next(), Drone { owner: id, team, life: DRONE_SECONDS, cooldown: 1.0, orbit: 0.0 }, Transform::from_translation(at)));
             }
         }
-        fx.write(FxEvent::StreakUsed {
-            name,
-            team,
-            reward: def.id,
-        });
+        fx.write(FxEvent::StreakUsed { name, team, reward: def.id });
     }
 }
 
@@ -309,14 +219,7 @@ pub fn run_streaks(
     mut commands: Commands,
     mut strikes: Query<(Entity, &mut Airstrike)>,
     mut drones: Query<(Entity, &mut Drone, &mut Transform), Without<Player>>,
-    mut players: Query<
-        (&Transform, &mut Health, &mut Player),
-        (
-            Without<crate::combat::Projectile>,
-            Without<crate::structures::Structure>,
-            Without<Drone>,
-        ),
-    >,
+    mut players: Query<(&Transform, &mut Health, &mut Player), (Without<crate::combat::Projectile>, Without<crate::structures::Structure>, Without<Drone>)>,
     smokes: Query<(&Transform, &SmokeCloud), (Without<Player>, Without<Drone>)>,
     mut hits: EventWriter<crate::combat::Hit>,
     mut fx: EventWriter<FxEvent>,
@@ -325,30 +228,17 @@ pub fn run_streaks(
     for uav in &mut state.uav {
         *uav = (*uav - dt).max(0.0);
     }
-    let name_of = |state: &MatchState, id: u8| {
-        state
-            .roster
-            .iter()
-            .find(|r| r.id == id)
-            .map_or(String::new(), |r| r.name.clone())
-    };
+    let name_of = |state: &MatchState, id: u8| state.roster.iter().find(|r| r.id == id).map_or(String::new(), |r| r.name.clone());
 
     for (entity, mut strike) in &mut strikes {
         strike.timer -= dt;
         if !strike.flown && strike.timer <= 0.7 {
             strike.flown = true;
             let high = strike.at + Vec3::Y * 38.0;
-            fx.write(FxEvent::Flyby {
-                from: high - strike.dir * 160.0,
-                to: high + strike.dir * 160.0,
-            });
+            fx.write(FxEvent::Flyby { from: high - strike.dir * 160.0, to: high + strike.dir * 160.0 });
         }
         // One bomb every 0.12 s once the timer runs out; artillery shells land slower and scattered.
-        let (count, gap) = if strike.barrage {
-            (SHELLS, 0.38)
-        } else {
-            (BOMBS, 0.12)
-        };
+        let (count, gap) = if strike.barrage { (SHELLS, 0.38) } else { (BOMBS, 0.12) };
         while strike.timer <= -(strike.dropped as f32) * gap && strike.dropped < count {
             let p = if strike.barrage {
                 // A sunflower scatter: even cover of the target area, no two shells alike.
@@ -357,39 +247,13 @@ pub fn run_streaks(
                 let angle = k * 2.399 + strike.at.x;
                 strike.at + Vec3::new(angle.cos() * r, 0.0, angle.sin() * r)
             } else {
-                strike.at
-                    + strike.dir * (strike.dropped as f32 - (BOMBS - 1) as f32 * 0.5) * BOMB_SPACING
+                strike.at + strike.dir * (strike.dropped as f32 - (BOMBS - 1) as f32 * 0.5) * BOMB_SPACING
             };
-            let ground = map
-                .height(p.x, p.z)
-                .max(statics.support(p.x, p.z, p.y + 0.5));
+            let ground = map.height(p.x, p.z).max(statics.support(p.x, p.z, p.y + 0.5));
             let at = Vec3::new(p.x, ground.max(p.y - 3.0) + 0.4, p.z);
-            fx.write(FxEvent::Explosion {
-                at,
-                radius: BOMB_RADIUS,
-            });
-            crate::combat::splash(
-                &grid,
-                &mut hits,
-                at,
-                BOMB_RADIUS,
-                BOMB_DAMAGE,
-                Some(strike.owner),
-                None,
-            );
-            blast_players(
-                &statics,
-                &content,
-                &mut state,
-                &mut fx,
-                &mut players,
-                at,
-                BOMB_RADIUS,
-                BOMB_DAMAGE,
-                strike.team,
-                strike.owner,
-                None,
-            );
+            fx.write(FxEvent::Explosion { at, radius: BOMB_RADIUS });
+            crate::combat::splash(&grid, &mut hits, at, BOMB_RADIUS, BOMB_DAMAGE, Some(strike.owner), None);
+            blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, BOMB_RADIUS, BOMB_DAMAGE, strike.team, strike.owner, None);
             strike.dropped += 1;
         }
         if strike.dropped >= count {
@@ -399,15 +263,9 @@ pub fn run_streaks(
 
     for (entity, mut drone, mut transform) in &mut drones {
         drone.life -= dt;
-        let owner = players
-            .iter()
-            .find(|(_, _, p)| p.id == drone.owner)
-            .map(|(t, h, _)| (t.translation, h.alive()));
+        let owner = players.iter().find(|(_, _, p)| p.id == drone.owner).map(|(t, h, _)| (t.translation, h.alive()));
         if drone.life <= 0.0 || owner.is_none() || state.phase != Phase::Live {
-            fx.write(FxEvent::Explosion {
-                at: transform.translation,
-                radius: 1.5,
-            });
+            fx.write(FxEvent::Explosion { at: transform.translation, radius: 1.5 });
             commands.entity(entity).despawn();
             continue;
         }
@@ -427,15 +285,9 @@ pub fn run_streaks(
             .filter(|(_, chest)| {
                 let span = *chest - at;
                 let d = span.length();
-                d < DRONE_RANGE
-                    && statics.raycast(at, span / d.max(1e-3), d).is_none()
-                    && map.raycast(at, span / d.max(1e-3), d) >= d - 0.3
-                    && !smoke_between(smokes, at, *chest)
+                d < DRONE_RANGE && statics.raycast(at, span / d.max(1e-3), d).is_none() && map.raycast(at, span / d.max(1e-3), d) >= d - 0.3 && !smoke_between(smokes, at, *chest)
             })
-            .min_by(|a, b| {
-                a.1.distance_squared(at)
-                    .total_cmp(&b.1.distance_squared(at))
-            });
+            .min_by(|a, b| a.1.distance_squared(at).total_cmp(&b.1.distance_squared(at)));
         let Some((victim, chest)) = target else {
             continue;
         };
@@ -444,38 +296,16 @@ pub fn run_streaks(
             continue;
         }
         drone.cooldown = DRONE_RATE;
-        fx.write(FxEvent::Shot {
-            by: DRONE_SHOOTER,
-            sound: 1,
-            from: at - Vec3::Y * 0.3,
-            to: chest,
-            beam: false,
-            tracer: oz_core::model::Paint::Red,
-            quiet: false,
-            local: false,
-        });
+        fx.write(FxEvent::Shot { by: DRONE_SHOOTER, sound: 1, from: at - Vec3::Y * 0.3, to: chest, beam: false, tracer: oz_core::model::Paint::Red, quiet: false, local: false });
         let name = name_of(&state, drone.owner);
-        if let Some((_, mut health, mut player)) =
-            players.iter_mut().find(|(_, _, p)| p.id == victim)
-        {
-            damage_player(
-                &mut health,
-                &mut player,
-                DRONE_DAMAGE,
-                Some((&name, drone.team, drone.owner)),
-                &mut state,
-                &mut fx,
-            );
+        if let Some((_, mut health, mut player)) = players.iter_mut().find(|(_, _, p)| p.id == victim) {
+            damage_player(&mut health, &mut player, DRONE_DAMAGE, Some((&name, drone.team, drone.owner)), &mut state, &mut fx);
         }
     }
 }
 
 /// Authority: bots call in what they earn - air support while they are in a firefight.
-pub fn bots_call_in(
-    state: Res<MatchState>,
-    bots: Query<(&Player, &PlayerInput, &Health), With<crate::bots::Bot>>,
-    mut orders: EventWriter<CommandEvent>,
-) {
+pub fn bots_call_in(state: Res<MatchState>, bots: Query<(&Player, &PlayerInput, &Health), With<crate::bots::Bot>>, mut orders: EventWriter<CommandEvent>) {
     if state.phase != Phase::Live {
         return;
     }
@@ -484,12 +314,8 @@ pub fn bots_call_in(
             continue;
         };
         let fighting = input.held(crate::player::buttons::FIRE);
-        if health.alive() && (!matches!(def.id, reward::AIRSTRIKE | reward::ARTILLERY) || fighting)
-        {
-            orders.write(CommandEvent {
-                player: player.id,
-                command: PlayerCommand::UseStreak,
-            });
+        if health.alive() && (!matches!(def.id, reward::AIRSTRIKE | reward::ARTILLERY) || fighting) {
+            orders.write(CommandEvent { player: player.id, command: PlayerCommand::UseStreak });
         }
     }
 }
@@ -513,9 +339,6 @@ mod tests {
         assert_eq!(pop(&mut stack), Some(reward::DRONE));
         assert_eq!(name(reward::DRONE), "ATTACK DRONE");
         assert_eq!(chosen([0, 0, 0]), DEFAULT_STREAKS);
-        assert_eq!(
-            chosen([reward::SUPPLY, reward::SUPPLY, 99]),
-            [reward::SUPPLY, 0, 0]
-        );
+        assert_eq!(chosen([reward::SUPPLY, reward::SUPPLY, 99]), [reward::SUPPLY, 0, 0]);
     }
 }

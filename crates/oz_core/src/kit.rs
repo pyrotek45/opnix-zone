@@ -5,10 +5,7 @@
 //! free to tweak prices and reserves, or to add their own frames.
 
 use crate::{
-    arsenal::{
-        Action, Caliber, FireMode, GunClass, GunFrame, MagShape, ReloadStyle, SLOT_COUNT,
-        StockShape, WeaponDef, slot,
-    },
+    arsenal::{Action, Caliber, FireMode, GunClass, GunFrame, MagShape, ReloadStyle, SLOT_COUNT, StockShape, WeaponDef, slot},
     economy::Cost,
     model::{BlockModel, Paint},
 };
@@ -102,18 +99,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.65,
             ads_fov: 58.0,
             sound: 0,
-            frame: Some(GunFrame {
-                body: Paint::Steel,
-                accent: Paint::Gold,
-                width: 0.065,
-                height: 0.11,
-                receiver: 0.24,
-                barrel: 0.05,
-                bore: 0.03,
-                stock: StockShape::None,
-                handguard: false,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { body: Paint::Steel, accent: Paint::Gold, width: 0.065, height: 0.11, receiver: 0.24, barrel: 0.05, bore: 0.03, stock: StockShape::None, handguard: false, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -134,16 +120,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.32,
             ads_fov: 58.0,
             sound: 1,
-            frame: Some(GunFrame {
-                width: 0.075,
-                height: 0.12,
-                receiver: 0.3,
-                barrel: 0.14,
-                bore: 0.035,
-                mag: MagShape::Curved,
-                stock: StockShape::Skeleton,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { width: 0.075, height: 0.12, receiver: 0.3, barrel: 0.14, bore: 0.035, mag: MagShape::Curved, stock: StockShape::Skeleton, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -167,17 +144,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 1.4,
             ads_fov: 60.0,
             sound: 2,
-            frame: Some(GunFrame {
-                accent: Paint::Gold,
-                furniture: Paint::Wood,
-                height: 0.12,
-                receiver: 0.32,
-                barrel: 0.44,
-                bore: 0.05,
-                mag: MagShape::Tube,
-                handguard: false,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { accent: Paint::Gold, furniture: Paint::Wood, height: 0.12, receiver: 0.32, barrel: 0.44, bore: 0.05, mag: MagShape::Tube, handguard: false, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -198,10 +165,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.58,
             ads_fov: 50.0,
             sound: 3,
-            frame: Some(GunFrame {
-                mag: MagShape::Curved,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { mag: MagShape::Curved, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -254,10 +218,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             range: 75.0,
             splash: 9.0,
             recoil: 1.45,
-            mode: FireMode::Projectile {
-                speed: 46.0,
-                gravity: 7.0,
-            },
+            mode: FireMode::Projectile { speed: 46.0, gravity: 7.0 },
             ads_fov: 55.0,
             sound: 5,
             frame: Some(GunFrame {
@@ -329,18 +290,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             ads_fov: 40.0,
             sound: 8,
             defaults: sniper_defaults,
-            frame: Some(GunFrame {
-                body: Paint::Dark,
-                accent: Paint::Gold,
-                furniture: Paint::Wood,
-                width: 0.08,
-                height: 0.12,
-                receiver: 0.36,
-                barrel: 0.54,
-                bore: 0.038,
-                handguard: true,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { body: Paint::Dark, accent: Paint::Gold, furniture: Paint::Wood, width: 0.08, height: 0.12, receiver: 0.36, barrel: 0.54, bore: 0.038, handguard: true, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -362,15 +312,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.5,
             ads_fov: 50.0,
             sound: 3,
-            frame: Some(GunFrame {
-                body: Paint::Concrete,
-                accent: Paint::Red,
-                height: 0.13,
-                receiver: 0.32,
-                barrel: 0.28,
-                stock: StockShape::Skeleton,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { body: Paint::Concrete, accent: Paint::Red, height: 0.13, receiver: 0.32, barrel: 0.28, stock: StockShape::Skeleton, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -426,15 +368,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.95,
             ads_fov: 42.0,
             sound: 3,
-            frame: Some(GunFrame {
-                body: Paint::Dark,
-                accent: Paint::Teal,
-                furniture: Paint::Wood,
-                receiver: 0.36,
-                barrel: 0.42,
-                bore: 0.038,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { body: Paint::Dark, accent: Paint::Teal, furniture: Paint::Wood, receiver: 0.36, barrel: 0.42, bore: 0.038, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -457,16 +391,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 1.1,
             ads_fov: 62.0,
             sound: 2,
-            frame: Some(GunFrame {
-                body: Paint::Steel,
-                accent: Paint::Red,
-                width: 0.09,
-                height: 0.14,
-                receiver: 0.34,
-                barrel: 0.3,
-                bore: 0.05,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { body: Paint::Steel, accent: Paint::Red, width: 0.09, height: 0.14, receiver: 0.34, barrel: 0.3, bore: 0.05, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -488,17 +413,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.26,
             ads_fov: 60.0,
             sound: 1,
-            frame: Some(GunFrame {
-                body: Paint::Gold,
-                accent: Paint::Dark,
-                width: 0.07,
-                height: 0.11,
-                receiver: 0.26,
-                barrel: 0.08,
-                bore: 0.03,
-                stock: StockShape::Skeleton,
-                ..FRAME
-            }),
+            frame: Some(GunFrame { body: Paint::Gold, accent: Paint::Dark, width: 0.07, height: 0.11, receiver: 0.26, barrel: 0.08, bore: 0.03, stock: StockShape::Skeleton, ..FRAME }),
             ..base.clone()
         },
         WeaponDef {
@@ -549,26 +464,9 @@ mod tests {
         for gun in &guns {
             let state = WeaponState::fresh(gun);
             let stats = resolve(gun, &state, &table);
-            assert!(
-                gun.mag > 0 && stats.damage > 0.0 && stats.interval > 0.0 && stats.length > 0.1,
-                "{}",
-                gun.name
-            );
-            assert!(
-                assemble(gun, &state.equipped).parts.len() >= 12,
-                "{}",
-                gun.name
-            );
+            assert!(gun.mag > 0 && stats.damage > 0.0 && stats.interval > 0.0 && stats.length > 0.1, "{}", gun.name);
+            assert!(assemble(gun, &state.equipped).parts.len() >= 12, "{}", gun.name);
         }
-        assert_eq!(
-            resolve(
-                &guns[gun::SNIPER],
-                &WeaponState::fresh(&guns[gun::SNIPER]),
-                &table
-            )
-            .scope,
-            2,
-            "snipers ship with a scope"
-        );
+        assert_eq!(resolve(&guns[gun::SNIPER], &WeaponState::fresh(&guns[gun::SNIPER]), &table).scope, 2, "snipers ship with a scope");
     }
 }

@@ -40,84 +40,36 @@ pub struct AmbientPlugin;
 
 impl Plugin for AmbientPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            OnEnter(MatchPhase::Active),
-            dress_world.after(crate::scene::BuildScene),
-        )
-        .add_systems(
-            Update,
-            (fountain, flags, clouds, rain)
-                .in_set(ClientSet::Present)
-                .run_if(in_state(MatchPhase::Active)),
-        );
+        app.add_systems(OnEnter(MatchPhase::Active), dress_world.after(crate::scene::BuildScene))
+            .add_systems(Update, (fountain, flags, clouds, rain).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
-fn dress_world(
-    mut commands: Commands,
-    map: Res<Map>,
-    rules: Res<Rules>,
-    art: Res<Art>,
-    mut meshes: ResMut<Assets<Mesh>>,
-) {
+fn dress_world(mut commands: Commands, map: Res<Map>, rules: Res<Rules>, art: Res<Art>, mut meshes: ResMut<Assets<Mesh>>) {
     let mut rng = Rng::new(rules.recipe.seed ^ 0x9a55);
     // Grass: a few tilted blades per tuft, all in one mesh.
     let mut grass = MeshBuilder::default();
     for tuft in &map.grass {
         for _ in 0..3 {
-            let lean = Quat::from_euler(
-                EulerRot::YXZ,
-                rng.range(0.0, std::f32::consts::TAU),
-                rng.range(-0.35, 0.35),
-                rng.range(-0.35, 0.35),
-            );
+            let lean = Quat::from_euler(EulerRot::YXZ, rng.range(0.0, std::f32::consts::TAU), rng.range(-0.35, 0.35), rng.range(-0.35, 0.35));
             let height = rng.range(0.18, 0.42);
             let at = *tuft + Vec3::new(rng.range(-0.2, 0.2), height * 0.5, rng.range(-0.2, 0.2));
-            let paint = if rng.chance(0.5) {
-                Paint::Leaf
-            } else {
-                Paint::LeafLight
-            };
-            let part = Part {
-                shape: Shape::Cube,
-                paint,
-                pos: at,
-                size: Vec3::new(0.035, height, 0.035),
-                rot: lean,
-                anim: Anim::None,
-            };
+            let paint = if rng.chance(0.5) { Paint::Leaf } else { Paint::LeafLight };
+            let part = Part { shape: Shape::Cube, paint, pos: at, size: Vec3::new(0.035, height, 0.035), rot: lean, anim: Anim::None };
             art.add_part(&mut grass, &part, Transform::IDENTITY);
         }
     }
     if !grass.is_empty() {
-        commands.spawn((
-            MatchEntity,
-            Mesh3d(meshes.add(grass.build())),
-            MeshMaterial3d(art.lit.clone()),
-            Transform::IDENTITY,
-            NotShadowCaster,
-        ));
+        commands.spawn((MatchEntity, Mesh3d(meshes.add(grass.build())), MeshMaterial3d(art.lit.clone()), Transform::IDENTITY, NotShadowCaster));
     }
 
     // Flags on their poles.
     for (i, top) in map.flags.iter().enumerate() {
         let paint = [Paint::Red, Paint::Gold, Paint::Teal, Paint::Coral][i % 4];
         commands
-            .spawn((
-                MatchEntity,
-                Flag {
-                    phase: i as f32 * 1.7,
-                },
-                Transform::from_translation(*top),
-                Visibility::Inherited,
-            ))
+            .spawn((MatchEntity, Flag { phase: i as f32 * 1.7 }, Transform::from_translation(*top), Visibility::Inherited))
             .with_children(|pivot| {
-                pivot.spawn((
-                    Mesh3d(art.primitive(Shape::Cube)),
-                    MeshMaterial3d(art.paint(paint)),
-                    Transform::from_xyz(0.5, -0.25, 0.0).with_scale(Vec3::new(1.0, 0.55, 0.03)),
-                    NotShadowCaster,
-                ));
+                pivot.spawn((Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(paint)), Transform::from_xyz(0.5, -0.25, 0.0).with_scale(Vec3::new(1.0, 0.55, 0.03)), NotShadowCaster));
             });
     }
 
@@ -125,70 +77,21 @@ fn dress_world(
     // a heavy grey deck that rolls in when the weather turns.
     for i in 0..44 {
         let heavy = i >= 16;
-        let at = Vec3::new(
-            rng.range(-220.0, 220.0),
-            rng.range(70.0, 95.0),
-            rng.range(-220.0, 220.0),
-        );
-        let size = Vec3::new(
-            rng.range(18.0, 45.0),
-            rng.range(3.0, 7.0),
-            rng.range(12.0, 30.0),
-        );
-        let paint = if heavy {
-            if rng.chance(0.5) {
-                Paint::Iron
-            } else {
-                Paint::Steel
-            }
-        } else if rng.chance(0.6) {
-            Paint::White
-        } else {
-            Paint::Bone
-        };
-        commands.spawn((
-            MatchEntity,
-            Cloud {
-                speed: rng.range(1.5, 3.5),
-                heavy,
-            },
-            Mesh3d(art.primitive(Shape::Cube)),
-            MeshMaterial3d(art.paint(paint)),
-            Transform::from_translation(at).with_scale(size),
-            NotShadowCaster,
-            Visibility::Hidden,
-        ));
+        let at = Vec3::new(rng.range(-220.0, 220.0), rng.range(70.0, 95.0), rng.range(-220.0, 220.0));
+        let size = Vec3::new(rng.range(18.0, 45.0), rng.range(3.0, 7.0), rng.range(12.0, 30.0));
+        let paint = if heavy { if rng.chance(0.5) { Paint::Iron } else { Paint::Steel } } else if rng.chance(0.6) { Paint::White } else { Paint::Bone };
+        commands.spawn((MatchEntity, Cloud { speed: rng.range(1.5, 3.5), heavy }, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(at).with_scale(size), NotShadowCaster, Visibility::Hidden));
     }
 
     // Rain: a cloud of streaks that follows the camera around (hidden until it rains).
     for _ in 0..RAIN_DROPS {
-        let at = Vec3::new(
-            rng.range(-18.0, 18.0),
-            rng.range(0.0, 22.0),
-            rng.range(-18.0, 18.0),
-        );
-        commands.spawn((
-            MatchEntity,
-            RainDrop,
-            Mesh3d(art.primitive(Shape::Cube)),
-            MeshMaterial3d(art.paint(Paint::Bone)),
-            Transform::from_translation(at).with_scale(Vec3::new(0.03, 0.7, 0.03)),
-            NotShadowCaster,
-            Visibility::Hidden,
-        ));
+        let at = Vec3::new(rng.range(-18.0, 18.0), rng.range(0.0, 22.0), rng.range(-18.0, 18.0));
+        commands.spawn((MatchEntity, RainDrop, Mesh3d(art.primitive(Shape::Cube)), MeshMaterial3d(art.paint(Paint::Bone)), Transform::from_translation(at).with_scale(Vec3::new(0.03, 0.7, 0.03)), NotShadowCaster, Visibility::Hidden));
     }
 }
 
 /// The fountain throws up water that falls back into the bowl.
-fn fountain(
-    time: Res<Time>,
-    map: Res<Map>,
-    art: Res<Art>,
-    mut commands: Commands,
-    mut drops: Query<(Entity, &mut Transform, &mut Droplet)>,
-    mut seed: Local<u32>,
-    mut timer: Local<f32>,
-) {
+fn fountain(time: Res<Time>, map: Res<Map>, art: Res<Art>, mut commands: Commands, mut drops: Query<(Entity, &mut Transform, &mut Droplet)>, mut seed: Local<u32>, mut timer: Local<f32>) {
     let Some(top) = map.fountain else { return };
     let dt = time.delta_secs().min(0.05);
     let mut alive = 0;
@@ -209,22 +112,8 @@ fn fountain(
         let angle = (*seed >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
         let out = 0.6 + ((*seed >> 4) & 0xff) as f32 / 255.0 * 0.8;
         let velocity = Vec3::new(angle.cos() * out, 3.4, angle.sin() * out);
-        let paint = if (*seed).is_multiple_of(3) {
-            Paint::White
-        } else {
-            Paint::Aether
-        };
-        commands.spawn((
-            MatchEntity,
-            Droplet {
-                velocity,
-                life: 1.6,
-            },
-            Mesh3d(art.primitive(Shape::Shard)),
-            MeshMaterial3d(art.paint(paint)),
-            Transform::from_translation(top).with_scale(Vec3::splat(0.07)),
-            NotShadowCaster,
-        ));
+        let paint = if (*seed).is_multiple_of(3) { Paint::White } else { Paint::Aether };
+        commands.spawn((MatchEntity, Droplet { velocity, life: 1.6 }, Mesh3d(art.primitive(Shape::Shard)), MeshMaterial3d(art.paint(paint)), Transform::from_translation(top).with_scale(Vec3::splat(0.07)), NotShadowCaster));
         alive += 1;
     }
 }
@@ -239,19 +128,11 @@ fn flags(time: Res<Time>, mut flags: Query<(&mut Transform, &Flag)>) {
     }
 }
 
-fn clouds(
-    time: Res<Time>,
-    state: Res<MatchState>,
-    mut clouds: Query<(&mut Transform, &Cloud, &mut Visibility)>,
-) {
+fn clouds(time: Res<Time>, state: Res<MatchState>, mut clouds: Query<(&mut Transform, &Cloud, &mut Visibility)>) {
     let dt = time.delta_secs();
     let grey = matches!(state.weather, Weather::Overcast | Weather::Rain);
     for (mut transform, cloud, mut visibility) in &mut clouds {
-        let wanted = if !cloud.heavy || grey {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        let wanted = if !cloud.heavy || grey { Visibility::Inherited } else { Visibility::Hidden };
         if *visibility != wanted {
             *visibility = wanted;
         }
@@ -263,22 +144,13 @@ fn clouds(
 }
 
 /// Rain streaks fall around the camera and wrap back to the top.
-fn rain(
-    time: Res<Time>,
-    state: Res<MatchState>,
-    camera: Query<&Transform, (With<WorldCamera>, Without<RainDrop>)>,
-    mut drops: Query<(&mut Transform, &mut Visibility), With<RainDrop>>,
-) {
+fn rain(time: Res<Time>, state: Res<MatchState>, camera: Query<&Transform, (With<WorldCamera>, Without<RainDrop>)>, mut drops: Query<(&mut Transform, &mut Visibility), With<RainDrop>>) {
     let Ok(camera) = camera.single() else { return };
     let dt = time.delta_secs().min(0.05);
     let wind = Vec3::new(1.5, -19.0, 0.6);
     let raining = state.weather == Weather::Rain;
     for (mut transform, mut visibility) in &mut drops {
-        let wanted = if raining {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        let wanted = if raining { Visibility::Inherited } else { Visibility::Hidden };
         if *visibility != wanted {
             *visibility = wanted;
         }

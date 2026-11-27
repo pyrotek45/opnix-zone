@@ -38,19 +38,8 @@ impl Plugin for SpectatePlugin {
     fn build(&self, app: &mut App) {
         let first_person = std::env::args().any(|a| a == "--spectate-fp");
         let enabled = first_person || std::env::args().any(|a| a == "--spectate");
-        app.insert_resource(Spectate {
-            enabled,
-            first_person,
-            ..default()
-        })
-        .add_systems(
-            Update,
-            follow
-                .in_set(Spectating)
-                .in_set(ClientSet::Present)
-                .after(crate::view::FollowPlayer)
-                .run_if(in_state(MatchPhase::Active)),
-        );
+        app.insert_resource(Spectate { enabled, first_person, ..default() })
+            .add_systems(Update, follow.in_set(Spectating).in_set(ClientSet::Present).after(crate::view::FollowPlayer).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -64,15 +53,9 @@ fn follow(
     players: Query<(Entity, &Player, &Transform, &PlayerInput, &Health), Without<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Player>)>,
     mut last_shot: Local<HashMap<u8, f32>>,
-    (local, mut death): (
-        Query<&Health, With<LocalPlayer>>,
-        ResMut<crate::fx::DeathInfo>,
-    ),
+    (local, mut death): (Query<&Health, With<LocalPlayer>>, ResMut<crate::fx::DeathInfo>),
     mut was_dead: Local<bool>,
-    (mut subject, mut robots): (
-        ResMut<crate::view::ViewSubject>,
-        Query<&mut Visibility, With<crate::avatar::PlayerRobot>>,
-    ),
+    (mut subject, mut robots): (ResMut<crate::view::ViewSubject>, Query<&mut Visibility, With<crate::avatar::PlayerRobot>>),
 ) {
     let now = time.elapsed_secs();
     for event in events.read() {
@@ -93,11 +76,7 @@ fn follow(
     // Whoever the camera is inside of stays hidden; everyone else shows.
     let mut show_robot = |entity: Option<Entity>, visible: bool| {
         if let Some(mut v) = entity.and_then(|e| robots.get_mut(e).ok()) {
-            let wanted = if visible {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            };
+            let wanted = if visible { Visibility::Inherited } else { Visibility::Hidden };
             if *v != wanted {
                 *v = wanted;
             }
@@ -108,12 +87,7 @@ fn follow(
     if !dead {
         death.killer = None;
     }
-    let killer = death.killer.filter(|_| dead).and_then(|id| {
-        players
-            .iter()
-            .find(|(_, p, .., h)| p.id == id && h.alive())
-            .map(|(e, ..)| e)
-    });
+    let killer = death.killer.filter(|_| dead).and_then(|id| players.iter().find(|(_, p, .., h)| p.id == id && h.alive()).map(|(e, ..)| e));
     if dead != *was_dead {
         *was_dead = dead;
         spectate.position = None;
@@ -136,21 +110,13 @@ fn follow(
     }
 
     // Cut when the shot has run long or the subject went down; prefer whoever is shooting.
-    let current = spectate
-        .target
-        .and_then(|e| players.get(e).ok())
-        .filter(|(.., health)| health.alive());
+    let current = spectate.target.and_then(|e| players.get(e).ok()).filter(|(.., health)| health.alive());
     if current.is_none() || spectate.hold <= 0.0 {
         let busiest = players
             .iter()
             .filter(|(.., health)| health.alive())
             .filter(|(entity, ..)| Some(*entity) != spectate.target || current.is_none())
-            .max_by(|a, b| {
-                last_shot
-                    .get(&a.1.id)
-                    .unwrap_or(&-99.0)
-                    .total_cmp(last_shot.get(&b.1.id).unwrap_or(&-99.0))
-            });
+            .max_by(|a, b| last_shot.get(&a.1.id).unwrap_or(&-99.0).total_cmp(last_shot.get(&b.1.id).unwrap_or(&-99.0)));
         if let Some((entity, player, ..)) = busiest {
             if spectate.target != Some(entity) {
                 spectate.position = None;
@@ -162,10 +128,7 @@ fn follow(
             spectate.hold = 7.0;
         }
     }
-    let Some((target, _, transform, input, _)) = spectate.target.and_then(|e| players.get(e).ok())
-    else {
-        return;
-    };
+    let Some((target, _, transform, input, _)) = spectate.target.and_then(|e| players.get(e).ok()) else { return };
 
     // Through their eyes: the first-person view takes them as its subject.
     let first_person = spectate.first_person && spectate.enabled;
@@ -179,37 +142,22 @@ fn follow(
     if first_person {
         return;
     }
-    let Ok((mut camera, mut projection)) = cameras.single_mut() else {
-        return;
-    };
+    let Ok((mut camera, mut projection)) = cameras.single_mut() else { return };
 
     // Over the right shoulder; if a wall is in the way, rise up and look down instead.
     let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
     let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
     // A prone body lies ahead of its feet.
-    let body = transform.translation
-        + if input.stance == stance::PRONE {
-            forward * 0.6
-        } else {
-            Vec3::ZERO
-        };
+    let body = transform.translation + if input.stance == stance::PRONE { forward * 0.6 } else { Vec3::ZERO };
     let head = body + Vec3::Y * (stance::eye(input.stance) + 0.25);
     let look = Quat::from_euler(EulerRot::YXZ, yaw, input.pitch * 0.7 - 0.12, 0.0);
-    let candidates = [
-        Vec3::new(1.1, 0.45, 3.3),
-        Vec3::new(-1.1, 0.45, 3.3),
-        Vec3::new(0.6, 1.8, 2.8),
-        Vec3::new(0.0, 3.4, 1.8),
-    ];
+    let candidates = [Vec3::new(1.1, 0.45, 3.3), Vec3::new(-1.1, 0.45, 3.3), Vec3::new(0.6, 1.8, 2.8), Vec3::new(0.0, 3.4, 1.8)];
     // Take the first clear view; failing that (indoors), the clearest one pulled in to the wall.
     let mut best: Option<(f32, Vec3)> = None;
     for local in candidates {
         let offset = Quat::from_rotation_y(yaw) * local;
         let distance = offset.length();
-        let reach = statics
-            .raycast(head, offset / distance, distance + 0.3)
-            .map_or(distance, |(d, _)| (d - 0.3).max(0.0))
-            .min(distance);
+        let reach = statics.raycast(head, offset / distance, distance + 0.3).map_or(distance, |(d, _)| (d - 0.3).max(0.0)).min(distance);
         let spot = head + offset / distance * reach.max(0.5);
         if reach >= distance * 0.8 {
             best = Some((f32::MAX, spot));
@@ -227,12 +175,8 @@ fn follow(
 
     // Aim past the subject so it sits left of centre with the fight ahead of it.
     let aim = head + look * Vec3::new(1.1, -0.2, -14.0);
-    let target = Transform::from_translation(position)
-        .looking_at(aim, Vec3::Y)
-        .rotation;
-    let rotation = spectate
-        .rotation
-        .map_or(target, |r| r.slerp(target, (blend * 1.5).min(1.0)));
+    let target = Transform::from_translation(position).looking_at(aim, Vec3::Y).rotation;
+    let rotation = spectate.rotation.map_or(target, |r| r.slerp(target, (blend * 1.5).min(1.0)));
     spectate.rotation = Some(rotation);
     camera.rotation = rotation;
     if let Projection::Perspective(perspective) = &mut *projection {

@@ -73,14 +73,7 @@ pub struct MatchSetup {
 
 impl MatchSetup {
     pub fn offline(rules: Rules, player_name: impl Into<String>) -> Self {
-        Self {
-            rules,
-            role: NetRole::Offline,
-            link: NetLink::None,
-            player_name: player_name.into(),
-            local_player: Some(0),
-            local_team: 0,
-        }
+        Self { rules, role: NetRole::Offline, link: NetLink::None, player_name: player_name.into(), local_player: Some(0), local_team: 0 }
     }
 }
 
@@ -89,30 +82,18 @@ impl MatchSetup {
 pub struct PendingMatch(pub Option<MatchSetup>);
 
 pub fn new_arsenal(catalog: &Catalog, rules: &Rules) -> Arsenal {
-    let mut arsenal = Arsenal {
-        weapons: catalog.weapons.iter().map(WeaponState::fresh).collect(),
-        ..default()
-    };
+    let mut arsenal = Arsenal { weapons: catalog.weapons.iter().map(WeaponState::fresh).collect(), ..default() };
     for index in 0..catalog.weapons.len() {
         if rules.starter_weapons & (1 << index) != 0 {
             grant_weapon(&mut arsenal, &catalog.weapons, index);
         }
     }
-    arsenal.current = (0..catalog.weapons.len())
-        .find(|i| arsenal.owns(*i))
-        .unwrap_or(0) as u8;
+    arsenal.current = (0..catalog.weapons.len()).find(|i| arsenal.owns(*i)).unwrap_or(0) as u8;
     arsenal
 }
 
 /// The components every player entity has, on every machine.
-pub fn player_bundle(
-    catalog: &Catalog,
-    rules: &Rules,
-    map: &GameMap,
-    id: u8,
-    name: String,
-    team: u8,
-) -> impl Bundle {
+pub fn player_bundle(catalog: &Catalog, rules: &Rules, map: &GameMap, id: u8, name: String, team: u8) -> impl Bundle {
     let arsenal = new_arsenal(catalog, rules);
     let team = if rules.pvp { team.min(1) } else { 0 };
     let mut player = Player::new(id, name, team);
@@ -124,11 +105,7 @@ pub fn player_bundle(
     (
         MatchEntity,
         player,
-        PlayerInput {
-            weapon: arsenal.current,
-            yaw,
-            ..default()
-        },
+        PlayerInput { weapon: arsenal.current, yaw, ..default() },
         arsenal,
         Health::full(100.0),
         Mover::default(),
@@ -146,9 +123,7 @@ pub fn start_pending_match(
     if *current.get() != MatchPhase::None {
         return;
     }
-    let Some(setup) = pending.0.take() else {
-        return;
-    };
+    let Some(setup) = pending.0.take() else { return };
     let Some(mode) = modes.0.get(setup.rules.mode as usize) else {
         warn!("unknown game mode {}", setup.rules.mode);
         return;
@@ -168,11 +143,7 @@ pub fn start_pending_match(
         let facing = Quat::from_rotation_y(f32::atan2(pad.x - map.core.x, pad.y - map.core.y));
         let at = map.ground(pad.x, pad.y);
         statics.add(standing(at, STATION_HALF));
-        commands.spawn((
-            MatchEntity,
-            Station { kind: index as u16 },
-            Transform::from_translation(at).with_rotation(facing),
-        ));
+        commands.spawn((MatchEntity, Station { kind: index as u16 }, Transform::from_translation(at).with_rotation(facing)));
     }
     if rules.objective_hp > 0.0 {
         statics.add(standing(map.ground(map.core.x, map.core.y), CORE_HALF));
@@ -192,27 +163,13 @@ pub fn start_pending_match(
             commands.spawn((
                 MatchEntity,
                 ids.next(),
-                OreNode {
-                    ore: deposit.ore,
-                    amount: deposit.amount,
-                    max: deposit.amount,
-                },
+                OreNode { ore: deposit.ore, amount: deposit.amount, max: deposit.amount },
                 Transform::from_translation(deposit.pos),
             ));
         }
     }
     if let Some(id) = setup.local_player {
-        let mut player = commands.spawn((
-            player_bundle(
-                &catalog,
-                &rules,
-                &map,
-                id,
-                setup.player_name.clone(),
-                setup.local_team,
-            ),
-            LocalPlayer,
-        ));
+        let mut player = commands.spawn((player_bundle(&catalog, &rules, &map, id, setup.player_name.clone(), setup.local_team), LocalPlayer));
         if setup.role != NetRole::Client {
             player.insert(ids.next());
         }

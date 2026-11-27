@@ -1,9 +1,7 @@
 //! Shared match state, rules, commands and presentation events.
 
 use bevy::prelude::*;
-use oz_core::{
-    arsenal::ModKind, economy::Stock, model::Paint, rng::Rng, synth::Sfx, worldgen::WorldRecipe,
-};
+use oz_core::{arsenal::ModKind, economy::Stock, model::Paint, rng::Rng, synth::Sfx, worldgen::WorldRecipe};
 use serde::{Deserialize, Serialize};
 
 /// Who owns the simulation on this machine.
@@ -325,16 +323,10 @@ pub enum FxEvent {
 
 impl FxEvent {
     pub fn notice(text: impl Into<String>) -> Self {
-        FxEvent::Notice {
-            to: 255,
-            text: text.into(),
-        }
+        FxEvent::Notice { to: 255, text: text.into() }
     }
 
     pub fn tell(player: u8, text: impl Into<String>) -> Self {
-        FxEvent::Notice {
-            to: player,
-            text: text.into(),
-        }
+        FxEvent::Notice { to: player, text: text.into() }
     }
 }

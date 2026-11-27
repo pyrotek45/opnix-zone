@@ -1,9 +1,7 @@
 //! Seeded 2D value noise and fractal Brownian motion.
 
 fn hash(seed: u64, x: i32, z: i32) -> f32 {
-    let mut h = seed
-        ^ (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        ^ (z as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    let mut h = seed ^ (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (z as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     h = (h ^ (h >> 31)).wrapping_mul(0xD6E8_FEB8_6659_FD93);
     h ^= h >> 32;
     (h >> 40) as f32 / (1u64 << 24) as f32

@@ -10,13 +10,7 @@ use oz_sim::prelude::*;
 
 fn main() {
     App::new()
-        .add_plugins((
-            ClientPlugin {
-                title: "IRON TOWN".into(),
-            },
-            SimPlugin,
-            IronTownPlugin,
-        ))
+        .add_plugins((ClientPlugin { title: "IRON TOWN".into() }, SimPlugin, IronTownPlugin))
         .add_systems(Startup, launch_from_args)
         .run();
 }

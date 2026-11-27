@@ -184,29 +184,15 @@ impl Plugin for UiKitPlugin {
             .init_resource::<FocusRequest>()
             .insert_resource(UiDirty(true))
             .add_event::<ActEvent>()
-            .add_systems(
-                Update,
-                (mark_dirty, interact)
-                    .chain()
-                    .in_set(ClientSet::Input)
-                    .after(crate::input::ReadDevices),
-            );
+            .add_systems(Update, (mark_dirty, interact).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices));
     }
 }
 
-fn mark_dirty(
-    screen: Res<Screen>,
-    mut dirty: ResMut<UiDirty>,
-    mut focus: ResMut<Focus>,
-    mut last: Local<Option<Screen>>,
-) {
+fn mark_dirty(screen: Res<Screen>, mut dirty: ResMut<UiDirty>, mut focus: ResMut<Focus>, mut last: Local<Option<Screen>>) {
     if screen.is_changed() {
         dirty.0 = true;
         // Moving between pages of a station keeps the cursor; a new screen resets it.
-        let same_family = matches!(
-            (&*last, &*screen),
-            (Some(Screen::Station { .. }), Screen::Station { .. })
-        );
+        let same_family = matches!((&*last, &*screen), (Some(Screen::Station { .. }), Screen::Station { .. }));
         if !same_family && last.as_ref() != Some(&*screen) {
             focus.0 = 0;
         }
@@ -215,11 +201,7 @@ fn mark_dirty(
 }
 
 /// Removes the old screen. Screen builders run right after this when dirty.
-pub fn clear_screen(
-    mut commands: Commands,
-    dirty: Res<UiDirty>,
-    roots: Query<Entity, With<ScreenRoot>>,
-) {
+pub fn clear_screen(mut commands: Commands, dirty: Res<UiDirty>, roots: Query<Entity, With<ScreenRoot>>) {
     if dirty.0 {
         for root in &roots {
             commands.entity(root).despawn();
@@ -287,134 +269,50 @@ pub fn panel(width: f32) -> impl Bundle {
 }
 
 pub fn row(gap: f32) -> impl Bundle {
-    Node {
-        flex_direction: FlexDirection::Row,
-        column_gap: Val::Px(gap),
-        align_items: AlignItems::Center,
-        flex_wrap: FlexWrap::Wrap,
-        row_gap: Val::Px(gap),
-        ..default()
-    }
+    Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(gap), align_items: AlignItems::Center, flex_wrap: FlexWrap::Wrap, row_gap: Val::Px(gap), ..default() }
 }
 
 pub fn label(parent: &mut ChildSpawnerCommands, text: impl Into<String>, size: f32, color: Color) {
-    parent.spawn((
-        Text::new(text),
-        TextFont {
-            font_size: size,
-            ..default()
-        },
-        TextColor(color),
-    ));
+    parent.spawn((Text::new(text), TextFont { font_size: size, ..default() }, TextColor(color)));
 }
 
 fn button_node(width: Val) -> impl Bundle {
-    (
-        Button,
-        Node {
-            width,
-            padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)),
-            border: UiRect::all(Val::Px(2.0)),
-            ..default()
-        },
-        BackgroundColor(BUTTON),
-        BorderColor(BORDER),
-    )
+    (Button, Node { width, padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)), border: UiRect::all(Val::Px(2.0)), ..default() }, BackgroundColor(BUTTON), BorderColor(BORDER))
 }
 
 /// A full-width button.
-pub fn button(
-    parent: &mut ChildSpawnerCommands,
-    order: &mut Order,
-    text: impl Into<String>,
-    act: Act,
-) {
+pub fn button(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act) {
     sized_button(parent, order, text, act, None, Val::Percent(100.0));
 }
 
 /// A value button: left / right change the value, click advances it.
-pub fn stepper(
-    parent: &mut ChildSpawnerCommands,
-    order: &mut Order,
-    text: impl Into<String>,
-    left: Act,
-    right: Act,
-) {
+pub fn stepper(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, left: Act, right: Act) {
     sized_button(parent, order, text, right, Some(left), Val::Percent(100.0));
 }
 
-pub fn sized_button(
-    parent: &mut ChildSpawnerCommands,
-    order: &mut Order,
-    text: impl Into<String>,
-    act: Act,
-    left: Option<Act>,
-    width: Val,
-) {
+pub fn sized_button(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, width: Val) {
     order.0 += 1;
-    parent
-        .spawn((
-            button_node(width),
-            Clickable {
-                act,
-                left,
-                order: order.0,
-            },
-        ))
-        .with_children(|button| label(button, text, 17.0, TEXT));
+    parent.spawn((button_node(width), Clickable { act, left, order: order.0 })).with_children(|button| label(button, text, 17.0, TEXT));
 }
 
 /// A button that keeps its place in the focus order but paints itself as selected.
-pub fn chip(
-    parent: &mut ChildSpawnerCommands,
-    order: &mut Order,
-    text: impl Into<String>,
-    act: Act,
-    selected: bool,
-    width: Val,
-) {
+pub fn chip(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, selected: bool, width: Val) {
     order.0 += 1;
     let color = if selected { GOOD } else { TEXT };
-    parent
-        .spawn((
-            button_node(width),
-            Clickable {
-                act,
-                left: None,
-                order: order.0,
-            },
-        ))
-        .with_children(|button| label(button, text, 15.0, color));
+    parent.spawn((button_node(width), Clickable { act, left: None, order: order.0 })).with_children(|button| label(button, text, 15.0, color));
 }
 
 /// A slim button for long lists (the armory): less padding, smaller type.
-pub fn slim(
-    parent: &mut ChildSpawnerCommands,
-    order: &mut Order,
-    text: impl Into<String>,
-    act: Act,
-    left: Option<Act>,
-    selected: bool,
-    width: Val,
-) {
+pub fn slim(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, selected: bool, width: Val) {
     order.0 += 1;
     let color = if selected { GOOD } else { TEXT };
     parent
         .spawn((
             Button,
-            Node {
-                width,
-                padding: UiRect::axes(Val::Px(10.0), Val::Px(3.0)),
-                border: UiRect::all(Val::Px(2.0)),
-                ..default()
-            },
+            Node { width, padding: UiRect::axes(Val::Px(10.0), Val::Px(3.0)), border: UiRect::all(Val::Px(2.0)), ..default() },
             BackgroundColor(BUTTON),
             BorderColor(BORDER),
-            Clickable {
-                act,
-                left,
-                order: order.0,
-            },
+            Clickable { act, left, order: order.0 },
         ))
         .with_children(|button| label(button, text, 13.0, color));
 }
@@ -422,15 +320,7 @@ pub fn slim(
 /// A greyed-out row that cannot be focused.
 pub fn disabled(parent: &mut ChildSpawnerCommands, text: impl Into<String>, width: Val) {
     parent
-        .spawn((
-            Node {
-                width,
-                padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)),
-                border: UiRect::all(Val::Px(2.0)),
-                ..default()
-            },
-            BorderColor(Color::srgba(0.3, 0.4, 0.42, 0.35)),
-        ))
+        .spawn((Node { width, padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)), border: UiRect::all(Val::Px(2.0)), ..default() }, BorderColor(Color::srgba(0.3, 0.4, 0.42, 0.35))))
         .with_children(|row| label(row, text, 17.0, DIM));
 }
 
@@ -456,23 +346,14 @@ fn neighbour(from: Vec2, dir: Vec2, others: impl Iterator<Item = (usize, Vec2)>)
 fn interact(
     controls: Res<Controls>,
     mut focus: ResMut<Focus>,
-    mut buttons: Query<(
-        &Interaction,
-        &Clickable,
-        &mut BackgroundColor,
-        &mut BorderColor,
-        &GlobalTransform,
-    )>,
+    mut buttons: Query<(&Interaction, &Clickable, &mut BackgroundColor, &mut BorderColor, &GlobalTransform)>,
     changed: Query<(&Interaction, &Clickable), Changed<Interaction>>,
     mut acts: EventWriter<ActEvent>,
     mut sounds: EventWriter<PlaySfx>,
     mut focused: ResMut<Focused>,
     mut request: ResMut<FocusRequest>,
 ) {
-    let mut orders: Vec<u32> = buttons
-        .iter()
-        .map(|(_, clickable, ..)| clickable.order)
-        .collect();
+    let mut orders: Vec<u32> = buttons.iter().map(|(_, clickable, ..)| clickable.order).collect();
     if orders.is_empty() {
         if focused.0.is_some() {
             focused.0 = None;
@@ -483,9 +364,7 @@ fn interact(
     let rank = |order: u32| orders.binary_search(&order).unwrap_or(0);
     let mut before = focus.0.min(orders.len() - 1);
     if let Some(wanted) = request.0.clone()
-        && let Some((_, clickable, ..)) = buttons
-            .iter()
-            .find(|(_, clickable, ..)| clickable.act == wanted)
+        && let Some((_, clickable, ..)) = buttons.iter().find(|(_, clickable, ..)| clickable.act == wanted)
     {
         before = rank(clickable.order);
         request.0 = None;
@@ -505,34 +384,21 @@ fn interact(
         }
     }
     let nav = controls.ui;
-    let centres: Vec<(usize, Vec2)> = buttons
-        .iter()
-        .map(|(_, clickable, _, _, at)| (rank(clickable.order), at.translation().truncate()))
-        .collect();
-    let here = centres
-        .iter()
-        .find(|(r, _)| *r == now)
-        .map_or(Vec2::ZERO, |(_, at)| *at);
+    let centres: Vec<(usize, Vec2)> = buttons.iter().map(|(_, clickable, _, _, at)| (rank(clickable.order), at.translation().truncate())).collect();
+    let here = centres.iter().find(|(r, _)| *r == now).map_or(Vec2::ZERO, |(_, at)| *at);
     let others = || centres.iter().copied().filter(|(r, _)| *r != now);
-    let stepper = buttons
-        .iter()
-        .find(|(_, clickable, ..)| clickable.order == orders[now])
-        .is_some_and(|(_, clickable, ..)| clickable.left.is_some());
+    let stepper = buttons.iter().find(|(_, clickable, ..)| clickable.order == orders[now]).is_some_and(|(_, clickable, ..)| clickable.left.is_some());
     if nav.down {
         now = neighbour(here, Vec2::Y, others()).unwrap_or((now + 1) % orders.len());
     } else if nav.up {
-        now = neighbour(here, Vec2::NEG_Y, others())
-            .unwrap_or((now + orders.len() - 1) % orders.len());
+        now = neighbour(here, Vec2::NEG_Y, others()).unwrap_or((now + orders.len() - 1) % orders.len());
     } else if !stepper && (nav.left || nav.right) {
         let dir = if nav.right { Vec2::X } else { Vec2::NEG_X };
         if let Some(next) = neighbour(here, dir, others()) {
             now = next;
         }
     }
-    if let Some((_, clickable, ..)) = buttons
-        .iter()
-        .find(|(_, clickable, ..)| clickable.order == orders[now])
-    {
+    if let Some((_, clickable, ..)) = buttons.iter().find(|(_, clickable, ..)| clickable.order == orders[now]) {
         if nav.accept || (nav.right && stepper && clickable.left.is_some()) {
             acts.write(ActEvent(clickable.act.clone()));
             fired = true;
@@ -548,9 +414,7 @@ fn interact(
         acts.write(ActEvent(Act::Back));
     }
     if nav.tab_prev || nav.tab_next {
-        acts.write(ActEvent(Act::Tab(
-            nav.tab_next as i32 - nav.tab_prev as i32,
-        )));
+        acts.write(ActEvent(Act::Tab(nav.tab_next as i32 - nav.tab_prev as i32)));
     }
     if fired {
         sounds.write(PlaySfx::ui(Sfx::UiAccept));
@@ -558,21 +422,14 @@ fn interact(
         sounds.write(PlaySfx::ui(Sfx::UiMove));
     }
     focus.0 = now;
-    let current = buttons
-        .iter()
-        .find(|(_, clickable, ..)| clickable.order == orders[now])
-        .map(|(_, clickable, ..)| clickable.act.clone());
+    let current = buttons.iter().find(|(_, clickable, ..)| clickable.order == orders[now]).map(|(_, clickable, ..)| clickable.act.clone());
     if focused.0 != current {
         focused.0 = current;
     }
 
     for (_, clickable, mut background, mut border, _) in &mut buttons {
         let focused = clickable.order == orders[now];
-        let (fill, edge) = if focused {
-            (BUTTON_FOCUS, BORDER_FOCUS)
-        } else {
-            (BUTTON, BORDER)
-        };
+        let (fill, edge) = if focused { (BUTTON_FOCUS, BORDER_FOCUS) } else { (BUTTON, BORDER) };
         if background.0 != fill {
             background.0 = fill;
             border.0 = edge;
