@@ -461,6 +461,21 @@ pub struct PlayerInput {
     pub stance: u8,
     /// Leaning around cover: -1 left, 0 upright, 1 right.
     pub lean: i8,
+    /// In cover (presentation): 0 = no; otherwise 1 + 2 x the direction out of the wall in
+    /// eighths of a turn (see [`cover_yaw`]). Others see your back against the wall.
+    pub cover: u8,
+}
+
+/// The facing (yaw) of a body with its back to the wall, from [`PlayerInput::cover`].
+pub fn cover_yaw(code: u8) -> Option<f32> {
+    (code & 1 != 0).then(|| ((code >> 1) & 7) as f32 * std::f32::consts::FRAC_PI_4)
+}
+
+/// [`PlayerInput::cover`] for a wall whose face points along `normal` (horizontal).
+pub fn cover_code(normal: Vec3) -> u8 {
+    let yaw = f32::atan2(-normal.x, -normal.z);
+    let eighth = (yaw / std::f32::consts::FRAC_PI_4).round().rem_euclid(8.0) as u8;
+    1 | (eighth << 1)
 }
 
 impl PlayerInput {

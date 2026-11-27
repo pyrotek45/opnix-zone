@@ -426,7 +426,7 @@ fn follow_player(
     let drift = Vec2::new((t * 0.8).sin() + 0.5 * (t * 1.9).sin(), (t * 1.3).cos() * 0.7) * hold;
     camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x + drift.x, input.pitch + view.recoil * 0.012 + shake.y + drift.y, roll + shake.z);
     // In cover the camera pulls back over the right shoulder, stopping short of walls.
-    let shoulder = camera.rotation * Vec3::new(0.65, 0.35, 2.6) * view.third;
+    let shoulder = camera.rotation * Vec3::new(1.15, 0.45, 2.3) * view.third;
     let length = shoulder.length();
     let pulled = if length > 1e-3 {
         let dir = shoulder / length;

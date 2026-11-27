@@ -13,7 +13,7 @@
 //! | Stabilize scope | Shift while scoped      | click left stick while scoped |
 //! | Melee           | E                       | click right stick           |
 //! | Weapons         | 1-9, wheel              | Y                           |
-//! | Take cover      | hold Q (near a wall)    | hold LB                     |
+//! | Take / leave cover | Q (near a wall)      | LB                          |
 //! | Gear            | hold G to cook, release to throw, R puts the pin back | hold RB |
 //! | Killstreak      | X                       | D-pad right                 |
 //! | Inspect weapon  | I                       | D-pad up                    |

@@ -1,9 +1,9 @@
 //! Snap-to-cover, in the style of the third-person cover shooters.
 //!
-//! Hold **Take cover** facing a wall within a couple of metres and you slide
-//! into it, back to the wall, with the camera pulled out over your shoulder.
+//! Press **Take cover** facing a wall within a couple of metres and you snap
+//! onto it, back to the wall, with the camera pulled out over your shoulder.
 //! Left / right moves you along the wall and stops you at its edge. Behind
-//! low cover you crouch. Let go of the button and you are out of cover.
+//! low cover you crouch. Press it again, or pull away from the wall, to snap off.
 //!
 //! Aiming from cover goes back to first person: behind low cover you pop up
 //! over it; at a corner you lean out around it. Let go and you are back behind
@@ -64,7 +64,18 @@ impl Plugin for CoverPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Cover>()
             .add_systems(OnEnter(MatchPhase::Active), |mut cover: ResMut<Cover>| *cover = Cover::default())
-            .add_systems(Update, take_cover.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (take_cover, mark_cover).chain().in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
+    }
+}
+
+/// Tells everyone which way the wall at your back faces, so your robot sits with its back
+/// to it (see `avatar`); aiming out of cover turns it to face the shot.
+fn mark_cover(cover: Res<Cover>, mut players: Query<&mut PlayerInput, With<LocalPlayer>>) {
+    let Ok(mut input) = players.single_mut() else { return };
+    let wall = cover.wall.or(cover.entering.map(|(_, wall, _)| wall));
+    let code = wall.map_or(0, |w| oz_sim::player::cover_code(w.normal));
+    if input.cover != code {
+        input.cover = code;
     }
 }
 
@@ -144,8 +155,8 @@ fn take_cover(
     let found = if in_cover { None } else { find_wall(&statics, feet, input.yaw) };
     cover.available = found.is_some();
 
-    // Cover lasts while the button is held.
-    if in_cover && !controls.cover_held {
+    // A toggle: press to snap onto the wall, press again to come off it.
+    if controls.cover && in_cover {
         *cover = Cover { available: cover.available, ..default() };
         return;
     }

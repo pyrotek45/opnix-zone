@@ -333,3 +333,20 @@ fn scavenge_starts_with_a_pistol_and_loot_arms_you() {
     let dropped = app.world_mut().query::<(&Transform, &Pickup)>().iter(app.world()).any(|(t, p)| p.life.is_some() && t.translation.distance(at) < 2.0 && matches!(p.loot, Loot::Weapon { .. }));
     assert!(dropped, "the fallen should drop their gun");
 }
+
+#[test]
+fn cover_facing_round_trips() {
+    use oz_sim::player::{cover_code, cover_yaw};
+    // A wall facing +Z: the body faces +Z (back to the wall), i.e. yaw of half a turn.
+    let yaw = cover_yaw(cover_code(Vec3::Z)).unwrap();
+    let facing = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    assert!(facing.distance(Vec3::Z) < 1e-4, "{facing}");
+    assert_eq!(cover_yaw(0), None);
+    // Every eighth survives the four bits it travels in.
+    for i in 0..8 {
+        let angle = i as f32 * std::f32::consts::FRAC_PI_4;
+        let code = cover_code(Vec3::new(-angle.sin(), 0.0, -angle.cos()));
+        assert!(code < 16);
+        assert!((cover_yaw(code).unwrap() - angle).abs() < 1e-4);
+    }
+}

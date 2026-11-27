@@ -819,7 +819,8 @@ pub fn host_send(
             hp: fraction(health),
             aux: (arsenal.current & 0x3f) | (player.team << 6),
             flags: player.flags,
-            limbs: player.lost,
+            // Low four bits: limbs lost; high four: the cover facing (others see your back to the wall).
+            limbs: player.lost | (input.cover & 0x0F) << 4,
         });
     }
     for (id, enemy, transform, health) in &enemies {
@@ -987,10 +988,11 @@ pub fn client_receive(
                             input.pitch = unpack_pitch(e.pitch);
                             input.stance = e.flags & crate::player::flags::STANCE;
                             input.lean = crate::player::flags::lean(e.flags);
+                            input.cover = e.limbs >> 4;
                         }
                         if let Some(mut player) = player {
                             player.flags = e.flags;
-                            player.lost = e.limbs;
+                            player.lost = e.limbs & 0x0F;
                             player.team = e.aux >> 6;
                             if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == player.id)
                                 && player.name != entry.name

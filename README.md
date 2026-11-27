@@ -129,7 +129,7 @@ no asset folder to ship.
 | Stabilize scope | Shift while scoped | click left stick while scoped |
 | Melee | E | click right stick |
 | Weapons | 1-9, wheel | Y |
-| Take cover (hold) | hold Q | hold LB |
+| Take / leave cover | Q | LB |
 | Gear: cook / throw / pin back | hold G, release / R | hold RB, release / X |
 | Call in killstreak (newest first) | X | D-pad right |
 | Inspect weapon | I | D-pad up |
@@ -156,9 +156,10 @@ opens. Everything in it can be clicked or navigated with a pad.
 
 ## Cover, vaulting, melee and grenades (Iron Town)
 
-**Cover** works like the third-person cover shooters: hold **Q** (LB) facing a
-wall or crate to slide into it, back to the wall, with the camera over your
-shoulder. Let go and you are out. Left / right moves along it and stops at
+**Cover** works like the third-person cover shooters: press **Q** (LB) facing a
+wall or crate to snap onto it, back to the wall, with the camera over your
+shoulder; press it again (or pull away from the wall) to snap off. Aiming or
+firing turns you out from the wall to face the shot. Left / right moves along it and stops at
 the edge; behind low cover you crouch. **Aim** to pop up over low cover or
 lean out round a corner in first person. **Fire without aiming** to blind
 fire: only the gun goes over the top or round the corner - your head stays

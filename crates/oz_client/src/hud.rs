@@ -447,16 +447,16 @@ fn update_text(
         let fire_key = if controls.gamepad { "RT".to_string() } else { key(Action::Fire) };
         let jump_key = if controls.gamepad { "A".to_string() } else { key(Action::Jump) };
         let vault = if cover.wall.is_some_and(|w| w.low) { format!("   [{jump_key}] VAULT") } else { String::new() };
-        format!("[{aim_key}] {what}   [{fire_key}] BLIND FIRE{vault}   RELEASE [{cover_key}] TO LEAVE")
+        format!("[{aim_key}] {what}   [{fire_key}] BLIND FIRE{vault}   [{cover_key}] LEAVE COVER")
     } else if cover.available && cover.wall.is_none() {
-        format!("HOLD [{}]  TAKE COVER", if controls.gamepad { "LB".into() } else { key(Action::Cover) })
+        format!("[{}]  TAKE COVER", if controls.gamepad { "LB".into() } else { key(Action::Cover) })
     } else {
         String::new()
     };
     // Controls are shown while a match is young, then get out of the way.
     let help = if rules.pvp {
         format!(
-            "{} FIRE   {} AIM   {} RELOAD   HOLD {} COVER   HOLD {} COOK GEAR   {} MELEE   {} CLASS   {} SPRINT   ESC PAUSE",
+            "{} FIRE   {} AIM   {} RELOAD   {} COVER   HOLD {} COOK GEAR   {} MELEE   {} CLASS   {} SPRINT   ESC PAUSE",
             key(Action::Fire),
             key(Action::Aim),
             key(Action::Reload),
@@ -483,7 +483,7 @@ fn update_text(
     } else if *shown_for > 30.0 {
         ""
     } else if controls.gamepad {
-        "STICKS MOVE / LOOK    RT FIRE    LT AIM    X RELOAD / USE    A JUMP / VAULT    B CROUCH (HOLD PRONE)    HOLD LB COVER    HOLD RB COOK GEAR    R3 MELEE    Y WEAPON    START PAUSE"
+        "STICKS MOVE / LOOK    RT FIRE    LT AIM    X RELOAD / USE    A JUMP / VAULT    B CROUCH (HOLD PRONE)    LB COVER    HOLD RB COOK GEAR    R3 MELEE    Y WEAPON    START PAUSE"
     } else {
         help.as_str()
     };

@@ -16,7 +16,7 @@ use crate::{
 use bevy::{pbr::NotShadowCaster, platform::collections::HashMap, prelude::*};
 use oz_core::arsenal::{SLOT_COUNT, assemble};
 use oz_sim::prelude::*;
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 pub const HIP: f32 = 0.92;
 const THIGH: f32 = 0.42;
@@ -70,6 +70,9 @@ pub struct Pose {
     pub dead: bool,
     /// Leaning around cover, -1 (left) to 1 (right), smoothed.
     pub lean: f32,
+    /// In cover: how far to turn the body (radians, relative to where the player looks)
+    /// so its back is to the wall.
+    pub cover: Option<f32>,
     /// Force a face (showroom); otherwise the face follows events.
     pub face: Option<usize>,
 }
@@ -117,6 +120,8 @@ pub struct Rig {
     pub(crate) steps: i32,
     /// Holding a grenade with the pin out, seconds since it was thrown, and since a melee strike.
     pub(crate) cook: bool,
+    /// The body's current turn away from the view (cover), eased.
+    pub(crate) turn: f32,
     pub(crate) throw_t: f32,
     pub(crate) melee_t: f32,
 }
@@ -400,6 +405,7 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
         cook: false,
         throw_t: 9.0,
         melee_t: 9.0,
+        turn: 0.0,
     }
 }
 
@@ -511,6 +517,8 @@ fn pose_players(
         let lean = if input.lean != 0 { input.lean } else { flags::lean(player.flags) };
         let lean = if pose.stance == stance::PRONE || pose.dead { 0.0 } else { lean as f32 };
         pose.lean += (lean - pose.lean) * (1.0 - (-dt * 12.0).exp());
+        let facing = transform.rotation.to_euler(EulerRot::YXZ).0;
+        pose.cover = oz_sim::player::cover_yaw(input.cover).filter(|_| !pose.dead).map(|yaw| (yaw - facing + PI).rem_euclid(TAU) - PI);
         if health.hp < rig.last_hp - 0.5 {
             rig.hurt = 0.6;
         }
@@ -612,6 +620,14 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         } else {
             (Vec3::new(0.0, 0.2, 1.08) * pr, Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr))
         };
+        // Cover: back to the wall while waiting; turn out to face the shot when aiming or firing.
+        let wanted_turn = match pose.cover {
+            Some(turn) if !pose.aiming && rig.angry < 0.8 => turn,
+            _ => 0.0,
+        };
+        let gap = (wanted_turn - rig.turn + PI).rem_euclid(TAU) - PI;
+        rig.turn += gap * (1.0 - (-dt * 10.0).exp());
+        let body_rot = Quat::from_rotation_y(rig.turn) * body_rot;
         set(&mut transforms, rig.body, body_at, body_rot, blend);
 
         // Hips: standing bobs with the stride; crouch-walking stays low and level; kneeling is lowest.
