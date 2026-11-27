@@ -49,6 +49,8 @@ pub struct Cover {
     pub aiming: bool,
     /// Which edges of the wall are within reach: -1 left, 1 right (along the wall, facing out).
     pub edges: [bool; 2],
+    /// Stepped out round a corner to shoot: where we stepped from, and which way.
+    peek: Option<(Vec3, f32)>,
 }
 
 impl Cover {
@@ -284,7 +286,8 @@ fn take_cover(
         cover.aiming = false;
         return;
     };
-    let chest = feet + Vec3::Y * 0.9;
+    // Stepped out round a corner, the wall is still behind where we stepped from.
+    let chest = cover.peek.map_or(feet, |(home, _)| home) + Vec3::Y * 0.9;
     // The wall can end or change height as we slide along it.
     let Some(top) = wall_behind(&statics, chest, &wall) else {
         *cover = Cover::default();
@@ -318,8 +321,8 @@ fn take_cover(
             input.stance = stance::STAND;
             input.lean = 0;
         } else {
-            // Peek out round whichever edge we are at, toward where we are looking.
-            let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+            // Step out round whichever edge we are at, toward where we are looking (no
+            // leaning in this game: the whole robot comes out past the corner).
             let side = match cover.edges {
                 [true, false] => -1.0,
                 [false, true] => 1.0,
@@ -333,8 +336,26 @@ fn take_cover(
                 [false, false] => 0.0,
             };
             input.stance = stance::STAND;
-            input.lean = if side == 0.0 { 0 } else { (along * side).dot(right).signum() as i8 };
+            input.lean = 0;
+            if side != 0.0 && cover.peek.is_none() {
+                cover.peek = Some((feet, side));
+            }
+            if let Some((home, side)) = cover.peek {
+                let out = home + along * side * 0.65 + wall.normal * 0.1;
+                let to = Vec3::new(out.x - feet.x, 0.0, out.z - feet.z);
+                input.movement = if to.length() > 0.05 { to_input(yaw, to.normalize() * (to.length() * 6.0).min(1.0)) } else { Vec2::ZERO };
+            }
         }
+    } else if let Some((home, _)) = cover.peek {
+        // Back in behind the corner before moving along the wall again.
+        let to = Vec3::new(home.x - feet.x, 0.0, home.z - feet.z);
+        if to.length() < 0.06 {
+            cover.peek = None;
+        } else {
+            input.movement = to_input(yaw, to.normalize() * (to.length() * 6.0).min(1.0));
+        }
+        input.stance = stance::STAND;
+        input.lean = 0;
     } else {
         input.movement = to_input(yaw, along * slide * 0.8 + press);
         input.stance = if wall.low { stance::CROUCH } else { stance::STAND };

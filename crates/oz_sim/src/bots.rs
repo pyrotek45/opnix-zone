@@ -318,7 +318,7 @@ pub fn drive_bots(
                     let chest = *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4);
                     // Face the target before testing a lean, so the lean goes the right way.
                     let facing = PlayerInput { yaw: yaw_to((chest - eye).xz()), ..upright };
-                    [0i8, -1, 1].into_iter().find(|lean| sees(crate::player::eye_point(&statics, feet, &PlayerInput { lean: *lean, ..facing }), chest)).map(|lean| (*entity, chest, lean))
+                    [0i8].into_iter().find(|lean| sees(crate::player::eye_point(&statics, feet, &PlayerInput { lean: *lean, ..facing }), chest)).map(|lean| (*entity, chest, lean))
                 })
                 .min_by(|a, b| a.1.distance_squared(eye).total_cmp(&b.1.distance_squared(eye)));
             let target = found.map(|(entity, ..)| entity);
@@ -403,7 +403,8 @@ pub fn drive_bots(
         }
 
         let target = bot.target.and_then(|entity| fighters.iter().find(|(e, ..)| *e == entity).copied());
-        input.lean = if target.is_some() { bot.lean } else { 0 };
+        // No leaning in this game: bots shoot from where they stand.
+        input.lean = 0;
         let mut held = 0;
         let mut wanted_stance = stance::STAND;
         let mut wish = Vec2::ZERO;
