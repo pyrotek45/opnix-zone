@@ -527,7 +527,7 @@ fn update_text(
             chips.push((aim_key, what.into()));
             chips.push((if controls.gamepad { "RT".to_string() } else { key(Action::Fire) }, "BLIND FIRE".into()));
             if cover.wall.is_some_and(|w| w.low) && !chips.iter().any(|c| c.1 == "VAULT") {
-                chips.push((if controls.gamepad { "X".to_string() } else { key(Action::Jump) }, "VAULT".into()));
+                chips.push((if controls.gamepad { "A".to_string() } else { key(Action::Jump) }, "VAULT".into()));
             }
             chips.push((cover_key, "LEAVE COVER".into()));
         } else if cover.available && cover.wall.is_none() {

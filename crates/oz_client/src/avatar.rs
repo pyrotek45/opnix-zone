@@ -694,8 +694,9 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             (Vec3::new(0.0, 0.2, 1.08) * pr, Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr))
         };
         // Cover: back to the wall while waiting; turn out to face the shot when aiming or firing.
+        // Blind fire keeps the back to the wall: only the arms come up and round.
         let wanted_turn = match pose.cover {
-            Some(turn) if !pose.aiming && rig.angry < 0.8 => turn,
+            Some(turn) if (!pose.aiming && rig.angry < 0.8) || pose.blind => turn,
             _ => 0.0,
         };
         let gap = (wanted_turn - rig.turn + PI).rem_euclid(TAU) - PI;
@@ -776,7 +777,10 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             + Vec3::new(0.0, 0.62, 0.12) * rig.blind
             + Vec3::new(0.0, 0.05, -0.3) * melee
             + Vec3::new(0.0, -0.05 * r + fumble, 0.07 * kick.max(0.0) - 0.03 * kick.min(0.0));
-        set(&mut transforms, rig.aim, aim_at, rot(aim_pitch + 0.4 * melee) * Quat::from_rotation_y(0.5 * melee) * tilt, if prone { blend } else { 1.0 - (-dt * 30.0).exp() });
+        // Firing blind the arms swing round to point the gun where the player looks, over
+        // the top or round the edge, while the body stays turned to the wall.
+        let counter = if pose.blind { Quat::from_rotation_y(-rig.turn) } else { Quat::IDENTITY };
+        set(&mut transforms, rig.aim, aim_at, counter * rot(aim_pitch + 0.4 * melee) * Quat::from_rotation_y(0.5 * melee) * tilt, if prone { blend } else { 1.0 - (-dt * 30.0).exp() });
         // The left arm: wound back over the shoulder while a grenade cooks, then an overarm throw.
         let arm = if rig.cook {
             rot(2.2) * Quat::from_rotation_z(0.3)

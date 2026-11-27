@@ -334,7 +334,7 @@ fn update(
             {
                 let at = transform.translation + flat * (d + 0.1);
                 over = Some(Vec3::new(at.x, top, at.z));
-                offered.push((if controls.gamepad { "X".to_string() } else { key(Action::Jump) }, "VAULT".into()));
+                offered.push((if controls.gamepad { "A".to_string() } else { key(Action::Jump) }, "VAULT".into()));
             }
         }
         (false, 0.0, ui::TEXT, String::new())

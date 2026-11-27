@@ -98,6 +98,10 @@ pub struct ViewState {
     lean: Vec3,
     /// 0 = first person, 1 = over the shoulder (in cover).
     pub third: f32,
+    /// Which shoulder the cover camera is over: -1 left, 1 right (eased), and how far
+    /// out past a wall's end it leans to see round the corner (0..1).
+    pub shoulder: f32,
+    pub round: f32,
     /// A quick zoom-in on a kill, decaying from 1.
     pub punch: f32,
     /// The last hit marker was a headshot.
@@ -486,8 +490,32 @@ fn follow_player(
     let hold = view.ads * stance::steadiness(input.stance) * 0.0035;
     let drift = Vec2::new((t * 0.8).sin() + 0.5 * (t * 1.9).sin(), (t * 1.3).cos() * 0.7) * hold;
     camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x + drift.x, input.pitch + view.recoil * 0.012 + shake.y + drift.y, roll + shake.z);
-    // In cover the camera pulls back over the right shoulder, stopping short of walls.
-    let shoulder = camera.rotation * Vec3::new(1.15, 0.45, 2.3) * view.third;
+    // In cover the camera pulls back over a shoulder, stopping short of walls. Which
+    // shoulder follows where you look along the wall, and at the wall's end it swings out
+    // past the corner so you see round it instead of into the wall.
+    if view.shoulder == 0.0 {
+        view.shoulder = 1.0;
+    }
+    let (wanted_side, wanted_round) = match cover.wall {
+        Some(wall) => {
+            let along = Vec3::new(-wall.normal.z, 0.0, wall.normal.x);
+            let look = Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z;
+            let right = Quat::from_rotation_y(input.yaw) * Vec3::X;
+            let toward = look.dot(along);
+            // Looking along the wall picks the shoulder on that side of the screen; looking
+            // square on keeps the shoulder we had.
+            let screen = if toward.abs() > 0.2 { (along * toward.signum()).dot(right).signum() } else { view.shoulder.signum() };
+            // Which end of the wall that is (along -1 or +1), and whether we are at it.
+            let end = if along.dot(right) * screen >= 0.0 { 1 } else { 0 };
+            let at_edge = cover.edges[end];
+            (if screen == 0.0 { view.shoulder.signum() } else { screen }, if at_edge { 1.0 } else { 0.0 })
+        }
+        None => (view.shoulder.signum(), 0.0),
+    };
+    let ease = 1.0 - (-dt * 6.0).exp();
+    view.shoulder += (wanted_side - view.shoulder) * ease;
+    view.round += (wanted_round - view.round) * ease;
+    let shoulder = camera.rotation * Vec3::new((1.15 + 0.7 * view.round) * view.shoulder, 0.45, 2.3) * view.third;
     let length = shoulder.length();
     let pulled = if length > 1e-3 {
         let dir = shoulder / length;

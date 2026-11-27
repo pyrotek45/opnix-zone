@@ -7,7 +7,7 @@
 //! | Move / look     | WASD / mouse            | left / right stick          |
 //! | Fire / aim      | LMB / RMB               | RT / LT                     |
 //! | Reload / use    | R / F                   | X                           |
-//! | Jump / vault    | Space                   | A, or X at something low    |
+//! | Jump / vault    | Space                   | A                           |
 //! | Sprint          | Shift                   | click left stick            |
 //! | Crouch / prone  | C tap / C hold, Z       | B tap / B hold              |
 //! | Stabilize scope | Shift while scoped      | click left stick while scoped |
@@ -219,7 +219,6 @@ fn read_devices(
         c.aim |= aiming;
         c.aim_pressed |= hit(GamepadButton::LeftTrigger2);
         c.reload |= held(GamepadButton::West);
-        c.vault |= hit(GamepadButton::West);
         c.reload_pressed |= hit(GamepadButton::West);
         c.interact |= hit(GamepadButton::West);
         c.jump |= held(GamepadButton::South);
