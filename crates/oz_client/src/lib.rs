@@ -21,6 +21,8 @@
 
 pub mod actors;
 pub mod ambient;
+#[cfg(feature = "audio")]
+pub mod announcer;
 pub mod art;
 #[cfg(feature = "audio")]
 pub mod audio;
@@ -52,6 +54,7 @@ pub mod spectate;
 pub mod stations;
 pub mod tactical;
 pub mod tags;
+pub mod typeface;
 pub mod ui;
 pub mod view;
 pub mod wreck;
@@ -124,9 +127,9 @@ impl Plugin for ClientPlugin {
             props::PropsPlugin,
             tactical::TacticalPlugin,
         ));
-        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin));
+        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin));
         #[cfg(feature = "audio")]
-        app.add_plugins(audio::AudioFxPlugin);
+        app.add_plugins((audio::AudioFxPlugin, announcer::AnnouncerPlugin));
     }
 }
 

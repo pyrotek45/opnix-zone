@@ -51,9 +51,14 @@ struct KillMemory {
 
 pub struct JuicePlugin;
 
+/// A line for the announcer to say (see `announcer`; silent without a voice installed).
+#[derive(Event, Clone, Debug)]
+pub struct Announce(pub String);
+
 impl Plugin for JuicePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Banners>()
+        app.add_event::<Announce>()
+            .init_resource::<Banners>()
             .init_resource::<KillMemory>()
             .add_systems(
                 OnEnter(MatchPhase::Active),
@@ -107,6 +112,7 @@ fn medals(
     mut sounds: EventWriter<PlaySfx>,
     mut notices: ResMut<crate::hud::Notices>,
     local: Query<&Player, With<LocalPlayer>>,
+    mut announce: EventWriter<Announce>,
 ) {
     let Ok(me) = local.single() else {
         events.clear();
@@ -176,16 +182,26 @@ fn medals(
                 if ours {
                     notices.push(format!("{name}: {what} INCOMING"));
                     sounds.write(PlaySfx::new(if *reward == killstreak::reward::UAV { Sfx::Radar } else { Sfx::UiAccept }, None));
-                } else {
-                    let warning = match *reward {
-                        killstreak::reward::UAV => "ENEMY UAV OVERHEAD",
-                        killstreak::reward::AIRSTRIKE => "ENEMY AIRSTRIKE INBOUND",
-                        killstreak::reward::ARTILLERY => "ENEMY ARTILLERY INBOUND",
-                        killstreak::reward::SUPPLY => "ENEMY SUPPLY DROP",
-                        _ => "ENEMY ATTACK DRONE",
+                    let line = match *reward {
+                        killstreak::reward::UAV => "Radar plane is up.",
+                        killstreak::reward::AIRSTRIKE => "Airstrike inbound.",
+                        killstreak::reward::ARTILLERY => "Artillery on the way.",
+                        killstreak::reward::SUPPLY => "Supply drop. Rearm.",
+                        _ => "Attack drone deployed.",
                     };
-                    banners.push(warning, "TAKE COVER", Color::srgb(1.0, 0.35, 0.3));
+                    announce.write(Announce(line.into()));
+                } else {
+                    // What is coming, and what to do about it: aircraft can be shot down.
+                    let (warning, advice, line) = match *reward {
+                        killstreak::reward::UAV => ("ENEMY RADAR PLANE SPOTTED", "SHOOT IT DOWN TO GO DARK ON THEIR RADAR", "Enemy radar plane spotted."),
+                        killstreak::reward::AIRSTRIKE => ("ENEMY BOMBER INBOUND", "SHOOT IT DOWN OR GET UNDER COVER", "Enemy bomber inbound."),
+                        killstreak::reward::ARTILLERY => ("INCOMING ARTILLERY", "GET INDOORS", "Incoming artillery. Get indoors."),
+                        killstreak::reward::SUPPLY => ("ENEMY SUPPLY DROP", "THEY JUST REARMED", "Enemy supply drop."),
+                        _ => ("ENEMY ATTACK DRONE", "SHOOT IT DOWN", "Enemy attack drone. Shoot it down."),
+                    };
+                    banners.push(warning, advice, Color::srgb(1.0, 0.35, 0.3));
                     sounds.write(PlaySfx::new(Sfx::Alarm, None));
+                    announce.write(Announce(line.into()));
                 }
             }
             _ => {}
