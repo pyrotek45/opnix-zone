@@ -165,14 +165,9 @@ impl World {
         }
     }
 
-    /// Road paint up a ramp, in short pieces that follow the slope.
+    /// Road up a ramp, laid smooth on the slope.
     fn ramp_road(&mut self, x: f32, z0: f32, z1: f32) {
-        let mut z = z0;
-        while z < z1 {
-            let y = self.height(x, z + 0.5).max(self.height(x, z)).max(self.height(x, z + 1.0)) + 0.01;
-            self.flat(x - 3.0, x + 3.0, z, z + 1.0, y, Paint::Dark);
-            z += 1.0;
-        }
+        self.drape(Vec2::new(x - 3.0, z0), Vec2::new(x + 3.0, z1), 0.024, Paint::Dark);
         // Crash barriers down both sides: cover.
         for s in [-1.0, 1.0] {
             let bx = x + s * 3.6;
@@ -195,7 +190,8 @@ impl World {
         self.building_plan(rng, chapel, Vec2::new(5.0, 8.0), 2, &Plan { walls: Some(Paint::Bone), trim: Some(Paint::Steel), roof: Roof::Gable(Paint::Dark), furnish: Furnish::Plain, random_doors: false, doors: [Some((chapel.x, 1.7)), None, None, None], ladder: false, ..Plan::default() });
         let tower = Vec2::new(-9.2, z + 11.0);
         let (_, top) = self.building_plan(rng, tower, Vec2::new(3.2, 3.0), 4, &Plan { walls: Some(Paint::Bone), trim: Some(Paint::Steel), roof: Roof::Flat, furnish: Furnish::Bare, random_doors: false, doors: [Some((tower.x, 1.7)), None, None, None], ladder: false, ..Plan::default() });
-        self.decor(Aabb::span(Vec3::new(tower.x - 0.06, top + 1.5, tower.y - 0.06), Vec3::new(tower.x + 0.06, top + 5.0, tower.y + 0.06)), Paint::Gold);
+        // The spire stands on the roof slab.
+        self.decor(Aabb::span(Vec3::new(tower.x - 0.06, top + 0.3, tower.y - 0.06), Vec3::new(tower.x + 0.06, top + 5.0, tower.y + 0.06)), Paint::Gold);
         // Houses either side of the street.
         for side in [-1.0f32, 1.0] {
             let mut x = 18.0;
@@ -332,7 +328,9 @@ impl World {
             self.decor(Aabb::span(Vec3::new(mast.x - 0.95, y, mast.y + 0.88), Vec3::new(mast.x + 0.95, y + 0.06, mast.y + 0.95)), Paint::Bone);
             y += 2.0;
         }
-        self.decor(Aabb::new(Vec3::new(mast.x, mg + 24.3, mast.y), Vec3::new(0.12, 0.12, 0.12)), Paint::Red);
+        // A cap across the legs' tops, and the beacon on it.
+        self.decor(Aabb::span(Vec3::new(mast.x - 0.96, mg + 24.0, mast.y - 0.96), Vec3::new(mast.x + 0.96, mg + 24.06, mast.y + 0.96)), Paint::Coral);
+        self.decor(Aabb::new(Vec3::new(mast.x, mg + 24.18, mast.y), Vec3::new(0.12, 0.12, 0.12)), Paint::Red);
         let dish = radio + Vec2::new(2.0, -8.0);
         let dg = self.height(dish.x, dish.y);
         self.solid(Aabb::span(Vec3::new(dish.x - 0.4, dg - 0.2, dish.y - 0.4), Vec3::new(dish.x + 0.4, dg + 1.6, dish.y + 0.4)), Paint::Steel);

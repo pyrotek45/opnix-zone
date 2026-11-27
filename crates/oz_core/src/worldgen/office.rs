@@ -98,8 +98,8 @@ impl World {
             }
             let finish = if k < FLOORS { Some((if k % 2 == 1 { Paint::Steel } else { Paint::Teal }, T)) } else { None };
             self.slab((X0, X1, Z0, Z1), top, &cut, finish);
-            // Ceiling panels under the slab.
-            let under = top - 0.27;
+            // Ceiling panels flush under the slab (0.2 thick).
+            let under = top - 0.22;
             let mut x = X0 + 4.0;
             while x < X1 - 2.0 {
                 let mut z = Z0 + 4.0;

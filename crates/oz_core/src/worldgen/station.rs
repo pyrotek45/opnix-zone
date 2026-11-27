@@ -313,6 +313,10 @@ impl World {
                     x += 1.6;
                 }
                 self.decor(Aabb::span(Vec3::new(x0, g + ROOM - 0.45, z - 0.3), Vec3::new(x1, g + ROOM - 0.42, z + 0.3)), Paint::Violet);
+                // Hung from the ceiling on two rods.
+                for x in [x0 + 0.4, x1 - 0.4] {
+                    self.decor(Aabb::span(Vec3::new(x - 0.02, g + ROOM - 0.42, z - 0.02), Vec3::new(x + 0.02, g + ROOM, z + 0.02)), Paint::Metal);
+                }
             }
         }
         // West: comms (north) and the med bay (south).

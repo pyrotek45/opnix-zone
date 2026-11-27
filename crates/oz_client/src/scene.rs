@@ -173,12 +173,27 @@ fn build_scene(
         art.add_model(lit, unlit, &prop_model(prop), Transform::from_translation(prop.pos).with_rotation(Quat::from_rotation_y(yaw)));
     }
     // Architecture: every wall, floor, stair and trim, merged with the props of its region.
-    for block in &map.blocks {
+    for block in map.blocks.iter().filter(|b| !b.hidden) {
         let at = block.aabb.center;
         let key = ((at.x / PROP_REGION).floor() as i32, (at.z / PROP_REGION).floor() as i32);
         let (lit, unlit) = regions.entry(key).or_default();
-        let part = Part { shape: Shape::Cube, paint: block.paint, pos: at, size: block.aabb.half * 2.0, rot: Quat::IDENTITY, anim: Anim::None };
+        // Drawn a hair larger than it collides, thin pieces more, so flush trims never flicker.
+        let part = Part { shape: Shape::Cube, paint: block.paint, pos: at, size: block.drawn().half * 2.0, rot: Quat::IDENTITY, anim: Anim::None };
         art.add_part(if block.paint.unlit() { unlit } else { lit }, &part, Transform::IDENTITY);
+    }
+    // Sloped roofs and caps, drawn smooth over the stair steps that carry their collision.
+    for roof in &map.roofs {
+        let at = roof.points.iter().copied().sum::<Vec3>() / roof.points.len().max(1) as f32;
+        let key = ((at.x / PROP_REGION).floor() as i32, (at.z / PROP_REGION).floor() as i32);
+        let (lit, unlit) = regions.entry(key).or_default();
+        art.add_hull(if roof.paint.unlit() { unlit } else { lit }, roof, Transform::IDENTITY);
+    }
+    // Roads, pavements and painted ground, lying on the terrain.
+    for (paint, triangle) in &map.paving {
+        let at = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+        let key = ((at.x / PROP_REGION).floor() as i32, (at.z / PROP_REGION).floor() as i32);
+        let (lit, unlit) = regions.entry(key).or_default();
+        art.add_triangle(if paint.unlit() { unlit } else { lit }, *triangle, *paint);
     }
     // Foam streaks on the water give the sea some life for free.
     let mut rng = Rng::new(rules.recipe.seed ^ 0xf0a);

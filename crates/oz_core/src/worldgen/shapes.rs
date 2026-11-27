@@ -10,7 +10,7 @@
 //! eleven 0.29 m steps of 0.42 m.
 
 use super::{COVER_HEIGHT, ClutterKind, Clutter, DOOR_WIDTH, Ladder, Prop, PropKind, World};
-use crate::{collide::Aabb, model::Paint, rng::Rng};
+use crate::{collide::Aabb, model::{Anim, Hull, Paint}, rng::Rng};
 use glam::{Vec2, Vec3};
 
 /// How a map's buildings look: what their walls and roofs are painted, and how often roofs are pitched.
@@ -150,14 +150,20 @@ impl World {
         [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (0.0, 0.0)].iter().map(|(a, b)| self.height(p.x + a * half.x, p.y + b * half.y)).fold(f32::MIN, f32::max)
     }
 
-    /// A stepped roof over a footprint, starting at `y`. Each step is a stair rise, so the roof
-    /// can be walked up from the eaves. Returns the height of the ridge.
-    pub(crate) fn stepped_roof(&mut self, (x0, x1, z0, z1): (f32, f32, f32, f32), y: f32, hip: bool, along_x: bool, paint: Paint) -> f32 {
+    /// A pitched roof over a footprint, starting at `y`: a gable (hipped too if `hip`), its
+    /// ridge running along X if `along_x`, tiled in `paint` with gable ends in `ends`.
+    /// Underneath it is a stack of stair steps, each one rise, so the roof can be walked up
+    /// from the eaves; the steps carry the collision and are hidden, and the roof is drawn
+    /// as smooth slopes just over their outer corners (see [`World::roofs`]). Returns the
+    /// height of the ridge.
+    pub(crate) fn stepped_roof(&mut self, (x0, x1, z0, z1): (f32, f32, f32, f32), y: f32, hip: bool, along_x: bool, (paint, ends): (Paint, Paint)) -> f32 {
         let (run, rise) = (0.6, 0.4);
         let (cx, cz) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
         let across = if along_x { (z1 - z0) * 0.5 } else { (x1 - x0) * 0.5 };
         let along = if along_x { (x1 - x0) * 0.5 } else { (z1 - z0) * 0.5 };
         let mut top = y;
+        // Half sizes (across, along) of the top step: the flat strip along the ridge.
+        let mut ridge = (across, along);
         for i in 0..8 {
             let a = across - (i + 1) as f32 * run;
             if a < 0.3 {
@@ -165,11 +171,67 @@ impl World {
             }
             let l = if hip { (along - (i + 1) as f32 * run).max(0.4) } else { along };
             let half = if along_x { Vec3::new(l, rise * 0.5, a) } else { Vec3::new(a, rise * 0.5, l) };
-            let shade = if i % 2 == 0 { paint } else { darker(paint) };
-            self.solid(Aabb::new(Vec3::new(cx, y + (i as f32 + 0.5) * rise, cz), half), shade);
+            self.blocks.push(super::Block { aabb: Aabb::new(Vec3::new(cx, y + (i as f32 + 0.5) * rise, cz), half), paint, solid: true, hidden: true });
             top = y + (i + 1) as f32 * rise;
+            ridge = (a, l);
+        }
+        if top > y {
+            self.sloped_roof(Vec3::new(cx, y, cz), (across, along), ridge, top - y, hip, along_x, (paint, ends));
         }
         top
+    }
+
+    /// The drawn part of [`Self::stepped_roof`]: slopes from the eaves (half sizes `base`,
+    /// at `foot`) up to a flat ridge strip (half sizes `ridge`) `height` higher, plus a
+    /// little: eaves that overhang the walls, a ridge cap, and on a gable the end triangles
+    /// filled in. The slopes are thin skins, so the end triangles show their own paint.
+    #[allow(clippy::too_many_arguments)]
+    fn sloped_roof(&mut self, foot: Vec3, base: (f32, f32), ridge: (f32, f32), height: f32, hip: bool, along_x: bool, (paint, ends): (Paint, Paint)) {
+        // Just over the steps' corners, so nothing pokes through and feet stay on it.
+        let lift = 0.04;
+        // Skin thickness, eave overhang (out over the walls and past the gable ends).
+        let (thick, eave, end) = (0.14, 0.3, 0.25);
+        let slope = height / (base.0 - ridge.0).max(0.01);
+        // (across, up, along) -> world.
+        let at = |u: f32, h: f32, v: f32| if along_x { foot + Vec3::new(v, h, u) } else { foot + Vec3::new(u, h, v) };
+        let (a0, a1, h1) = (base.0 + eave, ridge.0, height + lift);
+        let h0 = -eave * slope + lift;
+        if hip {
+            // One solid: the eave rectangle and the ridge strip, the overhang all round.
+            let l0 = base.1 + eave;
+            let l1 = ridge.1;
+            let mut points = Vec::with_capacity(12);
+            for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                points.push(at(su * a0, h0, sv * l0));
+                // A thinner fascia than a gable's: the underside stays above the ceiling slab's.
+                points.push(at(su * a0, h0 - 0.1, sv * l0));
+                points.push(at(su * a1, h1, sv * l1));
+            }
+            self.roofs.push(Hull { paint, points, anim: Anim::None });
+            return;
+        }
+        let l = base.1 + end;
+        // The two slopes: thin skins from the eave up to the ridge strip.
+        for s in [-1.0, 1.0] {
+            let mut points = Vec::with_capacity(8);
+            for v in [-l, l] {
+                points.extend([at(s * a0, h0, v), at(s * a0, h0 - thick, v), at(s * a1, h1, v), at(s * a1, h1 - thick, v)]);
+            }
+            self.roofs.push(Hull { paint, points, anim: Anim::None });
+        }
+        // The ridge cap.
+        let cap = a1 + 0.08;
+        let mut points = Vec::with_capacity(8);
+        for (u, v) in [(-cap, -l), (cap, -l), (-cap, l), (cap, l)] {
+            points.extend([at(u, h1 + 0.05, v), at(u, h1 - thick, v)]);
+        }
+        self.roofs.push(Hull { paint: darker(paint), points, anim: Anim::None });
+        // The gable ends: filled up to just under the skins, flush with the eaves below.
+        let mut points = Vec::with_capacity(8);
+        for v in [-base.1, base.1] {
+            points.extend([at(-base.0, 0.0, v), at(base.0, 0.0, v), at(-a1, height, v), at(a1, height, v)]);
+        }
+        self.roofs.push(Hull { paint: ends, points, anim: Anim::None });
     }
 
     /// Steps up to a doorway whose floor `floor` stands above the ground outside it.
@@ -383,39 +445,11 @@ impl World {
         }
     }
 
-    /// A road or path from `a` to `b` (one axis): paint on the ground, in short runs that follow it.
+    /// A road or path from `a` to `b` (one axis), `width` wide, with kerbs and lane markings
+    /// if `lines`. Paved when the map is finished (see `paving`).
     pub(crate) fn road(&mut self, a: Vec2, b: Vec2, width: f32, paint: Paint, lines: bool) {
         self.roads.push((a, b, width));
-        let along_x = (b.x - a.x).abs() > (b.y - a.y).abs();
-        let length = (b - a).length();
-        let n = (length / 3.0).ceil().max(1.0) as usize;
-        for i in 0..n {
-            let p = a.lerp(b, i as f32 / n as f32);
-            let q = a.lerp(b, (i + 1) as f32 / n as f32);
-            let w = if along_x { Vec2::new(0.0, width * 0.5) } else { Vec2::new(width * 0.5, 0.0) };
-            let (lo, hi) = (p.min(q) - w, p.max(q) + w);
-            let y = self.highest((lo + hi) * 0.5, (hi - lo) * 0.5) + 0.01;
-            self.flat(lo.x, hi.x, lo.y, hi.y, y, paint);
-            if lines && i % 3 == 0 {
-                let m = (p + q) * 0.5;
-                let dash = if along_x { Vec2::new(1.2, 0.08) } else { Vec2::new(0.08, 1.2) };
-                self.flat(m.x - dash.x, m.x + dash.x, m.y - dash.y, m.y + dash.y, y + 0.005, Paint::Bone);
-            }
-        }
-    }
-
-    /// Paint over an area of ground (fields, yards, car parks), in tiles that follow it.
-    pub(crate) fn ground_paint(&mut self, x0: f32, x1: f32, z0: f32, z1: f32, paint: Paint) {
-        let (nx, nz) = (((x1 - x0) / 5.0).ceil().max(1.0) as usize, ((z1 - z0) / 5.0).ceil().max(1.0) as usize);
-        for i in 0..nx {
-            for j in 0..nz {
-                let (a0, a1) = (x0 + (x1 - x0) * i as f32 / nx as f32, x0 + (x1 - x0) * (i + 1) as f32 / nx as f32);
-                let (b0, b1) = (z0 + (z1 - z0) * j as f32 / nz as f32, z0 + (z1 - z0) * (j + 1) as f32 / nz as f32);
-                let c = Vec2::new((a0 + a1) * 0.5, (b0 + b1) * 0.5);
-                let y = self.highest(c, Vec2::new((a1 - a0) * 0.5, (b1 - b0) * 0.5)) + 0.012;
-                self.flat(a0, a1, b0, b1, y, paint);
-            }
-        }
+        self.lanes.push(super::paving::Lane { a, b, width, paint, lines });
     }
 
     /// A shipping container (`levels` high), with corrugation ribs.
@@ -443,6 +477,20 @@ impl World {
         }
     }
 
+    /// Draws the blocks from `from` on (a stepped cap) as one smooth dome over their corners
+    /// and `rim`, instead of as steps: they stay solid underneath, to stand on.
+    pub(crate) fn smooth_cap(&mut self, from: usize, rim: &[Vec3], paint: Paint) {
+        let mut points = rim.to_vec();
+        for block in &mut self.blocks[from..] {
+            block.hidden = true;
+            let (lo, hi) = (block.aabb.center - block.aabb.half, block.aabb.center + block.aabb.half);
+            for (x, z) in [(lo.x, lo.z), (hi.x, lo.z), (lo.x, hi.z), (hi.x, hi.z)] {
+                points.extend([Vec3::new(x, lo.y, z), Vec3::new(x, hi.y + 0.03, z)]);
+            }
+        }
+        self.roofs.push(Hull { paint, points, anim: Anim::None });
+    }
+
     /// A grain silo: a round-ish tower with hoops, a stepped cap and a ladder to the walkway on top.
     pub(crate) fn silo(&mut self, c: Vec2, r: f32, height: f32, paint: Paint, ladder: Option<Vec2>) {
         let g = self.lowest(c, Vec2::splat(r)) - 0.1;
@@ -456,8 +504,10 @@ impl World {
             y += 1.8;
         }
         // The cap: two steps in from a walkway round the rim, low cover for whoever climbs up.
+        let cap = self.blocks.len();
         self.column(c, r * 0.72, top, top + 0.4, Paint::Metal);
         self.column(c, r * 0.45, top + 0.4, top + 0.8, Paint::Metal);
+        self.smooth_cap(cap, &[], Paint::Metal);
         self.solid(Aabb::new(Vec3::new(c.x, top + 1.05, c.y), Vec3::new(0.35, 0.25, 0.35)), Paint::Dark);
         if let Some(out) = ladder {
             self.ladder_up(c + out * r, out, top);
@@ -507,8 +557,11 @@ impl World {
             self.pole(Vec3::new(c.x + dx, top, c.y + dz), 1.0, Paint::Iron);
         }
         self.column(c, 2.1, top, top + 3.2, paint);
+        let cap = self.blocks.len();
         self.column(c, 1.5, top + 3.2, top + 3.6, darker(paint));
         self.column(c, 0.8, top + 3.6, top + 4.0, darker(paint));
+        let rim: Vec<Vec3> = (0..16).map(|i| Vec2::from_angle(i as f32 * std::f32::consts::TAU / 16.0) * 1.95).map(|d| Vec3::new(c.x + d.x, top + 3.2, c.y + d.y)).collect();
+        self.smooth_cap(cap, &rim, darker(paint));
         self.decor(Aabb::new(Vec3::new(c.x, top + 2.0, c.y), Vec3::new(2.13, 0.04, 0.9)), Paint::Bone);
         self.ladder_up(Vec2::new(c.x + 3.0, c.y), Vec2::X, top);
     }
@@ -524,12 +577,14 @@ impl World {
             y += h;
             half -= 0.35;
         }
-        self.stepped_roof((c.x - half - 0.4, c.x + half + 0.4, c.y - half - 0.4, c.y + half + 0.4), y, true, true, Paint::Dark);
+        self.stepped_roof((c.x - half - 0.4, c.x + half + 0.4, c.y - half - 0.4, c.y + half + 0.4), y, true, true, (Paint::Dark, Paint::Dark));
         // A door and windows painted on: the mill is solid (cover all round).
         self.decor(Aabb::span(Vec3::new(c.x - 0.6, g, c.y - 2.62), Vec3::new(c.x + 0.6, g + 2.3, c.y - 2.6)), Paint::Wood);
         // The sails, on a hub out of the south face: paint-thin vanes.
         let hub = Vec3::new(c.x, y - 0.8, c.y - half - 0.7);
         self.decor(Aabb::new(hub, Vec3::new(0.25, 0.25, 0.04)), Paint::Dark);
+        // The axle the hub turns on, out of the cap.
+        self.decor(Aabb::span(Vec3::new(hub.x - 0.08, hub.y - 0.08, hub.z), Vec3::new(hub.x + 0.08, hub.y + 0.08, c.y - half)), Paint::Dark);
         let vane = |len: f32, vertical: bool| if vertical { Vec3::new(0.45, len, 0.04) } else { Vec3::new(len, 0.45, 0.04) };
         for (offset, vertical) in [(Vec3::Y * 3.4, true), (Vec3::Y * -3.4, true), (Vec3::X * 3.4, false), (Vec3::X * -3.4, false)] {
             self.decor(Aabb::new(hub + offset - Vec3::Z * 0.3, vane(3.0, vertical)), Paint::Bone);
@@ -591,7 +646,7 @@ impl World {
             self.solid(Aabb::span(Vec3::new(q.x - 0.14, g - 0.3, q.y - 0.14), Vec3::new(q.x + 0.14, g + 2.7, q.y + 0.14)), Paint::Wood);
         }
         self.solid(Aabb::span(Vec3::new(p.x - half.x - 0.3, g + 2.7, p.y - half.y - 0.3), Vec3::new(p.x + half.x + 0.3, g + 2.95, p.y + half.y + 0.3)), Paint::Wood);
-        self.stepped_roof((p.x - half.x - 0.3, p.x + half.x + 0.3, p.y - half.y - 0.3, p.y + half.y + 0.3), g + 2.95, false, half.x >= half.y, roof);
+        self.stepped_roof((p.x - half.x - 0.3, p.x + half.x + 0.3, p.y - half.y - 0.3, p.y + half.y + 0.3), g + 2.95, false, half.x >= half.y, (roof, Paint::Wood));
         self.flat(p.x - half.x, p.x + half.x, p.y - half.y, p.y + half.y, g + 0.01, Paint::Concrete);
         let along_x = half.x >= half.y;
         for s in [-0.5, 0.5] {
@@ -888,7 +943,8 @@ impl World {
         self.solid(Aabb::span(Vec3::new(p.x - 0.24, y, p.y - 0.24), Vec3::new(p.x + 0.24, y + 0.48, p.y + 0.24)), Paint::Dark);
         let back = p + face * 0.24;
         let h = if face.y.abs() > 0.5 { Vec3::new(0.22, 0.26, 0.03) } else { Vec3::new(0.03, 0.26, 0.22) };
-        self.decor(Aabb::new(Vec3::new(back.x, y + 0.8, back.y), h), Paint::Dark);
+        // The back rises from the seat.
+        self.decor(Aabb::new(Vec3::new(back.x, y + 0.74, back.y), h), Paint::Dark);
     }
 
     /// A photocopier / printer: a solid box with a lid, a paper tray and a lit panel.

@@ -64,6 +64,19 @@ impl MeshBuilder {
 /// robots and props were culled while in plain view and flickered in and out.
 pub const KEEP_FOR_BOUNDS: RenderAssetUsages = RenderAssetUsages::all();
 
+/// A model's box grown a fraction of a millimetre, the thinner the more (never more than
+/// a third of its thickness), so a plate or stripe laid flush on a casing is drawn just in
+/// front of it instead of flickering against it. The model-sized cousin of
+/// [`oz_core::worldgen::draw_margin`].
+pub fn seated(part: &Part) -> Part {
+    if part.shape != Shape::Cube {
+        return *part;
+    }
+    let thin = part.size.min_element().max(1e-4);
+    let margin = (0.000015 / thin).clamp(0.0001, 0.0015).min(thin * 0.3);
+    Part { size: part.size + Vec3::splat(margin * 2.0), ..*part }
+}
+
 pub fn linear(paint: Paint) -> [f32; 4] {
     let [r, g, b] = paint.rgb().map(srgb_to_linear);
     [r, g, b, 1.0]
@@ -124,6 +137,17 @@ impl Art {
         }
     }
 
+    /// One flat triangle, facing the way it winds (counter-clockwise from the front).
+    pub fn add_triangle(&self, builder: &mut MeshBuilder, [a, b, c]: [Vec3; 3], paint: Paint) {
+        let normal = (b - a).cross(c - a).normalize_or_zero().to_array();
+        let color = linear(paint);
+        for p in [a, b, c] {
+            builder.positions.push(p.to_array());
+            builder.normals.push(normal);
+            builder.colors.push(color);
+        }
+    }
+
     /// A fused solid: its convex hull, faceted.
     pub fn add_hull(&self, builder: &mut MeshBuilder, hull: &Hull, offset: Transform) {
         let matrix = offset.compute_matrix();
@@ -142,7 +166,7 @@ impl Art {
     /// Merges a whole model (any paints) into lit and unlit builders at `offset`.
     pub fn add_model(&self, lit: &mut MeshBuilder, unlit: &mut MeshBuilder, model: &BlockModel, offset: Transform) {
         for part in &model.parts {
-            self.add_part(if part.paint.unlit() { &mut *unlit } else { &mut *lit }, part, offset);
+            self.add_part(if part.paint.unlit() { &mut *unlit } else { &mut *lit }, &seated(part), offset);
         }
         for hull in &model.hulls {
             self.add_hull(if hull.paint.unlit() { &mut *unlit } else { &mut *lit }, hull, offset);
@@ -155,8 +179,8 @@ impl Art {
         let mut extras = Vec::new();
         for part in &model.parts {
             match part.anim {
-                Anim::None | Anim::Mag | Anim::Slide => self.add_part(if part.paint.unlit() { &mut unlit } else { &mut lit }, part, Transform::IDENTITY),
-                Anim::Leg { phase } => self.add_part(&mut legs[(phase.fract() >= 0.5) as usize], part, Transform::IDENTITY),
+                Anim::None | Anim::Mag | Anim::Slide => self.add_part(if part.paint.unlit() { &mut unlit } else { &mut lit }, &seated(part), Transform::IDENTITY),
+                Anim::Leg { phase } => self.add_part(&mut legs[(phase.fract() >= 0.5) as usize], &seated(part), Transform::IDENTITY),
                 _ => extras.push(*part),
             }
         }

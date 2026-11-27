@@ -350,8 +350,9 @@ impl World {
         // Playground: a sandpit with a low rim, a slide tower (cover), swings (thin frames).
         let pg = c + Vec2::new(8.0, 9.0);
         self.ground_paint(pg.x - 5.0, pg.x + 5.0, pg.y - 4.0, pg.y + 4.0, Paint::Sand);
-        self.boxed(pg + Vec2::new(-2.0, 0.0), Vec2::new(1.0, 1.0), 1.5, Paint::Coral);
-        self.solid(Aabb::span(Vec3::new(pg.x - 1.0, y + 1.5, pg.y - 1.0), Vec3::new(pg.x + 0.6, y + 1.65, pg.y + 1.0)), Paint::Gold);
+        // The slide sits on the tower's top, wherever the slope left it.
+        let tower = self.boxed(pg + Vec2::new(-2.0, 0.0), Vec2::new(1.0, 1.0), 1.5, Paint::Coral);
+        self.solid(Aabb::span(Vec3::new(pg.x - 1.0, tower, pg.y - 1.0), Vec3::new(pg.x + 0.6, tower + 0.15, pg.y + 1.0)), Paint::Gold);
         for k in 0..3 {
             let x = pg.x + 1.2 + k as f32 * 1.2;
             self.decor(Aabb::span(Vec3::new(x - 0.03, y, pg.y + 2.4), Vec3::new(x + 0.03, y + 2.2, pg.y + 2.46)), Paint::Teal);
@@ -731,7 +732,7 @@ impl World {
             }
         }
         self.solid(Aabb::span(Vec3::new(c.x - half.x - 0.3, g + 3.4, c.y - half.y - 0.4), Vec3::new(c.x + half.x + 0.3, g + 3.6, c.y + half.y + 0.4)), Paint::Iron);
-        self.stepped_roof((c.x - half.x - 0.3, c.x + half.x + 0.3, c.y - half.y - 0.4, c.y + half.y + 0.4), g + 3.6, false, true, Paint::Rust);
+        self.stepped_roof((c.x - half.x - 0.3, c.x + half.x + 0.3, c.y - half.y - 0.4, c.y + half.y + 0.4), g + 3.6, false, true, (Paint::Rust, Paint::Iron));
         self.flat(c.x - half.x, c.x + half.x, c.y - half.y, c.y + half.y, g + 0.01, Paint::Concrete);
         // The tractor: body, cab and big wheels, all solid.
         let t = c + Vec2::new(-half.x * 0.4, 0.0);
@@ -798,9 +799,11 @@ impl World {
                         let p = c + Vec2::new(*dx, *dz);
                         self.silo(p, r, rng.range(7.0, 12.0), *rng.pick(&[Paint::Metal, Paint::Bone, Paint::Iron]).unwrap_or(&Paint::Metal), (i == 0).then_some(Vec2::new(-1.0, 0.0)));
                     }
+                    // The pipes run silo to silo (the first to the second and to the third, which
+                    // are always there), not through the empty middle.
                     let g = self.ground_at(c);
-                    self.decor(Aabb::span(Vec3::new(c.x - 5.0, g + 4.0, c.y - 0.08), Vec3::new(c.x + 5.0, g + 4.16, c.y + 0.08)), Paint::Steel);
-                    self.decor(Aabb::span(Vec3::new(c.x - 0.08, g + 3.0, c.y - 5.0), Vec3::new(c.x + 0.08, g + 3.16, c.y + 5.0)), Paint::Rust);
+                    self.decor(Aabb::span(Vec3::new(c.x - 5.0, g + 4.0, c.y - 5.08), Vec3::new(c.x + 5.0, g + 4.16, c.y - 4.92)), Paint::Steel);
+                    self.decor(Aabb::span(Vec3::new(c.x - 5.08, g + 3.0, c.y - 5.0), Vec3::new(c.x - 4.92, g + 3.16, c.y + 5.0)), Paint::Rust);
                 } else if roll < 0.52 {
                     // A tall block for the snipers.
                     let half = Vec2::new(rng.range(6.6, 7.6), rng.range(5.8, 6.8));

@@ -16,6 +16,7 @@
 
 mod mountain;
 mod office;
+mod paving;
 mod shapes;
 mod station;
 mod themes;
@@ -23,7 +24,7 @@ mod themes;
 pub use themes::Theme;
 use shapes::{Furnish, Plan, Roof};
 
-use crate::{collide::Aabb, economy::Ore, model::Paint, noise, rng::Rng};
+use crate::{collide::Aabb, economy::Ore, model::{Hull, Paint}, noise, rng::Rng};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::TAU;
@@ -313,12 +314,37 @@ impl Prop {
 
 /// A piece of architecture: a wall, floor, stair, railing or trim. Solid blocks
 /// are also collision; the rest is decoration. Rendering and collision both
-/// come from this one list, so they can never disagree.
+/// come from this one list, so they can never disagree - except under a sloped
+/// roof (see [`World::roofs`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Block {
     pub aabb: Aabb,
     pub paint: Paint,
     pub solid: bool,
+    /// Not drawn: the stair steps under a sloped roof, which are walked on (and shot, and
+    /// hidden behind) but drawn as the smooth roof over them instead.
+    pub hidden: bool,
+}
+
+impl Block {
+    /// The box as drawn: grown by [`draw_margin`], so a trim, plinth, sign or stripe laid
+    /// flush on a wall or floor always shows in front of it instead of flickering against
+    /// it. Collision uses [`Block::aabb`].
+    pub fn drawn(&self) -> Aabb {
+        Aabb::new(self.aabb.center, self.aabb.half + Vec3::splat(draw_margin(self.aabb.half.min_element() * 2.0, self.paint)))
+    }
+}
+
+/// How much a block `thickness` thick is grown when drawn: a few millimetres, the thinner
+/// the more, so wherever two faces would lie in one plane the thinner piece (the trim on
+/// the wall, the stripe on the floor) is drawn just in front. Thickness picks a 1.5 mm
+/// step; paint picks a 0.05 mm notch within it, so two pieces of different paint never
+/// end up in one plane again.
+pub fn draw_margin(thickness: f32, paint: Paint) -> f32 {
+    const STEP: f32 = 0.0015;
+    let by_thickness = 0.02 * (1.0 - (-0.04 / thickness.max(1e-3)).exp());
+    let notch = Paint::ALL.iter().position(|p| *p == paint).unwrap_or(0) as f32 * (STEP / Paint::ALL.len() as f32);
+    0.0005 + (by_thickness / STEP).round() * STEP + notch
 }
 
 /// A doorway that holds a door (it can be opened, closed and blown off).
@@ -441,6 +467,11 @@ pub struct World {
     pub islands: Vec<Island>,
     pub props: Vec<Prop>,
     pub blocks: Vec<Block>,
+    /// Sloped roofs and round caps, drawn smooth over the hidden stair steps that carry
+    /// their collision (render only; each just covers its steps' outer corners).
+    pub roofs: Vec<Hull>,
+    /// Roads, pavements and painted ground: triangles laid on the terrain (render only).
+    pub paving: Vec<(Paint, [Vec3; 3])>,
     pub deposits: Vec<Deposit>,
     /// Offshore points around the home island where sea creatures surface.
     pub landings: Vec<Vec2>,
@@ -474,6 +505,12 @@ pub struct World {
     style: shapes::Style,
     /// Streets and paths laid so far, (from, to, width), for parking cars and lining with trees.
     roads: Vec<(Vec2, Vec2, f32)>,
+    /// The same roads, with their looks, until they are paved.
+    lanes: Vec<paving::Lane>,
+    /// Areas of ground painted so far.
+    painted: usize,
+    /// Where each building's doorway steps lead, and whether that side was left open.
+    thresholds: Vec<(Vec3, bool)>,
     /// Building sites chosen before the ground is shaped, (centre, radius): the ground stays flat there.
     flats: Vec<(Vec2, f32)>,
     side: usize,
@@ -515,6 +552,7 @@ impl World {
             islands,
             props: Vec::new(),
             blocks: Vec::new(),
+            roofs: Vec::new(),
             deposits: Vec::new(),
             landings: Vec::new(),
             core: Vec2::ZERO,
@@ -541,6 +579,10 @@ impl World {
             },
             style: shapes::Style::default(),
             roads: Vec::new(),
+            lanes: Vec::new(),
+            painted: 0,
+            thresholds: Vec::new(),
+            paving: Vec::new(),
             flats: Vec::new(),
         };
         if let Some(theme) = world.theme {
@@ -561,6 +603,8 @@ impl World {
             }
             _ => world.build_town(&mut rng.fork()),
         }
+        world.pave();
+        world.tidy_clutter();
         world
     }
 
@@ -865,11 +909,11 @@ impl World {
     }
 
     fn solid(&mut self, aabb: Aabb, paint: Paint) {
-        self.blocks.push(Block { aabb, paint, solid: true });
+        self.blocks.push(Block { aabb, paint, solid: true, hidden: false });
     }
 
     fn decor(&mut self, aabb: Aabb, paint: Paint) {
-        self.blocks.push(Block { aabb, paint, solid: false });
+        self.blocks.push(Block { aabb, paint, solid: false, hidden: false });
     }
 
     /// A band `out` thick around the outside of a footprint (plinths, floor-line trims):
@@ -892,6 +936,16 @@ impl World {
     }
 
     /// Is anything solid within `margin` of this point?
+    /// Takes away any car, barrel or crate that ended up inside a wall, hedge or fence
+    /// (they are placed by footprint radius, which a long car can outreach).
+    fn tidy_clutter(&mut self) {
+        let solids: Vec<Aabb> = self.solids().collect();
+        self.clutter.retain(|item| {
+            let (centre, half) = (item.center(), item.half());
+            !solids.iter().any(|b| b.top() > item.pos.y + 0.45 && (0..3).all(|a| (b.center[a] - centre[a]).abs() < b.half[a] + half[a] - 0.05))
+        });
+    }
+
     fn occupied(&self, p: Vec2, margin: f32) -> bool {
         self.solids().any(|b| b.touches(p.x, p.y, margin))
     }
@@ -1045,6 +1099,15 @@ impl World {
         }
         // Where each side's wall starts along its length.
         let start = [x0, z0 + T, z0 + T, x0];
+        // A door too near a corner slides along its wall (as `openings_at` would slide it),
+        // here, so the steps up to it are built in front of it and not of blank wall.
+        let length = [2.0 * hx, 2.0 * hz - 2.0 * T, 2.0 * hz - 2.0 * T, 2.0 * hx];
+        for (side, door) in doors.iter_mut().enumerate() {
+            if let Some((center, width)) = door {
+                let lo = *width * 0.5 + 0.35;
+                *center = (*center - start[side]).clamp(lo, (length[side] - lo).max(lo)) + start[side];
+            }
+        }
         for floor in 0..floors {
             let base = g + floor as f32 * STOREY;
             let ground = floor == 0;
@@ -1076,8 +1139,9 @@ impl World {
             }
             // A trim band at each floor line, on the outside of the walls only.
             self.ring(x0, x1, z0, z1, base + STOREY - 0.14, base + STOREY, 0.05, Paint::Dark, open);
-            // Ceiling lamp.
-            self.decor(Aabb::new(Vec3::new(c.x, base + STOREY - 0.3, c.y - hz * 0.3), Vec3::new(0.35, 0.03, 0.35)), Paint::Glow);
+            // Ceiling lamp, flush with the ceiling (the roof slab's underside, or the next floor's).
+            let ceiling = if floor + 1 == floors { STOREY } else { STOREY - 0.25 };
+            self.decor(Aabb::new(Vec3::new(c.x, base + ceiling - 0.03, c.y - hz * 0.3), Vec3::new(0.35, 0.03, 0.35)), Paint::Glow);
         }
         // Steps up to any door that stands above the ground outside it.
         for (side, door) in doors.iter().enumerate() {
@@ -1089,6 +1153,7 @@ impl World {
                 _ => (Vec2::new(center, z1), Vec2::Y),
             };
             self.stoop(p, out, width + 0.4, g);
+            self.thresholds.push((Vec3::new(p.x, g, p.y), open[side]));
         }
 
         // Stairs: flight k climbs from floor k to k+1. Flights alternate between a lane along the
@@ -1199,7 +1264,7 @@ impl World {
         match roof {
             Roof::Gable(tiles) | Roof::Hip(tiles) => {
                 let along_x = hx >= hz;
-                let ridge = self.stepped_roof((x0 - 0.15, x1 + 0.15, z0 - 0.15, z1 + 0.15), roof_y + 0.3, matches!(roof, Roof::Hip(_)), along_x, tiles);
+                let ridge = self.stepped_roof((x0 - 0.15, x1 + 0.15, z0 - 0.15, z1 + 0.15), roof_y + 0.3, matches!(roof, Roof::Hip(_)), along_x, (tiles, paint));
                 // A chimney: solid, it is cover up there.
                 if plan.chimney && rng.chance(0.7) {
                     let (x, z) = if along_x { (rng.range(x0 + 1.2, x1 - 1.2), c.y + hz * 0.35) } else { (c.x + hx * 0.35, rng.range(z0 + 1.2, z1 - 1.2)) };
@@ -1526,6 +1591,172 @@ mod tests {
 
     /// Nothing solid in a robot's body standing at a spawn point (ceilings far overhead and
     /// floors underfoot are fine).
+    /// Pairs of drawn blocks with faces in one plane, facing the same way, overlapping, in
+    /// different paints: they would flicker against each other (z-fighting).
+    fn flickering(w: &World, drawn: impl Fn(&Block) -> Aabb) -> Vec<(Block, Block)> {
+        let blocks: Vec<(Block, Aabb)> = w.blocks.iter().filter(|b| !b.hidden).map(|b| (*b, drawn(b))).collect();
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = Default::default();
+        let cell = |v: f32| (v / 8.0).floor() as i32;
+        for (i, (_, b)) in blocks.iter().enumerate() {
+            let (lo, hi) = (b.center - b.half, b.center + b.half);
+            for cx in cell(lo.x)..=cell(hi.x) {
+                for cz in cell(lo.z)..=cell(hi.z) {
+                    cells.entry((cx, cz)).or_default().push(i);
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut found = Vec::new();
+        for list in cells.values() {
+            for (n, &i) in list.iter().enumerate() {
+                for &j in &list[n + 1..] {
+                    let ((ba, a), (bb, b)) = (blocks[i], blocks[j]);
+                    if ba.paint == bb.paint || !seen.insert((i.min(j), i.max(j))) {
+                        continue;
+                    }
+                    let (alo, ahi, blo, bhi) = (a.center - a.half, a.center + a.half, b.center - b.half, b.center + b.half);
+                    let clash = (0..3).any(|axis| {
+                        let others = [(axis + 1) % 3, (axis + 2) % 3];
+                        let overlap = others.iter().all(|&o| ahi[o].min(bhi[o]) - alo[o].max(blo[o]) > 1e-3);
+                        overlap && ((ahi[axis] - bhi[axis]).abs() < 2e-5 || (alo[axis] - blo[axis]).abs() < 2e-5)
+                    });
+                    if clash {
+                        found.push((ba, bb));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn no_two_drawn_faces_share_a_plane() {
+        let mut maps: Vec<(String, World)> = Theme::ALL.into_iter().map(|t| (format!("{t:?}"), World::generate(WorldRecipe::themed(9, Biome::IronShoals, t)))).collect();
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town) {
+            maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
+        }
+        for (what, w) in &maps {
+            let raw = flickering(w, |b| b.aabb).len();
+            let drawn = flickering(w, Block::drawn);
+            eprintln!("{what}: {raw} flush pairs as built, {} as drawn", drawn.len());
+            for (a, b) in drawn.iter().take(5) {
+                eprintln!("  {:?} {:?} / {:?} {:?}", a.paint, a.aabb, b.paint, b.aabb);
+            }
+            // A pair whose faces were a hair apart as built can, by bad luck, meet as drawn.
+            assert!(drawn.len() <= 3, "{what}: {} pairs of faces flicker", drawn.len());
+        }
+    }
+
+    /// Blocks hanging in the air: off the ground and touching no other block.
+    fn floating(w: &World) -> Vec<Block> {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = Default::default();
+        let cell = |v: f32| (v / 8.0).floor() as i32;
+        for (i, b) in w.blocks.iter().enumerate() {
+            let (lo, hi) = (b.aabb.center - b.aabb.half, b.aabb.center + b.aabb.half);
+            for cx in cell(lo.x)..=cell(hi.x) {
+                for cz in cell(lo.z)..=cell(hi.z) {
+                    cells.entry((cx, cz)).or_default().push(i);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        for (i, b) in w.blocks.iter().enumerate() {
+            let (lo, hi) = (b.aabb.center - b.aabb.half, b.aabb.center + b.aabb.half);
+            let ground = [(lo.x, lo.z), (hi.x, lo.z), (lo.x, hi.z), (hi.x, hi.z), (b.aabb.center.x, b.aabb.center.z)].iter().map(|(x, z)| w.height(*x, *z)).fold(f32::MIN, f32::max);
+            // Holograms (the station's holo-table map) float on purpose.
+            if lo.y <= ground + 0.05 || lo.y <= w.water + 0.05 || (b.paint == Paint::Blue && !b.solid) {
+                continue;
+            }
+            let touches = (cell(lo.x)..=cell(hi.x)).flat_map(|cx| (cell(lo.z)..=cell(hi.z)).map(move |cz| (cx, cz))).any(|key| {
+                cells.get(&key).is_some_and(|list| {
+                    list.iter().any(|&j| {
+                        let o = &w.blocks[j].aabb;
+                        j != i && (0..3).all(|a| (o.center[a] - b.aabb.center[a]).abs() <= o.half[a] + b.aabb.half[a] + 0.02)
+                    })
+                })
+            });
+            if !touches {
+                found.push(*b);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn nothing_hangs_in_the_air() {
+        for seed in [1, 3, 9, 10, 17, 22] {
+            let mut maps: Vec<(String, World)> = Theme::ALL.into_iter().map(|t| (format!("{t:?} {seed}"), World::generate(WorldRecipe::themed(seed, Biome::IronShoals, t)))).collect();
+            if seed == 9 {
+                for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town) {
+                    maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
+                }
+            }
+            for (what, w) in &maps {
+                let found = floating(w);
+                let mut kinds = std::collections::HashSet::new();
+                for b in found.iter().filter(|b| kinds.insert((b.paint, (b.aabb.half * 20.0).round().to_array().map(|v| v as i32)))).take(12) {
+                    eprintln!("{what}: floating {:?} {} at {:?} half {:?}, ground {}", b.paint, if b.solid { "solid" } else { "decor" }, b.aabb.center, b.aabb.half, w.height(b.aabb.center.x, b.aabb.center.z));
+                }
+                assert!(found.is_empty(), "{what}: {} blocks hang in the air", found.len());
+            }
+        }
+    }
+
+    #[test]
+    fn props_stand_clear_and_ladders_reach_roofs() {
+        let mut maps: Vec<(String, World)> = Vec::new();
+        for seed in [1, 3, 9, 17] {
+            maps.extend(Theme::ALL.into_iter().map(|t| (format!("{t:?} {seed}"), World::generate(WorldRecipe::themed(seed, Biome::IronShoals, t)))));
+        }
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town) {
+            maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
+        }
+        for (what, w) in &maps {
+            // No tree, rock or crate grown into a wall: anything standing up out of the ground
+            // where a prop stands must be lower than the prop's footing allows.
+            for prop in &w.props {
+                let Some(half) = prop.solid_half() else { continue };
+                let centre = prop.pos + Vec3::Y * half.y;
+                let inside = w.blocks.iter().find(|b| {
+                    b.solid && b.aabb.top() > prop.pos.y + 0.45 && (0..3).all(|a| (b.aabb.center[a] - centre[a]).abs() < b.aabb.half[a] + half[a] - 0.05)
+                });
+                assert!(inside.is_none(), "{what}: a {:?} at {:?} grows into {:?}", prop.kind, prop.pos, inside.map(|b| b.aabb));
+            }
+            // The same for cars, barrels and crates.
+            for item in &w.clutter {
+                let (centre, half) = (item.center(), item.half());
+                let inside = w.blocks.iter().find(|b| {
+                    b.solid && b.aabb.top() > item.pos.y + 0.45 && (0..3).all(|a| (b.aabb.center[a] - centre[a]).abs() < b.aabb.half[a] + half[a] - 0.05)
+                });
+                assert!(inside.is_none(), "{what}: a {:?} at {:?} sits inside {:?}", item.kind, item.pos, inside.map(|b| b.aabb));
+            }
+            // Every ladder comes out on something to stand on at its top.
+            for ladder in &w.ladders {
+                let behind = ladder.foot - Vec3::new(ladder.out.x, 0.0, ladder.out.y) * 0.5;
+                let landing = w.blocks.iter().any(|b| {
+                    b.solid && (b.aabb.top() - ladder.top).abs() < 0.45 && (b.aabb.center.x - behind.x).abs() <= b.aabb.half.x + 0.3 && (b.aabb.center.z - behind.z).abs() <= b.aabb.half.z + 0.3
+                });
+                assert!(landing, "{what}: the ladder at {:?} reaches nothing at {}", ladder.foot, ladder.top);
+            }
+        }
+    }
+
+    #[test]
+    fn doorway_steps_lead_to_doors() {
+        for seed in [1, 3, 9, 10, 17, 22] {
+            for theme in Theme::ALL {
+                let w = World::generate(WorldRecipe::themed(seed, Biome::IronShoals, theme));
+                for &(p, open) in &w.thresholds {
+                    let door = w.doors.iter().any(|d| (d.center.x - p.x).abs() < 0.05 + if d.along_x { 0.0 } else { 0.4 } && (d.center.z - p.z).abs() < 0.05 + if d.along_x { 0.4 } else { 0.0 } && (d.center.y - p.y).abs() < 0.1);
+                    // A gateway wider than a door: nothing solid in the opening.
+                    let q = p + Vec3::Y;
+                    let wide = w.blocks.iter().all(|b| !b.solid || ((b.aabb.center - q).abs() - b.aabb.half).max_element() > 0.0);
+                    assert!(door || open || wide, "{theme:?} {seed}: steps up to a blank wall at {p:?}");
+                }
+            }
+        }
+    }
+
     fn spawns_are_clear(w: &World, what: &str) {
         let solids: Vec<Aabb> = w.solids().collect();
         for team in 0..2 {

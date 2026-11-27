@@ -146,7 +146,61 @@ impl Plugin for ViewPlugin {
             .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
             .add_systems(Startup, setup_presentation)
             .add_systems(Update, resize_target)
-            .add_systems(Update, (follow_player, viewmodel).chain().in_set(FollowPlayer).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (follow_player, viewmodel, camera_tour).chain().in_set(FollowPlayer).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+    }
+}
+
+/// A developer's camera tour for looking the maps over: with `OZ_TOUR` set, the camera
+/// leaves the player and visits viewpoints in turn, `OZ_TOUR_SECS` (default 3) seconds each,
+/// printing each one as it gets there. `OZ_TOUR=auto` circles the arena on a grid, looking
+/// down at the streets; otherwise it is a list of `x,y,z,tx,ty,tz` (eye, then target) split by `;`.
+fn camera_tour(
+    time: Res<Time>,
+    map: Res<Map>,
+    mut cameras: Query<&mut Transform, With<WorldCamera>>,
+    mut guns: Query<&mut Visibility, With<GunRoot>>,
+    mut stops: Local<Option<Vec<(Vec3, Vec3)>>>,
+    mut at: Local<(f32, usize)>,
+) {
+    let stops = stops.get_or_insert_with(|| {
+        let Ok(tour) = std::env::var("OZ_TOUR") else { return Vec::new() };
+        if tour == "auto" {
+            let r = map.0.arena * 0.75;
+            let mut out = Vec::new();
+            for j in 0..5 {
+                for i in 0..5 {
+                    let p = Vec2::new(-r + 2.0 * r * i as f32 / 4.0, -r + 2.0 * r * j as f32 / 4.0);
+                    let look = p + Vec2::from_angle((i * 5 + j) as f32 * 2.4) * 22.0;
+                    let ground = map.0.height(p.x, p.y);
+                    out.push((Vec3::new(p.x, ground + 13.0, p.y), Vec3::new(look.x, map.0.height(look.x, look.y) + 1.0, look.y)));
+                }
+            }
+            return out;
+        }
+        tour.split(';')
+            .filter_map(|stop| {
+                let v: Vec<f32> = stop.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                (v.len() == 6).then(|| (Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5])))
+            })
+            .collect()
+    });
+    if stops.is_empty() {
+        return;
+    }
+    let secs = std::env::var("OZ_TOUR_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3.0f32);
+    let (clock, shown) = &mut *at;
+    *clock += time.delta_secs();
+    let index = (*clock / secs) as usize % stops.len();
+    if index != *shown || *clock < time.delta_secs() * 1.5 {
+        *shown = index;
+        eprintln!("OZ_TOUR stop {index} {:?}", stops[index]);
+    }
+    let (eye, target) = stops[index];
+    if let Ok(mut camera) = cameras.single_mut() {
+        *camera = Transform::from_translation(eye).looking_at(target, Vec3::Y);
+    }
+    for mut gun in &mut guns {
+        *gun = Visibility::Hidden;
     }
 }
 
@@ -223,7 +277,7 @@ pub fn spawn_camera(mut commands: Commands, target: Res<WorldTarget>, sky: Res<S
             WorldCamera,
             Camera3d::default(),
             Camera { target: RenderTarget::Image(target.0.clone().into()), order: 0, ..default() },
-            Projection::Perspective(PerspectiveProjection { fov: BASE_FOV.to_radians(), near: 0.05, far: 600.0, ..default() }),
+            Projection::Perspective(PerspectiveProjection { fov: BASE_FOV.to_radians(), near: 0.1, far: 600.0, ..default() }),
             Msaa::Off,
             Tonemapping::Reinhard,
             Retro::default(),
