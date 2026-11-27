@@ -21,8 +21,42 @@ use bevy::prelude::*;
 use oz_core::arsenal::{GunClass, SLOT_COUNT, options, slot};
 use std::f32::consts::{PI, TAU};
 
+/// What a versus bot is up to when it has no one in its sights.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Plan {
+    /// Head for where the enemy was last seen or heard.
+    #[default]
+    Hunt,
+    /// No idea where they are: sweep the likely places.
+    Search,
+    /// Hold a spot, crouched, watching the way they will come (`face` is the yaw to watch).
+    Camp { face: f32 },
+    /// Come at a known enemy from the side instead of head on.
+    Flank,
+    /// Stay with the squad leader, in a loose formation.
+    Follow,
+    /// Hurt: fall back toward friends before fighting again.
+    Retreat,
+}
+
+/// A bot's habits in a group.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Role {
+    /// Pushes straight at contacts.
+    #[default]
+    Rusher,
+    /// Holds angles and watches the squad's back.
+    Anchor,
+    /// Swings wide round contacts.
+    Flanker,
+}
+
 #[derive(Component, Default)]
 pub struct Bot {
+    pub plan: Plan,
+    pub role: Role,
+    /// When the current plan runs out (match seconds).
+    plan_until: f32,
     think: f32,
     target: Option<Entity>,
     /// Where the bot wants to go, and the path it is following there.
@@ -109,7 +143,8 @@ const NAMES: [&str; 12] = ["VEGA", "ONYX", "RIGGS", "HALO", "DUSK", "MOTH", "KIT
 /// Spawns a bot on `team` with a random class and random attachments.
 pub fn spawn_bot(commands: &mut Commands, ids: &mut NetIds, content: &Content, rules: &Rules, map: &Map, rng: &mut SimRng, id: u8, team: u8) -> Entity {
     let name = format!("{} [BOT]", NAMES[id as usize % NAMES.len()]);
-    let brain = Bot { strafe: 1.0, crouch_at_range: rng.0.chance(0.6), ..default() };
+    let role = [Role::Rusher, Role::Anchor, Role::Flanker][id as usize % 3];
+    let brain = Bot { strafe: 1.0, crouch_at_range: rng.0.chance(0.6), role, ..default() };
     let entity = commands.spawn((player_bundle(content, rules, map, id, name, team), ids.next(), brain)).id();
     let guns: Vec<u8> = (0..content.weapons.len() as u8).filter(|i| content.weapons[*i as usize].frame.is_some()).collect();
     if guns.len() < 2 {
@@ -176,6 +211,156 @@ fn engagement(class: GunClass) -> (f32, f32) {
     }
 }
 
+/// The last place each team saw (or heard) an enemy, and when.
+#[derive(Default)]
+pub struct TeamIntel([Option<(Vec3, f32)>; 2]);
+
+/// Someone on the field, for planning.
+#[derive(Clone, Copy)]
+struct Body {
+    team: u8,
+    id: u8,
+    at: Vec3,
+    bot: bool,
+}
+
+/// Chooses (or keeps) a versus bot's plan while it has no target, and sets its goal.
+#[allow(clippy::too_many_arguments)]
+fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rng: &mut SimRng, bodies: &[Body], intel: Option<(Vec3, f32)>, now: f32) {
+    let go = |bot: &mut Bot, at: Vec3| {
+        if bot.goal.distance(at) > 2.0 || bot.path.is_empty() {
+            bot.goal = at;
+            bot.path.clear();
+            bot.stuck = 0.0;
+        }
+    };
+    let mates: Vec<&Body> = bodies.iter().filter(|b| b.team == me.team && b.id != me.id).collect();
+    let solo = mates.is_empty();
+    // What the team knows: fresh if seen or heard in the last few seconds.
+    let fresh = intel.filter(|(_, t)| now - t < 9.0).map(|(p, _)| p);
+    // A long quiet: the bot has a fair idea where someone must be (footsteps, gunfire far off).
+    let hunch = || {
+        let enemies: Vec<Vec3> = bodies.iter().filter(|b| b.team != me.team).map(|b| b.at).collect();
+        rng.0.pick(&enemies).copied().map(|p| p + Vec3::new(rng.0.range(-10.0, 10.0), 0.0, rng.0.range(-10.0, 10.0)))
+    };
+    let expired = now >= bot.plan_until;
+    let arrived = bot.goal.xz().distance(feet.xz()) < 3.0;
+
+    // Hurt: back toward friends (or simply away from trouble) for a breather.
+    if hurt && bot.plan != Plan::Retreat {
+        bot.plan = Plan::Retreat;
+        bot.plan_until = now + 6.0;
+        let away = match (mates.iter().min_by(|a, b| a.at.distance_squared(feet).total_cmp(&b.at.distance_squared(feet))), fresh) {
+            (Some(mate), _) => mate.at,
+            (None, Some(threat)) => feet + (feet - threat).normalize_or_zero() * 15.0,
+            (None, None) => feet,
+        };
+        go(bot, away);
+        return;
+    }
+    if bot.plan == Plan::Retreat && !expired {
+        return;
+    }
+    // Keep a plan while it lasts, refreshing where it points.
+    if !expired {
+        match bot.plan {
+            Plan::Hunt => {
+                if let Some(p) = fresh {
+                    go(bot, p);
+                }
+                if !arrived {
+                    return;
+                }
+            }
+            Plan::Flank if !arrived => return,
+            Plan::Camp { .. } | Plan::Search if !arrived || matches!(bot.plan, Plan::Camp { .. }) => return,
+            _ => {}
+        }
+    }
+
+    // A new plan. Who leads the team: a human if there is one, else the lowest id.
+    let leader = bodies.iter().filter(|b| b.team == me.team).min_by_key(|b| (b.bot as u8, b.id)).copied();
+    let leading = leader.is_none_or(|l| l.id == me.id);
+    let target = fresh.or_else(|| if now - intel.map_or(-99.0, |(_, t)| t) > 20.0 { hunch() } else { None });
+    let enemy_base = map.team_spawns[(1 - me.team.min(1)) as usize].first().copied().unwrap_or(Vec2::ZERO);
+    let watch = |from: Vec3, at: Vec3| yaw_to((at - from).xz());
+    let flank = |bot: &mut Bot, at: Vec3| {
+        // Out to one side of the line between us, then in.
+        let side = if me.id % 2 == 0 { 1.0 } else { -1.0 };
+        let across = (at - feet).xz().normalize_or_zero().perp() * side * 14.0;
+        let wide = at + Vec3::new(across.x, 0.0, across.y);
+        bot.plan = Plan::Flank;
+        bot.plan_until = now + 12.0;
+        go(bot, Vec3::new(wide.x, map.height(wide.x, wide.z), wide.z));
+    };
+    let camp = |bot: &mut Bot, at: Vec3, face: f32, seconds: f32| {
+        bot.plan = Plan::Camp { face };
+        bot.plan_until = now + seconds;
+        go(bot, at);
+    };
+    if solo {
+        // One on one: patient. Hold angles, ambush, flank, then go looking.
+        match target {
+            Some(p) if bot.plan == Plan::Flank || rng.0.chance(0.4) => {
+                bot.plan = Plan::Hunt;
+                bot.plan_until = now + 8.0;
+                go(bot, p);
+            }
+            Some(p) if rng.0.chance(0.5) => flank(bot, p),
+            Some(p) => camp(bot, feet, watch(feet, p), rng.0.range(5.0, 9.0)),
+            None if matches!(bot.plan, Plan::Camp { .. }) => {
+                bot.plan = Plan::Search;
+                bot.plan_until = now + rng.0.range(12.0, 20.0);
+                go(bot, sweep_point(map, rng));
+            }
+            None => {
+                let spot = sweep_point(map, rng);
+                let face = watch(spot, Vec3::new(enemy_base.x, spot.y, enemy_base.y));
+                camp(bot, spot, face, rng.0.range(8.0, 14.0));
+            }
+        }
+        return;
+    }
+    if leading {
+        match target {
+            Some(p) => {
+                bot.plan = Plan::Hunt;
+                bot.plan_until = now + 8.0;
+                go(bot, p);
+            }
+            None => {
+                bot.plan = Plan::Search;
+                bot.plan_until = now + rng.0.range(10.0, 16.0);
+                go(bot, sweep_point(map, rng));
+            }
+        }
+        return;
+    }
+    match (bot.role, target) {
+        (Role::Rusher, Some(p)) => {
+            bot.plan = Plan::Hunt;
+            bot.plan_until = now + 8.0;
+            go(bot, p);
+        }
+        (Role::Flanker, Some(p)) if bot.plan != Plan::Flank => flank(bot, p),
+        (Role::Anchor, Some(p)) => {
+            // Hold the angle the trouble will come from, a little back from the leader.
+            camp(bot, feet, watch(feet, p), rng.0.range(6.0, 10.0));
+        }
+        _ => {
+            // Stay with the leader, spread out a little to one side and behind.
+            let lead = leader.map_or(feet, |l| l.at);
+            let angle = me.id as f32 * 2.4;
+            let spot = lead + Vec3::new(angle.cos(), 0.0, angle.sin()) * 4.5;
+            bot.plan = Plan::Follow;
+            bot.plan_until = now + 1.5;
+            if spot.distance(feet) > 6.0 {
+                go(bot, Vec3::new(spot.x, lead.y, spot.z));
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn drive_bots(
     time: Res<Time>,
@@ -193,6 +378,7 @@ pub fn drive_bots(
     solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Player>)>,
     (smokes, pickups): (Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>, Query<(&Transform, &crate::loot::Pickup), Without<Player>>),
     mut leaves: Local<(u64, Vec<(Vec3, f32)>)>,
+    mut intel: Local<TeamIntel>,
 ) {
     let dt = sim_dt(&time);
     // Tree crowns and bushes hide whoever is behind (or inside) them.
@@ -207,6 +393,17 @@ pub fn drive_bots(
     // Torches lit in the dark give their carriers away.
     let dark = state.daylight < 0.5;
     let lit: Vec<Entity> = players.iter().filter(|(_, _, _, _, input, health, ..)| dark && input.light && health.alive()).map(|(entity, ..)| entity).collect();
+    // Everyone alive, for planning; and what each team knows of the other.
+    let bodies: Vec<Body> = players.iter().filter(|(.., health, _, _, _)| health.alive()).map(|(_, bot, p, t, ..)| Body { team: p.team, id: p.id, at: t.translation, bot: bot.is_some() }).collect();
+    let now = time.elapsed_secs();
+    for (_, bot, p, ..) in players.iter() {
+        if let Some(seen) = bot.and_then(|b| b.target).and_then(|e| fighters.iter().find(|f| f.0 == e)) {
+            intel.0[(p.team as usize).min(1)] = Some((seen.2, now));
+        }
+    }
+    if state.phase != Phase::Live {
+        intel.0 = [None, None];
+    }
     // Living humans, for squadmates to stay with.
     let humans: Vec<(u8, Vec3)> = players.iter().filter(|(_, bot, .., health, _, _, _)| bot.is_none() && health.alive()).map(|(_, _, p, t, ..)| (p.team, t.translation)).collect();
     // What can be heard this frame: everything made since last frame, plus everyone's footsteps.
@@ -223,6 +420,10 @@ pub fn drive_bots(
         }
     }
     let mut shouts: Vec<Noise> = Vec::new();
+    // Gunfire gives the shooter away to the other team.
+    for noise in heard_now.iter().filter(|n| !n.shout && n.radius > 40.0) {
+        intel.0[(1 - noise.team.min(1)) as usize] = Some((noise.at, now));
+    }
 
     for (_, bot, me, transform, mut input, health, arsenal, stunned, _) in &mut players {
         let Some(mut bot) = bot else { continue };
@@ -385,15 +586,13 @@ pub fn drive_bots(
                     bot.path.clear();
                     bot.stuck = 0.0;
                 }
-            } else if bot.target.is_none() && (bot.path.is_empty() || bot.goal.distance(feet) < 4.0 || bot.stuck > 1.5) {
-                // Hunt: head for an enemy's last position, or sweep through the town.
-                let enemies: Vec<Vec3> = fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).collect();
-                bot.goal = match rng.0.pick(&enemies) {
-                    Some(enemy) if rng.0.chance(0.65) => *enemy,
-                    _ => sweep_point(&map, &mut rng),
-                };
-                bot.path.clear();
-                bot.stuck = 0.0;
+            } else if bot.target.is_none() {
+                if bot.stuck > 1.5 {
+                    bot.plan_until = 0.0;
+                    bot.stuck = 0.0;
+                }
+                let hurt = health.hp < health.max * 0.35;
+                plan_versus(&mut bot, me, feet, hurt, &map, &mut rng, &bodies, intel.0[(me.team as usize).min(1)], now);
             }
         }
         bot.strafe_time -= dt;
@@ -485,6 +684,26 @@ pub fn drive_bots(
             }
         }
 
+        // Camping: settle in at the spot, low, watching the approach.
+        if let Plan::Camp { face } = bot.plan
+            && bot.target.is_none()
+            && !bot.sentry
+            && bot.goal.xz().distance(feet.xz()) < 1.5
+        {
+            wish = Vec2::ZERO;
+            held &= !buttons::SPRINT;
+            wanted_stance = stance::CROUCH;
+            let scan = (now * 0.5 + me.id as f32).sin() * 0.7;
+            input.yaw = turn(input.yaw, face + scan, 2.0 * dt);
+            input.pitch *= 1.0 - (3.0 * dt).min(1.0);
+        }
+        // Retreating or hunting a known spot: no sprinting into the open when hurt.
+        if bot.plan == Plan::Retreat && bot.target.is_some() {
+            // Backing off while still shooting: away from the target (it is in front).
+            let ahead = Vec2::new(-input.yaw.sin(), -input.yaw.cos());
+            wish = -ahead * 0.8 + ahead.perp() * bot.strafe * 0.4;
+            wanted_stance = stance::CROUCH;
+        }
         // Stuck against something: jump, and look for a fresh route.
         if wish != Vec2::ZERO && moved < 0.5 {
             bot.stuck += dt;
