@@ -7,12 +7,15 @@ use crate::{
     bots::{Bot, FIRST_BOT_ID, spawn_bot},
     net::NetIds,
     player::{Arsenal, Health, Player, PlayerInput, respawn},
-    session::{Content, Map},
+    session::{Content, Map, Modes, Relaunch},
     sim_dt,
     state::{CommandEvent, FxEvent, LobbyAction, MatchState, Phase, PlayerCommand, RosterEntry, Rules, SimRng},
 };
 use bevy::prelude::*;
-use oz_core::synth::Sfx;
+use oz_core::{
+    synth::Sfx,
+    worldgen::{Biome, Layout, Theme, Weather, WorldRecipe},
+};
 
 const COUNTDOWN: f32 = 5.0;
 const POST_MATCH: f32 = 14.0;
@@ -21,6 +24,120 @@ pub const MAX_TEAM: u8 = 6;
 const DAY_CYCLE: f32 = 480.0;
 pub const TIME_MODES: [&str; 4] = ["DAY", "DUSK", "NIGHT", "DAY / NIGHT CYCLE"];
 pub const WEATHER_MODES: [&str; 6] = ["MAP'S OWN", "CLEAR", "OVERCAST", "RAIN", "FOG", "RANDOM FRONTS"];
+/// Lobby setting steps. A score limit of 0 means none (a time limit or nothing ends the match).
+pub const SCORE_LIMITS: [u32; 10] = [0, 10, 15, 20, 25, 30, 40, 50, 75, 100];
+/// Time limits in seconds; 0 = none.
+pub const TIME_LIMITS: [f32; 7] = [0.0, 180.0, 300.0, 480.0, 600.0, 900.0, 1200.0];
+pub const RESPAWNS: [f32; 7] = [1.0, 2.0, 3.0, 4.0, 5.5, 8.0, 10.0];
+/// Bot skill: a name and the `Rules::difficulty` it sets.
+pub const BOT_SKILLS: [(&str, f32); 4] = [("RECRUIT", 0.75), ("STANDARD", 1.0), ("VETERAN", 1.35), ("NIGHTMARE", 1.8)];
+/// How long the host's mode / map pick has to sit still before the lobby reloads on it.
+pub const SETTLE: f32 = 0.9;
+/// Longest player name.
+pub const NAME_MAX: usize = 14;
+
+/// Versus map choices: the random town (any theme), the town in each theme, then the fixed maps.
+pub const MAPS: u8 = 1 + Theme::ALL.len() as u8 + (Layout::VERSUS.len() - 1) as u8;
+
+/// Which of the [`MAPS`] these rules play.
+pub fn map_choice(rules: &Rules) -> u8 {
+    let themes = Theme::ALL.len() as u8;
+    match rules.recipe.layout {
+        Layout::Town => rules.map.min(themes),
+        layout => Layout::VERSUS.iter().position(|l| *l == layout).map_or(0, |i| themes + i as u8),
+    }
+}
+
+pub fn map_title(choice: u8) -> &'static str {
+    let themes = Theme::ALL.len() as u8;
+    match choice {
+        0 => "RANDOM TOWN",
+        c if c <= themes => Theme::ALL[(c - 1) as usize].title(),
+        c => Layout::VERSUS[((c - themes) as usize).min(Layout::VERSUS.len() - 1)].title(),
+    }
+}
+
+/// The world for a map choice. Towns roll their streets from `seed`; fixed maps only take
+/// their weather from it.
+pub fn map_recipe(choice: u8, seed: u64, biome: Biome) -> WorldRecipe {
+    let themes = Theme::ALL.len() as u8;
+    // Kept well below the top so the themed search can never run off the end.
+    let seed = seed & 0xFFFF_FFFF_FFFF;
+    match choice {
+        0 => WorldRecipe::town(seed, biome),
+        c if c <= themes => WorldRecipe::themed(seed, biome, Theme::ALL[(c - 1) as usize]),
+        c => WorldRecipe::preset(Layout::VERSUS[((c - themes) as usize).min(Layout::VERSUS.len() - 1)], biome, Weather::from_seed(seed)),
+    }
+}
+
+/// The name of the bot skill closest to `difficulty`.
+pub fn skill_name(difficulty: f32) -> &'static str {
+    BOT_SKILLS[skill_index(difficulty)].0
+}
+
+fn skill_index(difficulty: f32) -> usize {
+    (0..BOT_SKILLS.len()).min_by(|a, b| (BOT_SKILLS[*a].1 - difficulty).abs().total_cmp(&(BOT_SKILLS[*b].1 - difficulty).abs())).unwrap_or(1)
+}
+
+/// Steps along a list of settings from the entry nearest `current`, stopping at the ends.
+fn step_value<T: Copy + Into<f64>>(list: &[T], current: T, step: i8) -> T {
+    let at = (0..list.len()).min_by(|a, b| (list[*a].into() - current.into()).abs().total_cmp(&(list[*b].into() - current.into()).abs())).unwrap_or(0);
+    list[(at as i32 + step as i32).clamp(0, list.len() as i32 - 1) as usize]
+}
+
+/// A name as everyone will see it: upper case, letters, digits and a little punctuation,
+/// single spaces, at most [`NAME_MAX`] characters.
+pub fn clean_name(raw: &str) -> String {
+    let mut out = String::new();
+    for c in raw.chars().map(|c| c.to_ascii_uppercase()) {
+        if out.len() >= NAME_MAX {
+            break;
+        }
+        if c.is_ascii_alphanumeric() || "-_.!?'#".contains(c) {
+            out.push(c);
+        } else if c.is_whitespace() && !out.is_empty() && !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// `name`, or with a number on the end if someone already has it.
+pub fn unique_name(name: &str, taken: &[&str]) -> String {
+    if !taken.contains(&name) {
+        return name.to_string();
+    }
+    for n in 2..100 {
+        let suffix = n.to_string();
+        let base: String = name.chars().take(NAME_MAX - suffix.len()).collect();
+        let candidate = format!("{}{suffix}", base.trim_end());
+        if !taken.contains(&candidate.as_str()) {
+            return candidate;
+        }
+    }
+    name.to_string()
+}
+
+/// The modes a versus lobby can switch between.
+pub fn versus_modes(modes: &Modes) -> Vec<u8> {
+    modes.0.iter().enumerate().filter(|(_, m)| m.playable && (m.rules)(0).pvp).map(|(i, _)| i as u8).collect()
+}
+
+/// The rules for switching the lobby to `mode`: that mode's own defaults, on the same map,
+/// keeping the host's bot, time-limit choices, with room for every human already here.
+pub fn rules_for_mode(modes: &Modes, mode: u8, current: &Rules, humans: [usize; 2]) -> Option<Rules> {
+    let def = modes.0.get(mode as usize).filter(|m| m.playable)?;
+    let mut rules = (def.rules)(current.recipe.seed);
+    rules.mode = mode;
+    rules.recipe = current.recipe;
+    rules.map = current.map;
+    rules.difficulty = current.difficulty;
+    rules.time_limit = current.time_limit;
+    rules.no_bots = current.no_bots;
+    let needed = if rules.hunt { humans[0] + humans[1] } else { humans[0].max(humans[1]) };
+    rules.team_size = rules.team_size.max(needed.min(MAX_TEAM as usize) as u8);
+    Some(rules)
+}
 
 /// Terrorist hunt: how many hostiles hold the map for a squad of `squad`.
 pub fn hunt_hostiles(rules: &Rules, squad: u8) -> usize {
@@ -156,8 +273,15 @@ pub fn fill_teams(
     // Ids handed out this frame are not in the query yet, so track them too.
     let mut taken: Vec<u8> = players.iter().map(|(_, player, _)| player.id).collect();
     for team in 0..2u8 {
-        let wanted = if rules.hunt && team == 1 { hunt_hostiles(&rules, squad) } else { squad as usize };
         let members: Vec<_> = players.iter().filter(|(_, player, _)| player.team == team).collect();
+        let humans = members.iter().filter(|(.., bot)| !bot).count();
+        let wanted = if rules.hunt && team == 1 {
+            hunt_hostiles(&rules, squad)
+        } else if rules.no_bots {
+            humans
+        } else {
+            squad as usize
+        };
         if members.len() < wanted {
             if let Some(id) = (FIRST_BOT_ID..=254).find(|id| !taken.contains(id)) {
                 taken.push(id);
@@ -190,6 +314,7 @@ pub fn run_versus(
     mut orders: EventReader<CommandEvent>,
     mut players: Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput, Option<&Bot>)>,
     mut fx: EventWriter<FxEvent>,
+    (modes, mut rng, mut relaunch): (Res<Modes>, ResMut<SimRng>, ResMut<Relaunch>),
 ) {
     let dt = sim_dt(&time);
     // Time of day: fixed, or a cycle that runs through the match.
@@ -211,7 +336,7 @@ pub fn run_versus(
                     player.ready = !player.ready;
                 }
             }
-            LobbyAction::Start if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
+            LobbyAction::Start if host && state.phase == Phase::Lobby && state.countdown <= 0.0 && state.change_in <= 0.0 && relaunch.0.is_none() => {
                 state.countdown = COUNTDOWN;
                 fx.write(FxEvent::Sound { sfx: Sfx::UiAccept, at: None });
             }
@@ -245,7 +370,71 @@ pub fn run_versus(
                 state.team_size = size;
                 rules.team_size = size;
             }
+            // Mode and map: the pick shows at once, and the lobby reloads on it once it settles.
+            LobbyAction::Mode(step) if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
+                let choices = versus_modes(&modes);
+                if !choices.is_empty() {
+                    let at = choices.iter().position(|m| *m == state.next_mode).unwrap_or(0);
+                    state.next_mode = choices[(at as i32 + step as i32).rem_euclid(choices.len() as i32) as usize];
+                    state.change_in = SETTLE;
+                }
+            }
+            LobbyAction::Map(step) if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
+                state.next_map = (state.next_map as i32 + step as i32).rem_euclid(MAPS as i32) as u8;
+                state.change_in = SETTLE;
+            }
+            LobbyAction::NewMap if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
+                state.reroll = true;
+                state.change_in = state.change_in.max(0.2);
+            }
+            LobbyAction::ScoreLimit(step) if host && state.phase == Phase::Lobby => {
+                rules.score_limit = step_value(&SCORE_LIMITS, rules.score_limit, step);
+            }
+            LobbyAction::TimeLimit(step) if host && state.phase == Phase::Lobby => {
+                rules.time_limit = step_value(&TIME_LIMITS, rules.time_limit, step);
+            }
+            LobbyAction::BotSkill(step) if host && state.phase == Phase::Lobby => {
+                let at = (skill_index(rules.difficulty) as i32 + step as i32).clamp(0, BOT_SKILLS.len() as i32 - 1);
+                rules.difficulty = BOT_SKILLS[at as usize].1;
+            }
+            LobbyAction::Bots if host && state.phase == Phase::Lobby => rules.no_bots = !rules.no_bots,
+            LobbyAction::Respawn(step) if host && state.phase == Phase::Lobby => {
+                rules.respawn_seconds = step_value(&RESPAWNS, rules.respawn_seconds, step);
+            }
             _ => {}
+        }
+    }
+
+    // The host's mode / map pick has settled: reload the lobby on it.
+    if state.phase == Phase::Lobby && state.change_in > 0.0 {
+        state.change_in -= dt;
+        if state.change_in <= 0.0 {
+            state.change_in = 0.0;
+            let mut humans = [0; 2];
+            for (player, .., bot) in &players {
+                if bot.is_none() {
+                    humans[(player.team as usize).min(1)] += 1;
+                }
+            }
+            let mut next = if state.next_mode != rules.mode { rules_for_mode(&modes, state.next_mode, &rules, humans) } else { Some(rules.clone()) };
+            if let Some(next) = &mut next
+                && (state.next_map != map_choice(&rules) || state.reroll)
+            {
+                let seed = rng.0.next_u64();
+                // A fresh roll of a fixed map gets new colours instead of new streets.
+                let fixed = state.next_map > Theme::ALL.len() as u8;
+                let biome = if fixed && state.next_map == map_choice(&rules) { Biome::ALL[(seed % Biome::ALL.len() as u64) as usize] } else { next.recipe.biome };
+                next.recipe = map_recipe(state.next_map, seed, biome);
+                next.map = if fixed { 0 } else { state.next_map };
+            }
+            state.reroll = false;
+            match next {
+                Some(next) if next != *rules => relaunch.0 = Some(next),
+                _ => {
+                    state.next_mode = rules.mode;
+                    state.next_map = map_choice(&rules);
+                }
+            }
         }
     }
 
@@ -268,6 +457,7 @@ pub fn run_versus(
                 state.clock = 0.0;
                 state.timer = 60.0;
                 state.lives = HUNT_LIVES;
+                state.time_left = rules.time_limit;
                 for (mut player, mut health, mut transform, mut arsenal, mut input, bot) in &mut players {
                     player.kills = 0;
                     player.deaths = 0;
@@ -287,10 +477,16 @@ pub fn run_versus(
             let posted = players.iter().filter(|(p, ..)| p.team == 1).count();
             let squad_up = players.iter().any(|(p, h, ..)| p.team == 0 && h.alive());
             state.hostiles = hostiles as u16;
+            let out_of_time = rules.time_limit > 0.0 && {
+                state.time_left -= dt;
+                state.time_left <= 0.0
+            };
             let outcome = if posted > 0 && hostiles == 0 {
                 Some((0, "MAP CLEARED"))
             } else if state.lives == 0 && !squad_up {
                 Some((1, "SQUAD LOST"))
+            } else if out_of_time {
+                Some((1, "OUT OF TIME"))
             } else {
                 None
             };
@@ -322,7 +518,27 @@ pub fn run_versus(
                     }
                 }
             }
+            // Time up: the higher score wins; level scores are a draw (winner 2).
+            if rules.time_limit > 0.0 {
+                state.time_left -= dt;
+                if state.time_left <= 0.0 {
+                    state.time_left = 0.0;
+                    state.phase = Phase::Won;
+                    state.timer = POST_MATCH;
+                    let [teal, coral] = state.scores;
+                    state.winner = if teal > coral { 0 } else if coral > teal { 1 } else { 2 };
+                    fx.write(FxEvent::notice(match state.winner {
+                        0 => "TIME - TEAM TEAL WINS",
+                        1 => "TIME - TEAM CORAL WINS",
+                        _ => "TIME - IT'S A DRAW",
+                    }));
+                    fx.write(FxEvent::Sound { sfx: Sfx::Dawn, at: None });
+                }
+            }
             for team in 0..2 {
+                if state.phase != Phase::Live {
+                    break;
+                }
                 if rules.score_limit > 0 && state.scores[team] >= rules.score_limit {
                     state.phase = Phase::Won;
                     state.winner = team as u8;
@@ -336,12 +552,10 @@ pub fn run_versus(
         }
         Phase::Won => {
             state.timer -= dt;
-            if state.timer <= 0.0 {
-                // Back to the lobby with everyone alive at their base.
-                state.phase = Phase::Lobby;
-                for (mut player, mut health, mut transform, mut arsenal, mut input, _) in &mut players {
-                    respawn(&content, &map, &rules, &state, &mut player, &mut health, &mut transform, &mut arsenal, &mut input);
-                }
+            if state.timer <= 0.0 && relaunch.0.is_none() {
+                // Back to the lobby: the same rules on a freshly built copy of the map, so
+                // nothing of the last match (scores, streaks, wreckage, loot, bots) carries over.
+                relaunch.0 = Some(rules.clone());
             }
         }
         _ => {}

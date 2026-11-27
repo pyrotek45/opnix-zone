@@ -53,6 +53,8 @@ pub enum Screen {
     /// Typing a chat message (the game keeps running behind it).
     Chat,
     GameOver,
+    /// Choosing your name: type it, or pick letters with the pad (see `naming`).
+    Name,
 }
 
 /// Where the gunsmith returns to.
@@ -79,7 +81,6 @@ pub enum Setting {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
-    Callsign,
     Address,
 }
 
@@ -131,6 +132,15 @@ pub enum Act {
     Part(u8, u8),
     // Lobby.
     Lobby(LobbyAction),
+    /// Lobby page: 0 the main list, 1 the match settings.
+    LobbyPage(u8),
+    // Names.
+    /// Open the name editor (from the menu, settings or the lobby).
+    EditName,
+    /// Name editor: add this character / delete the last / keep the name.
+    NameKey(char),
+    NameDel,
+    NameDone,
     /// Join a game found on the local network (index into the finder's list).
     JoinFound(usize),
     FindGames,
@@ -173,6 +183,10 @@ pub struct Clickable {
 #[derive(Component)]
 pub struct ScreenRoot;
 
+/// Label for the widget kit's focus and activation system; text entry runs before it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UiInteract;
+
 /// Set to rebuild the current screen next frame.
 #[derive(Resource, Default)]
 pub struct UiDirty(pub bool);
@@ -196,7 +210,7 @@ impl Plugin for UiKitPlugin {
             .init_resource::<Editing>()
             .insert_resource(UiDirty(true))
             .add_event::<ActEvent>()
-            .add_systems(Update, (mark_dirty, interact).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices));
+            .add_systems(Update, (mark_dirty, interact).chain().in_set(UiInteract).in_set(ClientSet::Input).after(crate::input::ReadDevices));
     }
 }
 

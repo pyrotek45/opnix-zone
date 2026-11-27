@@ -362,10 +362,18 @@ fn update(
         set(&mut text, line);
     }
 
-    // Terrorist hunt status.
+    // Terrorist hunt status, and the clock in a timed match.
     if let Ok(mut text) = hunt_text.single_mut() {
-        let line = if rules.hunt && matches!(state.phase, Phase::Live) { format!("HOSTILES  {}      SQUAD LIVES  {}", state.hostiles, state.lives) } else { String::new() };
-        set(&mut text, line);
+        let live = matches!(state.phase, Phase::Live);
+        let mut parts = Vec::new();
+        if rules.hunt && live {
+            parts.push(format!("HOSTILES  {}      SQUAD LIVES  {}", state.hostiles, state.lives));
+        }
+        if rules.pvp && live && rules.time_limit > 0.0 {
+            let left = state.time_left.max(0.0).ceil() as u32;
+            parts.push(format!("TIME  {}:{:02}", left / 60, left % 60));
+        }
+        set(&mut text, parts.join("      "));
     }
 }
 

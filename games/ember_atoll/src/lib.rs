@@ -36,6 +36,9 @@ pub fn frontier_rules(seed: u64) -> Rules {
         hunt: false,
         ranked: false,
         loot: false,
+        time_limit: 0.0,
+        no_bots: false,
+        map: 0,
     }
 }
 
@@ -57,6 +60,9 @@ pub fn horde_rules(seed: u64) -> Rules {
         hunt: false,
         ranked: false,
         loot: false,
+        time_limit: 0.0,
+        no_bots: false,
+        map: 0,
     }
 }
 

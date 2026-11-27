@@ -3,7 +3,7 @@
 use crate::{
     combat::Grid,
     nav::Nav,
-    net::{NetIds, NetLink},
+    net::{NetIds, NetLink, Remote},
     player::{Arsenal, Health, LocalPlayer, Mover, Player, PlayerInput, spawn_point},
     state::{MatchPhase, MatchState, NetRole, Phase, Rules, SimRng},
     structures::OreNode,
@@ -69,17 +69,101 @@ pub struct MatchSetup {
     /// Player id of this machine's player; `None` for a dedicated server.
     pub local_player: Option<u8>,
     pub local_team: u8,
+    /// Set when a lobby reloads on new rules (see [`relaunch`]): who stays, and the
+    /// lobby's settings. `None` for a fresh match.
+    pub carry: Option<Carry>,
 }
 
 impl MatchSetup {
     pub fn offline(rules: Rules, player_name: impl Into<String>) -> Self {
-        Self { rules, role: NetRole::Offline, link: NetLink::None, player_name: player_name.into(), local_player: Some(0), local_team: 0 }
+        Self { rules, role: NetRole::Offline, link: NetLink::None, player_name: player_name.into(), local_player: Some(0), local_team: 0, carry: None }
     }
+}
+
+/// A human who keeps their seat through a relaunch (bots are made afresh for the new rules).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seat {
+    pub id: u8,
+    pub name: String,
+    pub team: u8,
+}
+
+/// What a lobby keeps when it reloads on new rules or a new map.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Carry {
+    /// Remote humans, spawned by the authority straight into their old ids.
+    pub seats: Vec<Seat>,
+    pub time_mode: u8,
+    pub weather_mode: u8,
 }
 
 /// Put a setup here and the next frame starts that match.
 #[derive(Resource, Default)]
 pub struct PendingMatch(pub Option<MatchSetup>);
+
+/// Authority: put rules here to reload the lobby on them - a new mode or map, or the
+/// rematch after a match. The connection and every human (id, name, team) carry over;
+/// the world, bots, scores and everything else start fresh.
+#[derive(Resource, Default)]
+pub struct Relaunch(pub Option<Rules>);
+
+/// True while the current match came from a relaunch (menus stay in the lobby).
+#[derive(Resource, Default)]
+pub struct Relaunched(pub bool);
+
+/// Authority: tears the match down and queues it again on the requested rules, keeping the
+/// connection and the humans. Guests are told first, so they rebuild the same world.
+#[allow(clippy::too_many_arguments)]
+pub fn relaunch(
+    mut request: ResMut<Relaunch>,
+    mut link: ResMut<NetLink>,
+    role: Res<NetRole>,
+    old: Res<Rules>,
+    state: Res<MatchState>,
+    players: Query<(&Player, Has<LocalPlayer>, Has<crate::bots::Bot>)>,
+    mut pending: ResMut<PendingMatch>,
+    mut next: ResMut<NextState<MatchPhase>>,
+) {
+    let Some(rules) = request.0.take() else { return };
+    // (id, name, team, this machine's player)
+    let mut humans: Vec<(u8, String, u8, bool)> = players.iter().filter(|(.., bot)| !bot).map(|(p, local, _)| (p.id, p.name.clone(), p.team, local)).collect();
+    let mut link = std::mem::take(&mut *link);
+    if let NetLink::Host(host) = &link {
+        // Someone who said hello this very frame has no player yet; keep their seat anyway.
+        for id in host.peers.values() {
+            if !humans.iter().any(|h| h.0 == *id) {
+                humans.push((*id, format!("PLAYER {id}"), 0, false));
+            }
+        }
+    }
+    humans.sort_by_key(|h| h.0);
+    for (index, human) in humans.iter_mut().enumerate() {
+        // Hunt puts every human on the squad; leaving a hunt deals them out to both teams.
+        human.2 = if rules.hunt {
+            0
+        } else if old.hunt {
+            (index % 2) as u8
+        } else {
+            human.2.min(1)
+        };
+    }
+    if let NetLink::Host(host) = &mut link {
+        let teams: Vec<(u8, u8)> = humans.iter().map(|h| (h.0, h.2)).collect();
+        crate::net::announce_relaunch(host, &rules, &teams);
+    }
+    let local = humans.iter().find(|h| h.3).cloned();
+    let seats = humans.iter().filter(|h| !h.3).map(|(id, name, team, _)| Seat { id: *id, name: name.clone(), team: *team }).collect();
+    pending.0 = Some(MatchSetup {
+        rules,
+        role: *role,
+        link,
+        player_name: local.as_ref().map_or_else(|| "SERVER".to_string(), |l| l.1.clone()),
+        local_player: local.as_ref().map(|l| l.0),
+        local_team: local.as_ref().map_or(0, |l| l.2),
+        carry: Some(Carry { seats, time_mode: state.time_mode, weather_mode: state.weather_mode }),
+    });
+    end_match(&mut next);
+}
 
 pub fn new_arsenal(catalog: &Catalog, rules: &Rules) -> Arsenal {
     let mut arsenal = Arsenal { weapons: catalog.weapons.iter().map(WeaponState::fresh).collect(), ..default() };
@@ -114,6 +198,7 @@ pub fn player_bundle(catalog: &Catalog, rules: &Rules, map: &GameMap, id: u8, na
 }
 
 pub fn start_pending_match(
+    time: Res<Time>,
     mut pending: ResMut<PendingMatch>,
     modes: Res<Modes>,
     mut commands: Commands,
@@ -123,7 +208,7 @@ pub fn start_pending_match(
     if *current.get() != MatchPhase::None {
         return;
     }
-    let Some(setup) = pending.0.take() else { return };
+    let Some(mut setup) = pending.0.take() else { return };
     let Some(mode) = modes.0.get(setup.rules.mode as usize) else {
         warn!("unknown game mode {}", setup.rules.mode);
         return;
@@ -174,6 +259,18 @@ pub fn start_pending_match(
             player.insert(ids.next());
         }
     }
+    // A relaunch: everyone who was connected keeps their seat.
+    let carry = setup.carry.clone().unwrap_or_default();
+    if setup.role != NetRole::Client {
+        let now = time.elapsed_secs();
+        for seat in &carry.seats {
+            let spawn = spawn_point(&map, seat.id, rules.pvp.then_some(seat.team));
+            commands.spawn((player_bundle(&catalog, &rules, &map, seat.id, seat.name.clone(), seat.team), ids.next(), Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now)));
+        }
+    }
+    if let NetLink::Host(host) = &mut setup.link {
+        host.resend_soon();
+    }
 
     commands.insert_resource(MatchState {
         phase: if rules.pvp { Phase::Lobby } else { Phase::Day },
@@ -185,9 +282,17 @@ pub fn start_pending_match(
         objective_max: rules.objective_hp,
         stock: rules.start_stock,
         upgrades: vec![0; catalog.upgrades.len()],
-        weather: rules.recipe.weather,
+        weather: match carry.weather_mode {
+            n @ 1..=4 => oz_core::worldgen::Weather::ALL[(n - 1) as usize],
+            _ => rules.recipe.weather,
+        },
+        time_mode: carry.time_mode,
+        weather_mode: carry.weather_mode,
+        next_mode: rules.mode,
+        next_map: crate::versus::map_choice(&rules),
         ..default()
     });
+    commands.insert_resource(Relaunched(setup.carry.is_some()));
     commands.insert_resource(Grid::new(rules.recipe.half_extent));
     commands.insert_resource(SimRng(Rng::new(rules.recipe.seed ^ 0xc0ffee)));
     commands.insert_resource(Content(catalog));

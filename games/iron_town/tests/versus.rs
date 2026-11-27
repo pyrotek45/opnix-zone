@@ -656,3 +656,234 @@ fn doors_glass_and_clutter_break() {
     }
     assert_eq!(app.world().resource::<MatchState>().clutter[barrel], 0, "the barrel never cooked off");
 }
+
+fn run_for(app: &mut App, seconds: f32) {
+    for _ in 0..(seconds / FRAME) as usize {
+        app.update();
+    }
+}
+
+fn rules_of(app: &App) -> Rules {
+    app.world().resource::<Rules>().clone()
+}
+
+fn local_player(app: &mut App) -> (u8, String, u8) {
+    let world = app.world_mut();
+    let player = world.query_filtered::<&Player, With<LocalPlayer>>().single(world).unwrap();
+    (player.id, player.name.clone(), player.team)
+}
+
+/// The map choice for a fixed layout (see `versus::MAPS`).
+fn fixed_map(layout: oz_core::worldgen::Layout) -> u8 {
+    let themes = oz_core::worldgen::Theme::ALL.len();
+    (themes + oz_core::worldgen::Layout::VERSUS.iter().position(|l| *l == layout).unwrap()) as u8
+}
+
+#[test]
+fn the_host_switches_mode_and_map_from_the_lobby() {
+    use oz_core::worldgen::{Layout, Theme};
+    let mut app = app();
+    let mut rules = deathmatch_rules(11);
+    rules.team_size = 2;
+    let town = rules.recipe;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    run_for(&mut app, 1.0);
+    assert_eq!(teams(&mut app), [(1, 1), (0, 2)]);
+
+    // Terrorist hunt, one step back from team deathmatch: the same town, held by hostiles.
+    lobby(&mut app, LobbyAction::Mode(-1));
+    assert_eq!(app.world().resource::<MatchState>().next_mode, 3, "the pick shows at once");
+    assert_eq!(rules_of(&app).mode, 0, "and applies once it settles");
+    run_for(&mut app, 3.0);
+    let hunt = rules_of(&app);
+    assert!(hunt.hunt && hunt.mode == 3, "{hunt:?}");
+    assert_eq!(hunt.recipe, town, "changing the mode keeps the map");
+    assert_eq!(*app.world().resource::<State<MatchPhase>>().get(), MatchPhase::Active);
+    assert_eq!(phase(&app), Phase::Lobby);
+    assert_eq!(local_player(&mut app), (0, "TEST".to_string(), 0), "the player keeps their seat and name");
+    let squad = app.world().resource::<MatchState>().team_size;
+    let [(humans, squad_bots), (_, hostiles)] = teams(&mut app);
+    assert_eq!((humans, squad_bots), (1, squad as usize - 1));
+    assert_eq!(hostiles, oz_sim::versus::hunt_hostiles(&hunt, squad), "hostiles hold the town");
+
+    // The office tower: stepping through the maps only loads the one the host stops on.
+    for _ in 0..fixed_map(Layout::OfficeTower) {
+        lobby(&mut app, LobbyAction::Map(1));
+    }
+    run_for(&mut app, 3.0);
+    let tower = rules_of(&app);
+    assert_eq!(tower.recipe.layout, Layout::OfficeTower);
+    assert_eq!(app.world().resource::<Map>().recipe, tower.recipe, "the world is rebuilt from the new recipe");
+    assert!(tower.hunt, "changing the map keeps the mode");
+
+    // Back to team deathmatch in the suburbs: the hostiles are gone, bots fill two teams again.
+    lobby(&mut app, LobbyAction::Mode(1));
+    for _ in 0..fixed_map(Layout::OfficeTower) - 1 {
+        lobby(&mut app, LobbyAction::Map(-1));
+    }
+    run_for(&mut app, 3.0);
+    let tdm = rules_of(&app);
+    assert!(!tdm.hunt && tdm.mode == 0);
+    assert_eq!(tdm.recipe.layout, Layout::Town);
+    assert_eq!(Theme::from_seed(tdm.recipe.seed), Theme::Suburbs);
+    let size = app.world().resource::<MatchState>().team_size as usize;
+    assert_eq!(teams(&mut app), [(1, size - 1), (0, size)], "bots are made afresh for the new mode");
+
+    // A new roll of the same choice: other streets, same theme.
+    lobby(&mut app, LobbyAction::NewMap);
+    run_for(&mut app, 2.0);
+    let rolled = rules_of(&app);
+    assert_ne!(rolled.recipe.seed, tdm.recipe.seed);
+    assert_eq!(Theme::from_seed(rolled.recipe.seed), Theme::Suburbs);
+
+    // Ranked keeps the map too.
+    lobby(&mut app, LobbyAction::Mode(1));
+    lobby(&mut app, LobbyAction::Mode(1));
+    run_for(&mut app, 3.0);
+    assert!(rules_of(&app).ranked);
+    assert_eq!(rules_of(&app).recipe, rolled.recipe);
+}
+
+#[test]
+fn lobby_settings_change_the_match() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(5);
+    rules.team_size = 2;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    run_for(&mut app, 1.0);
+    lobby(&mut app, LobbyAction::Bots);
+    run_for(&mut app, 0.5);
+    assert_eq!(teams(&mut app), [(1, 0), (0, 0)], "bots off: humans only");
+    lobby(&mut app, LobbyAction::Bots);
+    lobby(&mut app, LobbyAction::BotSkill(1));
+    lobby(&mut app, LobbyAction::Respawn(-1));
+    lobby(&mut app, LobbyAction::ScoreLimit(-1));
+    lobby(&mut app, LobbyAction::TimeLimit(1));
+    lobby(&mut app, LobbyAction::TimeLimit(1));
+    run_for(&mut app, 0.5);
+    let rules = rules_of(&app);
+    assert_eq!(teams(&mut app), [(1, 1), (0, 2)]);
+    assert_eq!(rules.difficulty, 1.35);
+    assert_eq!(rules.respawn_seconds, 4.0);
+    assert_eq!(rules.score_limit, 20);
+    assert_eq!(rules.time_limit, 300.0);
+}
+
+#[test]
+fn a_timed_match_ends_on_the_clock_and_the_rematch_starts_clean() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(9);
+    rules.team_size = 2;
+    rules.score_limit = 0;
+    rules.time_limit = 25.0;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    run_for(&mut app, 6.0);
+    assert_eq!(phase(&app), Phase::Live);
+    let map_before = app.world().resource::<Map>().0.clone();
+    run_for(&mut app, 26.0);
+    let state = app.world().resource::<MatchState>().clone();
+    assert_eq!(state.phase, Phase::Won, "the clock ends the match");
+    let [teal, coral] = state.scores;
+    assert_eq!(state.winner, if teal > coral { 0 } else if coral > teal { 1 } else { 2 });
+    // After the results everyone is back in the lobby, on a fresh copy of the same map.
+    run_for(&mut app, 16.0);
+    let state = app.world().resource::<MatchState>().clone();
+    assert_eq!(state.phase, Phase::Lobby);
+    assert_eq!(state.scores, [0, 0]);
+    assert!(state.roster.iter().all(|r| r.kills == 0 && r.deaths == 0), "{:?}", state.roster);
+    assert_eq!(state.roster.len(), 4);
+    let map_after = app.world().resource::<Map>().0.clone();
+    assert!(!std::sync::Arc::ptr_eq(&map_before, &map_after) && map_before.recipe == map_after.recipe);
+    let world = app.world_mut();
+    assert_eq!(world.query::<&Projectile>().iter(world).count(), 0, "nothing from the last match is left lying around");
+    assert_eq!(world.query::<&Player>().iter(world).filter(|p| p.streak > 0 || p.kills > 0).count(), 0);
+    assert_eq!(local_player(&mut app).1, "TEST");
+}
+
+/// Runs host and guest together until `done` holds (or fails after 30 s).
+fn pump(host: &mut App, client: &mut App, what: &str, mut done: impl FnMut(&mut App, &mut App) -> bool) {
+    let started = Instant::now();
+    loop {
+        host.update();
+        client.update();
+        std::thread::sleep(Duration::from_millis(1));
+        if done(host, client) {
+            return;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30), "timed out waiting for: {what}");
+    }
+}
+
+fn names(app: &App) -> Vec<String> {
+    app.world().resource::<MatchState>().roster.iter().filter(|r| !r.bot).map(|r| r.name.clone()).collect()
+}
+
+#[test]
+fn host_and_guest_change_maps_modes_and_names_together() {
+    use oz_core::worldgen::Layout;
+    let (mut host, mut client) = (app(), app());
+    let mut rules = deathmatch_rules(15);
+    rules.team_size = 2;
+    start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let addr = link.host.local_addr().unwrap().to_string();
+    let world = client.world_mut();
+    net::join(&mut world.commands(), &addr, "guest");
+    world.flush();
+    pump(&mut host, &mut client, "the guest joins", |host, client| {
+        *client.world().resource::<State<MatchPhase>>().get() == MatchPhase::Active && count_players(client) == 4 && names(host).contains(&"GUEST".to_string())
+    });
+    let (guest_id, _, guest_team) = local_player(&mut client);
+    assert_eq!(guest_team, 1);
+
+    // Names: cleaned up, made unique, and shown to everyone.
+    client.world_mut().send_event(CommandEvent { player: guest_id, command: PlayerCommand::Rename("  ace   pilot ".into()) });
+    pump(&mut host, &mut client, "the rename reaches everyone", |host, client| names(host).contains(&"ACE PILOT".to_string()) && names(client).contains(&"ACE PILOT".to_string()));
+    client.world_mut().send_event(CommandEvent { player: guest_id, command: PlayerCommand::Rename("host".into()) });
+    pump(&mut host, &mut client, "a taken name gets a number", |host, client| names(host).contains(&"HOST2".to_string()) && local_player(client).1 == "HOST2");
+
+    // A setting that needs no new world reaches the guest as it changes.
+    lobby(&mut host, LobbyAction::ScoreLimit(1));
+    lobby(&mut host, LobbyAction::TimeLimit(1));
+    pump(&mut host, &mut client, "the guest sees the new limits", |host, client| rules_of(client) == rules_of(host) && rules_of(client).time_limit > 0.0);
+
+    // The space station: both machines build it, and everyone keeps their seat.
+    for _ in 0..fixed_map(Layout::SpaceStation) {
+        lobby(&mut host, LobbyAction::Map(1));
+    }
+    pump(&mut host, &mut client, "both rebuild on the new map", |host, client| {
+        let (h, c) = (host.world().resource::<Map>().recipe, client.world().resource::<Map>().recipe);
+        h.layout == Layout::SpaceStation && c == h && *client.world().resource::<State<MatchPhase>>().get() == MatchPhase::Active && count_players(client) == 4 && client.world().resource::<MatchState>().phase == Phase::Lobby
+    });
+    assert_eq!(rules_of(&client), rules_of(&host));
+    assert_eq!(local_player(&mut client), (guest_id, "HOST2".to_string(), guest_team));
+    assert_eq!(local_player(&mut host).1, "HOST");
+    assert!(names(&host).contains(&"HOST2".to_string()));
+    assert!(matches!(client.world().resource::<NetLink>(), NetLink::Client(_)), "the guest stays connected");
+
+    // Terrorist hunt: every human joins the squad, hostiles hold the station.
+    lobby(&mut host, LobbyAction::Mode(-1));
+    pump(&mut host, &mut client, "both switch to the hunt", |host, client| {
+        rules_of(host).hunt && rules_of(client) == rules_of(host) && client.world().resource::<Map>().recipe == host.world().resource::<Map>().recipe && local_player(client).2 == 0
+    });
+    pump(&mut host, &mut client, "the guest sees the hostiles", |host, client| {
+        let squad = host.world().resource::<MatchState>().team_size;
+        let hostiles = oz_sim::versus::hunt_hostiles(&rules_of(host), squad);
+        teams(host)[0].0 == 2 && count_players(client) == count_players(host) && teams(host)[1].1 == hostiles
+    });
+    assert_eq!(client.world().resource::<Map>().recipe.layout, Layout::SpaceStation);
+
+    // Guests edit their class in the lobby too, and the host applies it to them at once.
+    let gear = host.world().resource::<Content>().gear.len() as u8 - 1;
+    let loadout = Loadout { primary: oz_core::kit::gun::SHOTGUN as u8, secondary: oz_core::kit::gun::PISTOL as u8, perk: 1, gear, parts: None, streaks: [0; 3], vision: 0 };
+    client.world_mut().send_event(CommandEvent { player: guest_id, command: PlayerCommand::Loadout(loadout) });
+    pump(&mut host, &mut client, "the host applies the guest's class", |host, _| {
+        let world = host.world_mut();
+        world.query::<(&Player, &Arsenal)>().iter(world).any(|(p, a)| p.id == guest_id && p.perk == 1 && p.gear == gear && a.owns(oz_core::kit::gun::SHOTGUN))
+    });
+
+    // And the match starts for both.
+    lobby(&mut host, LobbyAction::Start);
+    pump(&mut host, &mut client, "the match starts for the guest", |_, client| client.world().resource::<MatchState>().phase == Phase::Live);
+}

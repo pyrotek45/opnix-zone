@@ -1,15 +1,17 @@
 //! The versus lobby and the scoreboard.
 //!
 //! The lobby shows both teams as roster cards around your squad standing on
-//! the showroom stage, with ready / start, team switching, team size and the
-//! class editor. Everything is a `LobbyAction` command, so it works the same
-//! for the host, for guests and offline. Holding Tab (Back on a pad) during
-//! a match shows the scoreboard.
+//! the showroom stage, with ready / start, team switching, your name, the
+//! class editor, and for the host the mode, the map and a MATCH SETTINGS page
+//! (team size, score and time limits, bots, respawn, time of day, weather);
+//! guests see the same page read-only. Everything is a `LobbyAction` command,
+//! so it works the same for the host, for guests and offline. Holding Tab
+//! (Back on a pad) during a match shows the scoreboard.
 
 use crate::{
     ClientSet,
     input::Controls,
-    ui::{self, Act, ActEvent, Order, Screen, UiDirty},
+    ui::{self, Act, ActEvent, FocusRequest, Order, Screen, UiDirty},
 };
 use bevy::{ecs::hierarchy::ChildSpawnerCommands, prelude::*};
 use oz_sim::prelude::*;
@@ -35,31 +37,76 @@ pub const TEAM_COLORS: [Color; 2] = [Color::srgb(0.25, 0.8, 0.82), Color::srgb(0
 #[derive(Component)]
 struct Scoreboard;
 
+/// Which page of the lobby is open: 0 the main list, 1 the match settings.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LobbyPage(pub u8);
+
 pub struct LobbyPlugin;
 
 impl Plugin for LobbyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, lobby_actions.in_set(ClientSet::Input).after(crate::input::ReadDevices).before(crate::menu::MenuActions).run_if(in_state(MatchPhase::Active)))
+        app.init_resource::<LobbyPage>()
+            .add_systems(Update, lobby_actions.in_set(ClientSet::Input).after(crate::input::ReadDevices).before(crate::menu::MenuActions).run_if(in_state(MatchPhase::Active)))
             .add_systems(Update, (refresh_lobby.before(crate::menu::BuildScreens), scoreboard).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
-fn lobby_actions(mut events: EventReader<ActEvent>, screen: Res<Screen>, players: Query<&Player, With<LocalPlayer>>, mut orders: EventWriter<CommandEvent>) {
+#[allow(clippy::too_many_arguments)]
+fn lobby_actions(
+    mut events: EventReader<ActEvent>,
+    screen: Res<Screen>,
+    role: Res<NetRole>,
+    players: Query<&Player, With<LocalPlayer>>,
+    mut orders: EventWriter<CommandEvent>,
+    mut page: ResMut<LobbyPage>,
+    mut request: ResMut<FocusRequest>,
+    mut dirty: ResMut<UiDirty>,
+) {
     if !matches!(*screen, Screen::Lobby | Screen::GameOver) {
         return;
     }
     let Ok(player) = players.single() else { return };
     for ActEvent(act) in events.read() {
-        if let Act::Lobby(action) = act {
-            orders.write(CommandEvent { player: player.id, command: PlayerCommand::Lobby(*action) });
+        match act {
+            Act::Lobby(action) => {
+                orders.write(CommandEvent { player: player.id, command: PlayerCommand::Lobby(*action) });
+            }
+            Act::LobbyPage(to) if *screen == Screen::Lobby => {
+                // Into the settings: the cursor lands on the first one. Back out: on the entry.
+                request.0 = Some(match to {
+                    1 if *role != NetRole::Client => Act::Lobby(LobbyAction::TeamSize(1)),
+                    1 => Act::LobbyPage(0),
+                    _ => Act::LobbyPage(1),
+                });
+                page.0 = *to;
+                dirty.0 = true;
+            }
+            Act::Back if *screen == Screen::Lobby && page.0 != 0 => {
+                request.0 = Some(Act::LobbyPage(1));
+                page.0 = 0;
+                dirty.0 = true;
+            }
+            _ => {}
         }
     }
 }
 
 /// Rebuild the lobby whenever anything on it changes.
-fn refresh_lobby(screen: Res<Screen>, state: Res<MatchState>, link: Res<NetLink>, mut dirty: ResMut<UiDirty>, mut last: Local<Option<(Vec<RosterEntry>, u8, i32, Phase, String, (u8, u8))>>) {
+#[allow(clippy::type_complexity)]
+fn refresh_lobby(
+    screen: Res<Screen>,
+    state: Res<MatchState>,
+    rules: Res<Rules>,
+    link: Res<NetLink>,
+    mut dirty: ResMut<UiDirty>,
+    mut page: ResMut<LobbyPage>,
+    mut last: Local<Option<(Vec<RosterEntry>, u8, i32, Phase, String, (u8, u8), (Rules, u8, u8, bool))>>,
+) {
     if *screen != Screen::Lobby {
         *last = None;
+        if *screen != Screen::Name && page.0 != 0 {
+            page.0 = 0;
+        }
         return;
     }
     let router = match &*link {
@@ -68,7 +115,8 @@ fn refresh_lobby(screen: Res<Screen>, state: Res<MatchState>, link: Res<NetLink>
     };
     // Ping changes constantly; leave it out so the lobby does not rebuild every frame.
     let roster: Vec<RosterEntry> = state.roster.iter().map(|r| RosterEntry { ping: 0, weapon: 0, parts: Default::default(), ..r.clone() }).collect();
-    let signature = (roster, state.team_size, state.countdown.ceil() as i32, state.phase, router, (state.time_mode, state.weather_mode));
+    let picking = (rules.clone(), state.next_mode, state.next_map, state.change_in > 0.0);
+    let signature = (roster, state.team_size, state.countdown.ceil() as i32, state.phase, router, (state.time_mode, state.weather_mode), picking);
     if last.as_ref() != Some(&signature) {
         if last.is_some() {
             dirty.0 = true;
@@ -163,6 +211,46 @@ fn roster_panel(parent: &mut ChildSpawnerCommands, team: u8, state: &MatchState,
     });
 }
 
+/// Where the match is played, as the lobby names it.
+fn place(rules: &Rules) -> String {
+    use oz_core::worldgen::{Layout, Theme};
+    match rules.recipe.layout {
+        Layout::Town => format!("{} {}", rules.recipe.biome.look().title, Theme::from_seed(rules.recipe.seed).title()),
+        Layout::Archipelago => rules.recipe.biome.look().title.to_string(),
+        layout => format!("{} {}", layout.title(), rules.recipe.biome.look().title),
+    }
+}
+
+fn minutes(seconds: f32) -> String {
+    if seconds <= 0.0 { "NONE".to_string() } else { format!("{} MIN", (seconds / 60.0).round()) }
+}
+
+/// One row of the lobby's list: a button, or for a guest a value they can only read.
+struct List<'a> {
+    order: &'a mut Order,
+    at: i32,
+    host: bool,
+}
+
+const WIDTH: f32 = 460.0;
+
+impl List<'_> {
+    fn item(&mut self, list: &mut ChildSpawnerCommands, text: String, act: Act) {
+        ui::grid_button(list, self.order, text, act, None, Val::Px(WIDTH), 0, self.at);
+        self.at += 1;
+    }
+
+    /// A setting only the host changes: A to edit, left / right to step it.
+    fn value(&mut self, list: &mut ChildSpawnerCommands, name: &str, shown: String, step: fn(i8) -> LobbyAction) {
+        if self.host {
+            ui::grid_button(list, self.order, format!("{name:<13}<  {shown}  >"), Act::Lobby(step(1)), Some(Act::Lobby(step(-1))), Val::Px(WIDTH), 0, self.at);
+            self.at += 1;
+        } else {
+            ui::disabled(list, format!("{name:<13}{shown}"), Val::Px(WIDTH));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_lobby(
     mut commands: Commands,
@@ -175,42 +263,48 @@ pub fn build_lobby(
     state: Option<Res<MatchState>>,
     modes: Res<Modes>,
     players: Query<&Player, With<LocalPlayer>>,
+    page: Res<LobbyPage>,
 ) {
     let (Screen::Lobby, true, Some(rules), Some(state), Ok(me)) = (&*screen, dirty.0, rules, state, players.single()) else {
         return;
     };
+    use oz_sim::versus::{map_choice, map_title, skill_name};
     let host = *role != NetRole::Client;
-    let mode = modes.0.get(rules.mode as usize).map_or("VERSUS", |m| m.name);
+    let mode_name = |index: u8| modes.0.get(index as usize).map_or("VERSUS", |m| m.name);
+    // The host's pick shows at once; the lobby reloads on it a moment later.
+    let switching = state.next_mode != rules.mode || state.next_map != map_choice(&rules) || state.reroll;
     let mut order = Order::default();
-    let order = &mut order;
+    let n = state.team_size;
+    let time = oz_sim::versus::TIME_MODES[(state.time_mode as usize).min(3)];
+    let weather = oz_sim::versus::WEATHER_MODES[(state.weather_mode as usize).min(5)];
+    let score = if rules.score_limit == 0 { "NONE".to_string() } else { rules.score_limit.to_string() };
+    let bots = if rules.no_bots { "OFF - HUMANS ONLY" } else { "FILL EMPTY SLOTS" };
+    let skill = skill_name(rules.difficulty);
+    let my_name = state.roster.iter().find(|r| r.id == me.id).map_or(me.name.clone(), |r| r.name.clone());
 
     ui::root(&mut commands, 0.0).with_children(|root| {
-        // Left: what the match is, then everything you can do, as one list.
+        // Top left: what the match is.
         root.spawn(Node {
             position_type: PositionType::Absolute,
             top: Val::Px(18.0),
             left: Val::Px(24.0),
+            width: Val::Px(560.0),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Start,
             row_gap: Val::Px(4.0),
             ..default()
         })
         .with_children(|top| {
-            ui::label(top, mode, 36.0, ui::TEXT);
-            let n = state.team_size;
-            let place = match rules.recipe.layout {
-                oz_core::worldgen::Layout::Town => {
-                    format!("{} {}", rules.recipe.biome.look().title, oz_core::worldgen::Theme::from_seed(rules.recipe.seed).title())
-                }
-                oz_core::worldgen::Layout::Archipelago => rules.recipe.biome.look().title.to_string(),
-                layout => layout.title().to_string(),
+            ui::label(top, mode_name(rules.mode), 36.0, ui::TEXT);
+            let limits = match (rules.score_limit, rules.time_limit > 0.0) {
+                _ if rules.hunt => format!("SQUAD OF {n}   |   {} HOSTILES   |   {} LIVES", oz_sim::versus::hunt_hostiles(&rules, n), oz_sim::versus::HUNT_LIVES),
+                (0, false) => format!("{n} V {n}   |   NO LIMIT"),
+                (0, true) => format!("{n} V {n}   |   {}", minutes(rules.time_limit)),
+                (limit, false) => format!("{n} V {n}   |   FIRST TO {limit}"),
+                (limit, true) => format!("{n} V {n}   |   FIRST TO {limit} IN {}", minutes(rules.time_limit)),
             };
-            let line = if rules.hunt {
-                format!("{place}   |   SQUAD OF {n}   |   {} HOSTILES   |   {} LIVES", oz_sim::versus::hunt_hostiles(&rules, n), oz_sim::versus::HUNT_LIVES)
-            } else {
-                format!("{place}   |   {n} V {n}   |   FIRST TO {}", rules.score_limit)
-            };
-            ui::label(top, line, 15.0, ui::ACCENT);
+            let timed = if rules.hunt && rules.time_limit > 0.0 { format!("   |   {}", minutes(rules.time_limit)) } else { String::new() };
+            ui::label(top, format!("{}   |   {limits}{timed}", place(&rules)), 15.0, ui::ACCENT);
         });
         // Right: both teams, one above the other.
         root.spawn(Node {
@@ -230,54 +324,69 @@ pub fn build_lobby(
 
         root.spawn(Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(110.0),
+            top: Val::Px(100.0),
             left: Val::Px(24.0),
-            width: Val::Px(420.0),
+            width: Val::Px(WIDTH),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Start,
             row_gap: Val::Px(8.0),
             ..default()
         })
         .with_children(|bottom| {
-            let status = if rules.hunt && state.countdown <= 0.0 && host {
-                "CLEAR THE TOWN. HOSTILES HOLD IT AND LISTEN FOR YOU: STAY QUIET, USE SUPPRESSORS.".to_string()
+            let status = if switching {
+                format!("LOADING {}  -  {}...", mode_name(state.next_mode), map_title(state.next_map))
             } else if state.countdown > 0.0 {
                 format!("MATCH STARTS IN {}", state.countdown.ceil() as u32)
+            } else if page.0 == 1 {
+                if host { "MATCH SETTINGS".to_string() } else { "MATCH SETTINGS  (THE HOST CHANGES THESE)".to_string() }
+            } else if rules.hunt && host {
+                "CLEAR THE TOWN. HOSTILES HOLD IT AND LISTEN FOR YOU: STAY QUIET, USE SUPPRESSORS.".to_string()
             } else if host {
                 "START WHEN YOU ARE READY. BOTS FILL EVERY EMPTY SLOT.".to_string()
             } else {
                 "WAITING FOR THE HOST TO START".to_string()
             };
-            ui::label(bottom, status, 18.0, if state.countdown > 0.0 { ui::GOOD } else { ui::TEXT });
-            // One list down the middle: actions, then (for the host) the match settings.
-            // A on a setting starts editing it (left / right).
-            const WIDTH: f32 = 420.0;
-            let time = oz_sim::versus::TIME_MODES[(state.time_mode as usize).min(3)];
-            let weather = oz_sim::versus::WEATHER_MODES[(state.weather_mode as usize).min(5)];
-            let n = state.team_size;
-            let size = if rules.hunt { format!("SQUAD  <  {n}  >") } else { format!("TEAMS  <  {n} V {n}  >") };
+            ui::label(bottom, status, 18.0, if switching || state.countdown > 0.0 { ui::GOOD } else { ui::TEXT });
+            // One list: actions, then what to play and where. The match settings are a page
+            // of their own. A on a setting starts editing it (left / right).
             bottom.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), ..default() }).with_children(|list| {
-                let mut at = 0;
-                let mut item = |list: &mut ChildSpawnerCommands, text: String, act: Act, left: Option<Act>| {
-                    ui::grid_button(list, order, text, act, left, Val::Px(WIDTH), 0, at);
-                    at += 1;
-                };
+                let mut rows = List { order: &mut order, at: 0, host };
+                if page.0 == 1 {
+                    let size = if rules.hunt { format!("{n}") } else { format!("{n} V {n}") };
+                    rows.value(list, if rules.hunt { "SQUAD" } else { "TEAMS" }, size, LobbyAction::TeamSize);
+                    if !rules.hunt {
+                        rows.value(list, "SCORE LIMIT", score, LobbyAction::ScoreLimit);
+                    }
+                    rows.value(list, "TIME LIMIT", minutes(rules.time_limit), LobbyAction::TimeLimit);
+                    rows.value(list, if rules.hunt { "SQUAD BOTS" } else { "BOTS" }, bots.to_string(), |_| LobbyAction::Bots);
+                    rows.value(list, "BOT SKILL", skill.to_string(), LobbyAction::BotSkill);
+                    rows.value(list, "RESPAWN", format!("{} S", rules.respawn_seconds), LobbyAction::Respawn);
+                    rows.value(list, "TIME OF DAY", time.to_string(), LobbyAction::TimeOfDay);
+                    rows.value(list, "WEATHER", weather.to_string(), LobbyAction::Weather);
+                    rows.item(list, "BACK".to_string(), Act::LobbyPage(0));
+                    return;
+                }
                 let ready = state.roster.iter().any(|r| r.id == me.id && r.ready);
                 let first = if host { ("START MATCH", LobbyAction::Start) } else { (if ready { "NOT READY" } else { "READY UP" }, LobbyAction::ToggleReady) };
-                item(list, first.0.to_string(), Act::Lobby(first.1), None);
-                item(list, "ARMORY".to_string(), Act::Go(Screen::Loadout), None);
+                rows.item(list, first.0.to_string(), Act::Lobby(first.1));
+                rows.item(list, "ARMORY".to_string(), Act::Go(Screen::Loadout));
                 if !rules.hunt {
-                    item(list, "SWITCH TEAM".to_string(), Act::Lobby(LobbyAction::SwitchTeam), None);
+                    rows.item(list, "SWITCH TEAM".to_string(), Act::Lobby(LobbyAction::SwitchTeam));
                 }
+                rows.item(list, format!("{:<13}{my_name}", "NAME"), Act::EditName);
+                rows.value(list, "MODE", mode_name(state.next_mode).to_string(), LobbyAction::Mode);
+                rows.value(list, "MAP", map_title(state.next_map).to_string(), LobbyAction::Map);
                 if host {
-                    item(list, size, Act::Lobby(LobbyAction::TeamSize(1)), Some(Act::Lobby(LobbyAction::TeamSize(-1))));
-                    item(list, format!("TIME  <  {time}  >"), Act::Lobby(LobbyAction::TimeOfDay(1)), Some(Act::Lobby(LobbyAction::TimeOfDay(-1))));
-                    item(list, format!("WEATHER  <  {weather}  >"), Act::Lobby(LobbyAction::Weather(1)), Some(Act::Lobby(LobbyAction::Weather(-1))));
+                    rows.item(list, "NEW MAP".to_string(), Act::Lobby(LobbyAction::NewMap));
                 }
-                item(list, "LEAVE".to_string(), Act::Leave, None);
+                rows.item(list, if host { "MATCH SETTINGS".to_string() } else { "VIEW MATCH SETTINGS".to_string() }, Act::LobbyPage(1));
+                rows.item(list, "LEAVE".to_string(), Act::Leave);
             });
-            if !host {
-                ui::label(bottom, format!("TIME: {time}      WEATHER: {weather}"), 16.0, ui::ACCENT);
+            if page.0 == 1 {
+                let note = if rules.hunt { "BOT SKILL SETS HOW WELL BOTS AIM AND REACT, AND HOW MANY HOSTILES HOLD THE TOWN." } else { "BOT SKILL SETS HOW WELL BOTS AIM AND REACT." };
+                ui::label(bottom, note, 13.0, ui::DIM);
+            } else if let Some(mode) = modes.0.get(state.next_mode as usize) {
+                ui::label(bottom, mode.blurb, 14.0, ui::DIM);
             }
             if let NetLink::Host(host) = &*link {
                 ui::label(bottom, hosting_info(host), 13.0, ui::ACCENT);

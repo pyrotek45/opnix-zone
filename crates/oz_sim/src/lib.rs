@@ -48,7 +48,7 @@ pub mod prelude {
     pub use crate::enemy::{Enemy, spawn_enemy};
     pub use crate::net::{NetId, NetLink};
     pub use crate::player::{Arsenal, EYE, Health, Loadout, LocalPlayer, Mover, Player, PlayerInput, buttons, flags, stance};
-    pub use crate::session::{Content, Map, MatchEntity, MatchSetup, ModeDef, Modes, PendingMatch, Statics, Station, end_match};
+    pub use crate::session::{Carry, Content, Map, MatchEntity, MatchSetup, ModeDef, Modes, PendingMatch, Relaunch, Relaunched, Seat, Statics, Station, end_match};
     pub use crate::state::{CommandEvent, FxEvent, LobbyAction, MatchPhase, MatchState, NetRole, Phase, PlayerCommand, RosterEntry, Rules, SimRng};
     pub use crate::structures::{OreNode, Structure};
     pub use crate::{SimPlugin, SimSet, authority, sim_dt};
@@ -97,6 +97,8 @@ impl Plugin for SimPlugin {
             .init_resource::<state::NetRole>()
             .init_resource::<session::Modes>()
             .init_resource::<session::PendingMatch>()
+            .init_resource::<session::Relaunch>()
+            .init_resource::<session::Relaunched>()
             .init_resource::<net::NetLink>()
             .init_resource::<nav::NavScratch>()
             .init_resource::<lagcomp::LagHistory>()
@@ -116,7 +118,7 @@ impl Plugin for SimPlugin {
             .add_systems(Update, (orders::process_commands, killstreak::use_streaks, breakables::work_doors).chain().in_set(SimSet::Orders))
             .add_systems(OnEnter(Active), breakables::spawn_breakables)
             .add_systems(Update, breakables::sync_breakables.run_if(in_state(Active)))
-            .add_systems(Update, (versus::run_versus, versus::fill_teams).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
+            .add_systems(Update, (versus::run_versus, versus::fill_teams, session::relaunch).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
             .add_systems(
                 Update,
                 (

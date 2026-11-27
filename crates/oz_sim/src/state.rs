@@ -72,6 +72,16 @@ pub struct Rules {
     /// Scavenge: spawn with a pistol, find everything else on the map (see `loot`).
     #[serde(default)]
     pub loot: bool,
+    /// Versus: seconds a match lasts before the higher score wins (0 = no time limit).
+    #[serde(default)]
+    pub time_limit: f32,
+    /// Versus: no bots on the teams, only humans (terrorist hunt keeps its hostiles).
+    #[serde(default)]
+    pub no_bots: bool,
+    /// Versus map choice for a random town: 0 any theme, 1.. one `Theme` (see `versus::MAPS`).
+    /// Fixed layouts are known from the recipe.
+    #[serde(default)]
+    pub map: u8,
 }
 
 /// The replicated heart of a match. Small enough to send with every snapshot.
@@ -119,6 +129,19 @@ pub struct MatchState {
     /// Terrorist hunt: respawns the squad has left, and hostiles still standing.
     pub lives: u16,
     pub hostiles: u16,
+    /// Versus: seconds left in a timed match.
+    #[serde(default)]
+    pub time_left: f32,
+    /// Versus lobby: the mode and map the host is picking (see `versus::MAPS`), applied
+    /// once the choice has settled for `change_in` seconds; `reroll` asks for a new seed.
+    #[serde(default)]
+    pub next_mode: u8,
+    #[serde(default)]
+    pub next_map: u8,
+    #[serde(default)]
+    pub reroll: bool,
+    #[serde(default)]
+    pub change_in: f32,
     /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
     #[serde(skip)]
     pub credits: Vec<u8>,
@@ -191,6 +214,8 @@ pub enum PlayerCommand {
     Door(u16),
     /// Scavenge: swap the gun in hand for the one on the floor here.
     Pickup,
+    /// Change your name (cleaned up and made unique by the authority).
+    Rename(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +230,22 @@ pub enum LobbyAction {
     TimeOfDay(i8),
     /// Host only: step the weather setting.
     Weather(i8),
+    /// Host only: step the game mode (the lobby relaunches on the new rules).
+    Mode(i8),
+    /// Host only: step the map (random town, a themed town, or a fixed layout).
+    Map(i8),
+    /// Host only: a fresh roll of the current map choice.
+    NewMap,
+    /// Host only: step the score limit.
+    ScoreLimit(i8),
+    /// Host only: step the time limit.
+    TimeLimit(i8),
+    /// Host only: step how well bots aim and react.
+    BotSkill(i8),
+    /// Host only: bots fill the teams, or humans only.
+    Bots,
+    /// Host only: step the respawn delay.
+    Respawn(i8),
 }
 
 #[derive(Event, Clone, Debug)]

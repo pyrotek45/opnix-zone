@@ -428,11 +428,15 @@ fn tab_focus(class: &Class) -> Act {
     })
 }
 
-/// Before a match starts the host always has the class you will spawn with.
+/// Before a match starts the host always has the class you will spawn with. Ranked plays
+/// with what your career has unlocked, so a lobby switched to ranked sends the class again,
+/// fitted to your unlocks.
+#[allow(clippy::too_many_arguments)]
 fn send_class(
     class: Res<Class>,
     state: Res<MatchState>,
     rules: Res<Rules>,
+    (content, career): (Res<Content>, Res<crate::career::Career>),
     players: Query<(Entity, &Player), With<LocalPlayer>>,
     mut orders: EventWriter<CommandEvent>,
     mut sent: Local<Option<(Entity, Loadout)>>,
@@ -443,7 +447,10 @@ fn send_class(
     if !rules.pvp || state.phase != Phase::Lobby || class.slots.iter().any(|s| s.parts.is_none()) {
         return;
     }
-    let loadout = class.current();
+    let mut loadout = class.current();
+    if rules.ranked {
+        career.enforce(&mut loadout, &content);
+    }
     if *sent != Some((entity, loadout)) {
         *sent = Some((entity, loadout));
         orders.write(CommandEvent { player: player.id, command: PlayerCommand::Loadout(loadout) });

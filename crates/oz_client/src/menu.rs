@@ -67,8 +67,13 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MenuState>()
             .init_resource::<JoinStatus>()
-            .add_systems(OnEnter(MatchPhase::Active), (|mut screen: ResMut<Screen>| *screen = Screen::None).in_set(EnterMatch))
-            .add_systems(OnExit(MatchPhase::Active), |mut screen: ResMut<Screen>| *screen = Screen::Main)
+            .add_systems(OnEnter(MatchPhase::Active), enter_match.in_set(EnterMatch))
+            .add_systems(OnExit(MatchPhase::Active), |mut screen: ResMut<Screen>, pending: Res<PendingMatch>| {
+                // A lobby reloading on new rules stays on screen; leaving goes back to the menu.
+                if !pending.0.as_ref().is_some_and(|setup| setup.carry.is_some()) {
+                    *screen = Screen::Main;
+                }
+            })
             .add_systems(Update, (type_text, toggle_pause, menu_actions, watch_match, apply_settings, search_lan).chain().in_set(MenuActions).in_set(ClientSet::Input).after(crate::input::ReadDevices))
             .add_systems(
                 Update,
@@ -80,6 +85,7 @@ impl Plugin for MenuPlugin {
                     crate::loadout::build_loadout,
                     crate::gunsmith::build_gunsmith,
                     crate::lobby::build_lobby,
+                    crate::naming::build_name,
                     crate::bindings::build_controls,
                     ui::finish_rebuild,
                 )
@@ -88,6 +94,19 @@ impl Plugin for MenuPlugin {
                     .in_set(ClientSet::Present),
             );
     }
+}
+
+/// A new match drops you into it; a relaunched lobby keeps you in the lobby, or wherever
+/// you were in its menus (the armory, your name, settings).
+fn enter_match(mut screen: ResMut<Screen>, relaunched: Res<Relaunched>, mut dirty: ResMut<UiDirty>, focused: Res<ui::Focused>, mut request: ResMut<ui::FocusRequest>) {
+    if !relaunched.0 {
+        *screen = Screen::None;
+    } else if !matches!(*screen, Screen::Loadout | Screen::Gunsmith { .. } | Screen::Name | Screen::Settings | Screen::Controls) {
+        *screen = Screen::Lobby;
+        // The rows may shift (a hunt has no SWITCH TEAM); keep the cursor on the same one.
+        request.0 = focused.0.clone();
+    }
+    dirty.0 = true;
 }
 
 fn seed() -> u64 {
@@ -122,12 +141,10 @@ fn type_text(mut keys: EventReader<KeyboardInput>, mut menu: ResMut<MenuState>, 
     };
     for event in keys.read().filter(|event| event.state.is_pressed()) {
         let (text, max) = match field {
-            Field::Callsign => (&mut settings.callsign, 16),
             Field::Address => (&mut settings.last_address, 64),
         };
         match &event.logical_key {
             Key::Character(typed) => *text = sanitize(&format!("{text}{typed}"), max),
-            Key::Space if field == Field::Callsign => *text = sanitize(&format!("{text} "), max),
             Key::Backspace => {
                 text.pop();
             }
@@ -172,7 +189,7 @@ fn watch_match(
         _ => {}
     }
     *last_phase = now;
-    let pause = active && *role == NetRole::Offline && matches!(*screen, Screen::Pause | Screen::Settings | Screen::Controls);
+    let pause = active && *role == NetRole::Offline && matches!(*screen, Screen::Pause | Screen::Settings | Screen::Controls | Screen::Name);
     if pause != time.is_paused() {
         if pause { time.pause() } else { time.unpause() }
     }
@@ -333,6 +350,7 @@ fn build_menu(
                 ui::label(root, title.0.clone(), 44.0, ui::TEXT);
                 ui::label(root, "A MODULAR, FULLY PROCEDURAL SHOOTER", 15.0, ui::ACCENT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
+                    ui::button(panel, order, format!("NAME     {}", settings.callsign), Act::EditName);
                     ui::button(panel, order, "PLAY SOLO", Act::Solo);
                     ui::button(panel, order, format!("HOST GAME   (PORT {DEFAULT_PORT})"), Act::Host);
                     ui::button(panel, order, "JOIN GAME", Act::Go(Screen::Join));
@@ -384,7 +402,7 @@ fn build_menu(
             ui::root_left(&mut commands, 0.0).with_children(|root| {
                 ui::label(root, "JOIN GAME", 34.0, ui::TEXT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
-                    ui::button(panel, order, field("CALLSIGN", &settings.callsign, menu.editing == Some(Field::Callsign)), Act::Edit(Field::Callsign));
+                    ui::button(panel, order, field("NAME", &settings.callsign, false), Act::EditName);
                     ui::button(panel, order, field("CODE / IP", &settings.last_address, menu.editing == Some(Field::Address)), Act::Edit(Field::Address));
                     ui::label(panel, "THE JOIN CODE FROM THE HOST'S LOBBY (LIKE K7Q-4MZ), OR AN IP ADDRESS", 13.0, ui::DIM);
                     ui::button(panel, order, "CONNECT", Act::Connect);
@@ -408,6 +426,7 @@ fn build_menu(
             root.with_children(|root| {
                 ui::label(root, "SETTINGS", 34.0, ui::TEXT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
+                    ui::button(panel, order, format!("NAME               {}", settings.callsign), Act::EditName);
                     let mut value = |text: String, setting: Setting| {
                         let (left, right) = set(setting);
                         ui::stepper(panel, order, text, left, right);
@@ -464,6 +483,8 @@ fn build_menu(
                 Some(state) if state.phase == Phase::Won && state.winner < 2 && !state.roster.is_empty() => {
                     (format!("TEAM {} WINS", if state.winner == 0 { "TEAL" } else { "CORAL" }), ui::GOOD, format!("TEAL {}   |   CORAL {}", state.scores[0], state.scores[1]))
                 }
+                // Time ran out on level scores.
+                Some(state) if state.phase == Phase::Won && !state.roster.is_empty() => ("DRAW".to_string(), ui::TEXT, format!("TEAL {}   |   CORAL {}", state.scores[0], state.scores[1])),
                 Some(state) => ("THE LINE HAS FALLEN".to_string(), ui::WARN, format!("REACHED NIGHT {}   |   {} KILLS", state.day, state.kills)),
                 None => (String::new(), ui::WARN, String::new()),
             };
@@ -535,7 +556,7 @@ fn build_menu(
                 });
             });
         }
-        Screen::None | Screen::Station { .. } | Screen::Loadout | Screen::Lobby | Screen::Gunsmith { .. } | Screen::Chat | Screen::Controls => {}
+        Screen::None | Screen::Station { .. } | Screen::Loadout | Screen::Lobby | Screen::Gunsmith { .. } | Screen::Chat | Screen::Controls | Screen::Name => {}
     }
 }
 

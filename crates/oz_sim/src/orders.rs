@@ -45,6 +45,20 @@ pub fn process_commands(
             fx.write(FxEvent::tell(id, why));
             fx.write(FxEvent::Cue { to: id, sfx: Sfx::UiDeny });
         };
+        // A new name: cleaned up, and told apart from everyone else's.
+        if let PlayerCommand::Rename(wanted) = &event.command {
+            let wanted = crate::versus::clean_name(wanted);
+            let others: Vec<String> = players.iter().filter(|(p, ..)| p.id != id).map(|(p, ..)| p.name.clone()).collect();
+            let name = crate::versus::unique_name(&wanted, &others.iter().map(String::as_str).collect::<Vec<_>>());
+            if let Some((mut player, ..)) = players.iter_mut().find(|(player, ..)| player.id == id)
+                && !name.is_empty()
+                && player.name != name
+            {
+                fx.write(FxEvent::notice(format!("{} IS NOW {name}", player.name)));
+                player.name = name;
+            }
+            continue;
+        }
         let Some((mut player, transform, mut arsenal, _)) = players.iter_mut().find(|(player, ..)| player.id == id) else { continue };
         let pay = |state: &mut MatchState, cost: &Cost| state.stock.pay(cost);
 
@@ -239,7 +253,7 @@ pub fn process_commands(
             // Handled by `killstreak::use_streaks`.
             PlayerCommand::UseStreak => continue,
             // Handled by `breakables::work_doors`.
-            PlayerCommand::Door(_) | PlayerCommand::Pickup => continue,
+            PlayerCommand::Door(_) | PlayerCommand::Pickup | PlayerCommand::Rename(_) => continue,
         };
         fx.write(FxEvent::Cue { to: id, sfx: Sfx::Buy });
         if let Some(text) = done {

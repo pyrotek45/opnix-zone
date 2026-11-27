@@ -26,7 +26,7 @@ use crate::{
     combat::{Projectile, Solid},
     enemy::Enemy,
     player::{Arsenal, Health, LocalPlayer, Player, PlayerInput},
-    session::{Content, Map, MatchEntity, MatchSetup, PendingMatch, player_bundle},
+    session::{Carry, Content, Map, MatchEntity, MatchSetup, PendingMatch, player_bundle},
     state::{CommandEvent, FxEvent, MatchPhase, MatchState, NetRole, PlayerCommand, Rules},
     structures::{OreNode, Structure},
 };
@@ -45,7 +45,7 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 /// How long the host remembers someone who dropped, so they can reconnect into the same seat.
 pub const REJOIN_WINDOW: f32 = 600.0;
 /// How far behind the host's clock clients play back remote entities.
@@ -182,7 +182,13 @@ pub enum C2S {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum S2C {
-    Welcome { player: u8, team: u8, rules: Rules },
+    /// `epoch` counts the host's relaunches; snapshots from any other epoch are stale.
+    Welcome { player: u8, team: u8, rules: Rules, epoch: u32 },
+    /// The lobby is reloading on new rules (a new mode or map, or the rematch): drop this
+    /// match, build the world from `rules` and carry on as `team`, on the same connection.
+    Relaunch { rules: Rules, team: u8, epoch: u32 },
+    /// The host changed a setting that needs no new world (score limit, bots, ...).
+    Rules(Rules),
     Refused(String),
     Snapshot(Snapshot),
     You(Private),
@@ -231,6 +237,8 @@ pub struct EntState {
 pub struct Snapshot {
     /// The host's clock when this snapshot was taken.
     pub time: f32,
+    /// Which relaunch of the match this belongs to (see [`S2C::Welcome`]).
+    pub epoch: u32,
     /// Full snapshots also carry static entities and prune ones that vanished.
     pub full: bool,
     pub state: MatchState,
@@ -324,6 +332,8 @@ pub struct HostLink {
     rendezvous_timer: f32,
     /// Players who dropped recently, kept so they can take their seat back.
     departed: Vec<Departed>,
+    /// Relaunches so far (see [`S2C::Relaunch`]).
+    pub epoch: u32,
 }
 
 /// Everything needed to put a reconnecting player back where they were.
@@ -341,7 +351,24 @@ struct Departed {
     left_at: f32,
 }
 
+/// Host: tells every guest the lobby is reloading on `rules`, with the team each will be on.
+pub fn announce_relaunch(host: &mut HostLink, rules: &Rules, teams: &[(u8, u8)]) {
+    host.epoch += 1;
+    let peers: Vec<(PeerId, u8)> = host.peers.iter().map(|(peer, id)| (*peer, *id)).collect();
+    for (peer, id) in peers {
+        let team = teams.iter().find(|(player, _)| *player == id).map_or(0, |(_, team)| *team);
+        host.host.send(peer, &S2C::Relaunch { rules: rules.clone(), team, epoch: host.epoch });
+    }
+    host.host.flush();
+}
+
 impl HostLink {
+    /// Send a full snapshot on the next frame.
+    pub fn resend_soon(&mut self) {
+        self.send_timer = 0.0;
+        self.full_timer = 0.0;
+    }
+
     pub fn router_status(&self) -> Option<PortStatus> {
         self.router.as_ref().and_then(|status| status.lock().ok().map(|s| s.clone()))
     }
@@ -395,6 +422,8 @@ pub struct ClientLink {
     latched: u8,
     /// Net id -> (local entity, static?).
     entities: HashMap<u32, (Entity, bool)>,
+    /// The host's relaunch count this client is in step with.
+    pub epoch: u32,
 }
 
 #[derive(Resource, Default)]
@@ -449,8 +478,9 @@ pub fn host_setup_with(rules: Rules, player_name: impl Into<String>, addr: &str,
         rendezvous: board.map(|board| Rendezvous::host(board, rendezvous::new_code())),
         rendezvous_timer: 0.0,
         departed: Vec::new(),
+        epoch: 0,
     });
-    Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0 })
+    Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0, carry: None })
 }
 
 /// A connection that is waiting for the host's welcome.
@@ -562,7 +592,7 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
     let events = joining.client.as_mut().map(|client| client.poll()).unwrap_or_default();
     for event in events {
         match event {
-            ClientEvent::Message(S2C::Welcome { player, team, rules }) => outcome = Some(Ok((player, team, rules))),
+            ClientEvent::Message(S2C::Welcome { player, team, rules, epoch }) => outcome = Some(Ok((player, team, rules, epoch))),
             ClientEvent::Message(S2C::Refused(why)) => outcome = Some(Err(why)),
             ClientEvent::Disconnected => outcome = Some(Err("HOST CLOSED THE CONNECTION".into())),
             ClientEvent::Message(_) => {}
@@ -579,7 +609,7 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
     let Some(outcome) = outcome else { return };
     commands.remove_resource::<Joining>();
     match outcome {
-        Ok((player, team, rules)) => {
+        Ok((player, team, rules, epoch)) => {
             // Take the socket out of the resource we are about to drop.
             let name = joining.name.clone();
             let Some(client) = joining.client.take() else {
@@ -599,8 +629,9 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
                 rtt: 0,
                 latched: 0,
                 entities: HashMap::default(),
+                epoch,
             });
-            pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player), local_team: team });
+            pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player), local_team: team, carry: None });
             commands.insert_resource(JoinStatus::Idle);
         }
         Err(why) => commands.insert_resource(JoinStatus::Failed(why)),
@@ -690,16 +721,16 @@ pub fn host_receive(
                         id
                     }
                 };
-                let mut name: String = name.chars().filter(|c| !c.is_control()).take(16).collect::<String>().trim().to_string();
+                let mut name = crate::versus::clean_name(&name);
                 if name.is_empty() {
                     name = format!("PLAYER {id}");
                 }
                 // Two players with the same name get told apart.
-                if everyone.iter().map(|(p, _)| &p.name).chain(players.iter().map(|(_, p, ..)| &p.name)).any(|n| *n == name) {
-                    name = format!("{} {id}", name.chars().take(13).collect::<String>());
-                }
+                let taken: Vec<&str> = everyone.iter().map(|(p, _)| p.name.as_str()).chain(players.iter().map(|(_, p, ..)| p.name.as_str())).collect();
+                let name = crate::versus::unique_name(&name, &taken);
                 let team = match &back {
-                    Some(seat) if rules.pvp => seat.team,
+                    // (Unless the lobby has switched to a hunt since: then everyone is on the squad.)
+                    Some(seat) if rules.pvp && !rules.hunt => seat.team,
                     // Terrorist hunt: every human is on the squad.
                     _ if rules.hunt => 0,
                     _ => crate::versus::team_for_newcomer(everyone.iter().map(|(p, bot)| (p.team, bot)).chain(players.iter().map(|(_, p, ..)| (p.team, false)))),
@@ -716,7 +747,7 @@ pub fn host_receive(
                     link.tokens.insert(peer, token);
                 }
                 link.full_timer = 0.0;
-                link.host.send(peer, &S2C::Welcome { player: id, team, rules: rules.clone() });
+                link.host.send(peer, &S2C::Welcome { player: id, team, rules: rules.clone(), epoch: link.epoch });
                 fx.write(FxEvent::notice(if back.is_some() { format!("{name} RECONNECTED") } else { format!("{name} JOINED") }));
             }
             HostEvent::Message(peer, message) => {
@@ -788,6 +819,10 @@ pub fn host_send(
     if link.peers.is_empty() {
         fx.clear();
         return;
+    }
+    // Settings changed in the lobby reach every guest before anything that follows them.
+    if rules.is_changed() {
+        link.host.broadcast(&S2C::Rules(rules.clone()));
     }
     let effects: Vec<FxEvent> = fx.read().cloned().collect();
     if !effects.is_empty() {
@@ -905,7 +940,7 @@ pub fn host_send(
             entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0, limbs: 0, extra: 0 });
         }
     }
-    link.host.broadcast_latest(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), full, state: state.clone(), entities }));
+    link.host.broadcast_latest(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), epoch: link.epoch, full, state: state.clone(), entities }));
 
     let peers: Vec<(PeerId, u8)> = link.peers.iter().map(|(peer, id)| (*peer, *id)).collect();
     for (peer, id) in peers {
@@ -941,21 +976,22 @@ pub fn client_receive(
     time: Res<Time>,
     mut clock: ResMut<ServerClock>,
     mut ping: ResMut<Ping>,
-    mut link: ResMut<NetLink>,
+    mut net: ResMut<NetLink>,
     content: Res<Content>,
-    rules: Res<Rules>,
+    mut rules: ResMut<Rules>,
     mut state: ResMut<MatchState>,
     mut commands: Commands,
     mut local: Query<(&mut Health, &mut Arsenal, &mut Player, &mut Transform), With<LocalPlayer>>,
     mut remotes: Query<(&mut Remote, Option<&mut Health>, Option<&mut Enemy>, Option<&mut Structure>, Option<&mut OreNode>, Option<&mut PlayerInput>, Option<&mut Player>), Without<LocalPlayer>>,
     mut fx: EventWriter<FxEvent>,
     mut next: ResMut<NextState<MatchPhase>>,
-    mut was_dead: Local<bool>,
+    (mut was_dead, mut pending): (Local<bool>, ResMut<PendingMatch>),
 ) {
-    let NetLink::Client(link) = &mut *link else {
+    let NetLink::Client(link) = &mut *net else {
         return;
     };
     let q = Quant::new(&rules);
+    let mut relaunch = None;
     let local_now = time.elapsed_secs();
     let mut events = link.client.poll();
     if link.client.silent_for() > CLIENT_TIMEOUT && link.client.is_connected() {
@@ -967,9 +1003,30 @@ pub fn client_receive(
                 link.rtt = ((local_now - sent).max(0.0) * 1000.0) as u16;
                 ping.0 = link.rtt;
             }
+            // Left over from before a relaunch (or ahead of one we have not heard about yet).
+            ClientEvent::Message(S2C::Snapshot(snapshot)) if snapshot.epoch != link.epoch => {}
+            ClientEvent::Message(S2C::Relaunch { rules, team, epoch }) => {
+                relaunch = Some((rules, team, epoch));
+                break;
+            }
+            ClientEvent::Message(S2C::Rules(new)) => {
+                // Only settings that keep the same world; anything else comes as a relaunch.
+                if new.mode == rules.mode && new.recipe == rules.recipe && new != *rules {
+                    *rules = new;
+                }
+            }
             ClientEvent::Message(S2C::Snapshot(snapshot)) => {
                 clock.observe(snapshot.time, local_now);
                 *state = snapshot.state.clone();
+                // Our own name as the host has it (after a rename, or made unique on joining).
+                if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == link.player)
+                    && entry.name != link.name
+                {
+                    link.name = entry.name.clone();
+                    if let Ok((_, _, mut player, _)) = local.single_mut() {
+                        player.name = entry.name.clone();
+                    }
+                }
                 let mut seen = bevy::platform::collections::HashSet::with_capacity(snapshot.entities.len());
                 for e in &snapshot.entities {
                     seen.insert(e.id);
@@ -1112,6 +1169,25 @@ pub fn client_receive(
                 break;
             }
         }
+    }
+    // The host is reloading the lobby: take the connection over to the new match.
+    if let Some((rules, team, epoch)) = relaunch
+        && let NetLink::Client(mut link) = std::mem::take(&mut *net)
+    {
+        link.entities.clear();
+        link.epoch = epoch;
+        link.latched = 0;
+        let (name, player) = (link.name.clone(), link.player);
+        pending.0 = Some(MatchSetup {
+            rules,
+            role: NetRole::Client,
+            link: NetLink::Client(link),
+            player_name: name,
+            local_player: Some(player),
+            local_team: team,
+            carry: Some(Carry::default()),
+        });
+        crate::session::end_match(&mut next);
     }
 }
 
