@@ -239,9 +239,10 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
     // What the team knows: fresh if seen or heard in the last few seconds.
     let fresh = intel.filter(|(_, t)| now - t < 9.0).map(|(p, _)| p);
     // A long quiet: the bot has a fair idea where someone must be (footsteps, gunfire far off).
-    let hunch = || {
+    let hunch = |rng: &mut SimRng| {
         let enemies: Vec<Vec3> = bodies.iter().filter(|b| b.team != me.team).map(|b| b.at).collect();
-        rng.0.pick(&enemies).copied().map(|p| p + Vec3::new(rng.0.range(-10.0, 10.0), 0.0, rng.0.range(-10.0, 10.0)))
+        let near = rng.0.pick(&enemies).copied();
+        near.map(|p| p + Vec3::new(rng.0.range(-10.0, 10.0), 0.0, rng.0.range(-10.0, 10.0)))
     };
     let expired = now >= bot.plan_until;
     let arrived = bot.goal.xz().distance(feet.xz()) < 3.0;
@@ -281,7 +282,7 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
     // A new plan. Who leads the team: a human if there is one, else the lowest id.
     let leader = bodies.iter().filter(|b| b.team == me.team).min_by_key(|b| (b.bot as u8, b.id)).copied();
     let leading = leader.is_none_or(|l| l.id == me.id);
-    let target = fresh.or_else(|| if now - intel.map_or(-99.0, |(_, t)| t) > 20.0 { hunch() } else { None });
+    let target = if fresh.is_some() { fresh } else if now - intel.map_or(-99.0, |(_, t)| t) > 20.0 { hunch(rng) } else { None };
     let enemy_base = map.team_spawns[(1 - me.team.min(1)) as usize].first().copied().unwrap_or(Vec2::ZERO);
     let watch = |from: Vec3, at: Vec3| yaw_to((at - from).xz());
     let flank = |bot: &mut Bot, at: Vec3| {
