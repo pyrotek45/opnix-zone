@@ -303,3 +303,33 @@ fn killstreak_aircraft_can_be_shot_down() {
     assert!(down, "the radar plane survived ten seconds of fire: {:?}", app.world().get::<Aircraft>(plane).map(|a| a.hp));
     assert_eq!(app.world().resource::<MatchState>().uav[0], 0.0, "the UAV went down with its plane");
 }
+
+#[test]
+fn scavenge_starts_with_a_pistol_and_loot_arms_you() {
+    use oz_sim::loot::{Loot, Pickup};
+    let mut app = app();
+    let mut rules = iron_town::scavenge_rules(15);
+    rules.team_size = 1;
+    start(&mut app, rules);
+    run(&mut app, 3.0);
+    let owned = |app: &mut App| {
+        let arsenal = app.world_mut().query_filtered::<&Arsenal, With<LocalPlayer>>().single(app.world()).unwrap().clone();
+        (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).collect::<Vec<_>>()
+    };
+    assert_eq!(owned(&mut app), vec![oz_core::kit::gun::PISTOL], "scavengers spawn with only a pistol");
+    let loot: Vec<(Vec3, Loot)> = app.world_mut().query::<(&Transform, &Pickup)>().iter(app.world()).map(|(t, p)| (t.translation, p.loot)).collect();
+    assert!(loot.len() > 20, "the town should be stocked: {} pickups", loot.len());
+    // Walk onto a gun: it is ours.
+    let (at, gun) = loot.iter().find_map(|(at, l)| match l {
+        Loot::Weapon { index, .. } => Some((*at, *index)),
+        _ => None,
+    }).expect("a gun somewhere");
+    place_me(&mut app, at, 0.0);
+    run(&mut app, 0.3);
+    assert!(owned(&mut app).contains(&(gun as usize)), "walking over the gun did not pick it up");
+    // Go down: the gun drops where we fell.
+    app.world_mut().query_filtered::<&mut Health, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().hp = 0.0;
+    run(&mut app, 0.3);
+    let dropped = app.world_mut().query::<(&Transform, &Pickup)>().iter(app.world()).any(|(t, p)| p.life.is_some() && t.translation.distance(at) < 2.0 && matches!(p.loot, Loot::Weapon { .. }));
+    assert!(dropped, "the fallen should drop their gun");
+}

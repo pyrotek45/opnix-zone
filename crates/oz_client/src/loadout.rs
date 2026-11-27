@@ -189,10 +189,9 @@ fn load(mut class: ResMut<Class>, settings: Res<Settings>, content: Res<Content>
         }
     }
     if content.is_changed() || career.is_changed() || class.slots.iter().any(|s| s.parts.is_none()) {
-        // Valid for this catalog, and only what this career has unlocked.
+        // Valid for this catalog. (Unlocks only bind in ranked: see `send`.)
         for slot in class.slots.iter_mut() {
             normalize(slot, &content);
-            career.enforce(slot, &content);
         }
     }
 }
@@ -220,7 +219,7 @@ fn armory_actions(
     mut dirty: ResMut<UiDirty>,
     mut settings: ResMut<Settings>,
     mut request: ResMut<FocusRequest>,
-    (content, career): (Res<Content>, Res<crate::career::Career>),
+    (content, career, rules): (Res<Content>, Res<crate::career::Career>, Res<Rules>),
     state: Res<MatchState>,
     mut players: Query<(&Player, &mut PlayerInput), With<LocalPlayer>>,
     mut orders: EventWriter<CommandEvent>,
@@ -234,11 +233,15 @@ fn armory_actions(
         return;
     };
     let edit = editable(&state);
+    let ranked = rules.ranked;
     let mut changed = false;
     let mut leave = |class: &mut Class, settings: &mut Settings, screen: &mut Screen, send: bool| {
         if send {
             let mut loadout = class.current();
-            career.enforce(&mut loadout, &content);
+            // Ranked plays with what you have unlocked; everything else, with anything.
+            if ranked {
+                career.enforce(&mut loadout, &content);
+            }
             orders.write(CommandEvent { player: player.id, command: PlayerCommand::Loadout(loadout) });
             input.weapon = loadout.primary;
         }
@@ -279,7 +282,7 @@ fn armory_actions(
                 let slot = &mut class.slots[active];
                 let mut parts = slot.parts.unwrap_or_default();
                 match tab {
-                    0 | 1 if is_gun(&content, *item) && !career.gun_unlocked(*item) => {
+                    0 | 1 if is_gun(&content, *item) && rules.ranked && !career.gun_unlocked(*item) => {
                         sounds.write(crate::fx::PlaySfx::ui(Sfx::UiDeny));
                         continue;
                     }
@@ -344,7 +347,7 @@ fn armory_actions(
                     continue;
                 };
                 // Only what this gun's kills have unlocked.
-                let choices: Vec<_> = options(def, &content.attachments, *part as usize).into_iter().filter(|(i, ..)| career.part_unlocked(def, &content, weapon, *part as usize, *i as u8)).collect();
+                let choices: Vec<_> = options(def, &content.attachments, *part as usize).into_iter().filter(|(i, ..)| !rules.ranked || career.part_unlocked(def, &content, weapon, *part as usize, *i as u8)).collect();
                 if choices.len() > 1 {
                     let at = choices.iter().position(|(i, ..)| *i == parts[*part as usize] as usize).unwrap_or(0) as i32;
                     parts[*part as usize] = choices[(at + step).rem_euclid(choices.len() as i32) as usize].0 as u8;
@@ -421,6 +424,13 @@ fn hold_primary(class: Res<Class>, rules: Res<Rules>, mut players: Query<(&Healt
     let respawned = health.alive() && !*was_alive;
     *was_alive = health.alive();
     let primary = class.current().primary;
+    // Scavenge: hold whatever you actually have.
+    if rules.loot {
+        if !arsenal.owns(input.weapon as usize) {
+            input.weapon = arsenal.current;
+        }
+        return;
+    }
     if rules.pvp && (respawned || !arsenal.owns(input.weapon as usize)) && arsenal.owns(primary as usize) {
         input.weapon = primary;
     }
@@ -491,13 +501,17 @@ fn slot_value(content: &Content, loadout: &Loadout, tab: u8) -> String {
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Screen>, class: Res<Class>, controls: Res<Controls>, content: Option<Res<Content>>, state: Option<Res<MatchState>>, career: Res<crate::career::Career>) {
+pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Screen>, class: Res<Class>, controls: Res<Controls>, content: Option<Res<Content>>, state: Option<Res<MatchState>>, career: Res<crate::career::Career>, rules: Option<Res<Rules>>) {
     let (Screen::Loadout, true, Some(content), Some(state)) = (&*screen, dirty.0, content, state) else {
         return;
     };
     let edit = editable(&state);
     let page = if edit { class.page } else { Page::Classes };
     let c = class.slots[class.active];
+    // Locks only show (and only bind) in ranked; everywhere else everything is open.
+    let ranked = rules.is_some_and(|r| r.ranked);
+    let career = if ranked { career.clone() } else { crate::career::Career { xp: u32::MAX / 4, kills: vec![u32::MAX / 4; content.weapons.len()], ..career.clone() } };
+    let career = &career;
     let mut order = Order::default();
     let order = &mut order;
     let gun_page = matches!(page, Page::Pick | Page::Parts) && class.tab <= 1;

@@ -78,7 +78,7 @@ impl Plugin for TacticalPlugin {
         app.init_resource::<Hands>()
             .add_systems(OnEnter(MatchPhase::Active), (spawn, |mut hands: ResMut<Hands>| *hands = Hands { since_throw: 9.0, since_cancel: 9.0, since_melee: 9.0, ..default() }))
             .add_systems(Update, track_hands.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, (update, minimap).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, ((update, loot_prompt).chain(), minimap, dress_loot, spin_loot).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -444,5 +444,89 @@ fn minimap(
             node.left = left;
             node.top = top;
         }
+    }
+}
+
+/// Turns a loot pickup's model slowly (the pickup itself is placed by the network).
+#[derive(Component)]
+pub struct LootSpin;
+
+/// Models for scavenge loot: the real gun with its parts, or a box, plates or a crate.
+fn dress_loot(
+    mut commands: Commands,
+    art: Res<crate::art::Art>,
+    content: Res<Content>,
+    mut guns: ResMut<crate::avatar::GunCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    added: Query<(Entity, &oz_sim::loot::Pickup), Added<oz_sim::loot::Pickup>>,
+) {
+    use oz_sim::loot::Loot;
+    for (entity, pickup) in &added {
+        let baked = match pickup.loot {
+            Loot::Weapon { index, parts, .. } => guns.get(&art, &mut meshes, &content, index, parts),
+            Loot::Ammo => Some(art.bake(&BlockModel::new().cube(Paint::Green, [0.0, 0.18, 0.0], [0.55, 0.32, 0.32]).cube(Paint::Gold, [0.0, 0.36, 0.0], [0.3, 0.05, 0.12]).cube(Paint::Dark, [0.0, 0.18, -0.165], [0.4, 0.08, 0.01]), &mut meshes)),
+            Loot::Armor => Some(art.bake(&BlockModel::new().cube(Paint::Steel, [0.0, 0.32, 0.0], [0.5, 0.6, 0.12]).cube(Paint::Dark, [0.0, 0.32, -0.07], [0.36, 0.42, 0.02]).cube(Paint::Aether, [0.0, 0.5, -0.085], [0.2, 0.05, 0.01]), &mut meshes)),
+            Loot::Gear(_) => Some(art.bake(&BlockModel::new().cube(Paint::Rust, [0.0, 0.15, 0.0], [0.45, 0.3, 0.45]).cylinder(Paint::Iron, [0.0, 0.38, 0.0], [0.14, 0.18, 0.14]).cube(Paint::Gold, [0.0, 0.15, -0.23], [0.3, 0.06, 0.01]), &mut meshes)),
+        };
+        commands.entity(entity).insert(Visibility::Inherited);
+        let lift = if matches!(pickup.loot, Loot::Weapon { .. }) { 0.55 } else { 0.05 };
+        let spin = commands.spawn((LootSpin, Transform::from_xyz(0.0, lift, 0.0), Visibility::Inherited, ChildOf(entity))).id();
+        if let Some(baked) = baked {
+            art.spawn(&mut commands, spin, &baked);
+        }
+        // A glowing ring on the ground so loot reads at a glance.
+        commands.spawn((
+            Mesh3d(art.primitive(Shape::Cylinder)),
+            MeshMaterial3d(art.paint(if matches!(pickup.loot, Loot::Weapon { .. }) { Paint::Glow } else { Paint::Aether })),
+            Transform::from_xyz(0.0, 0.02, 0.0).with_scale(Vec3::new(0.9, 0.02, 0.9)),
+            bevy::pbr::NotShadowCaster,
+            ChildOf(entity),
+        ));
+    }
+}
+
+fn spin_loot(time: Res<Time>, mut spins: Query<&mut Transform, With<LootSpin>>) {
+    let t = time.elapsed_secs();
+    for mut transform in &mut spins {
+        transform.rotation = Quat::from_rotation_y(t * 1.2);
+    }
+}
+
+/// Scavenge: near a gun with both hands full, Use swaps for it.
+fn loot_prompt(
+    controls: Res<Controls>,
+    settings: Res<Settings>,
+    screen: Res<Screen>,
+    content: Res<Content>,
+    rules: Res<Rules>,
+    players: Query<(&Player, &Transform, &Arsenal, &Health), With<LocalPlayer>>,
+    pickups: Query<(&Transform, &oz_sim::loot::Pickup)>,
+    mut orders: EventWriter<CommandEvent>,
+    mut hand_text: Query<&mut Text, (With<HandText>, Without<StreakText>, Without<HuntText>)>,
+    mut meter: Query<&mut Visibility, (With<HandMeter>, Without<StreakPanel>)>,
+) {
+    use oz_sim::loot::Loot;
+    let Ok((me, transform, arsenal, health)) = players.single() else { return };
+    if !rules.loot || !health.alive() || *screen != Screen::None {
+        return;
+    }
+    let owned = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).count();
+    let near = pickups
+        .iter()
+        .filter(|(at, _)| (at.translation - transform.translation).xz().length() < 1.4 && (at.translation.y - transform.translation.y).abs() < 1.6)
+        .find_map(|(_, p)| match p.loot {
+            Loot::Weapon { index, .. } if owned >= 2 && !arsenal.owns(index as usize) => content.weapons.get(index as usize).map(|d| d.name),
+            _ => None,
+        });
+    let Some(name) = near else { return };
+    if controls.interact {
+        orders.write(CommandEvent { player: me.id, command: PlayerCommand::Pickup });
+    }
+    let key = if controls.gamepad { "X".to_string() } else { settings.bindings.label(Action::Interact) };
+    if let Ok(mut text) = hand_text.single_mut() {
+        text.0 = format!("[{key}] SWAP FOR {name}");
+    }
+    if let Ok(mut visibility) = meter.single_mut() {
+        *visibility = Visibility::Inherited;
     }
 }

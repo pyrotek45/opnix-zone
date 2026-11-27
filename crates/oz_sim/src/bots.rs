@@ -168,7 +168,7 @@ pub fn drive_bots(
     mut players: Query<(Entity, Option<&mut Bot>, &Player, &Transform, &mut PlayerInput, &Health, &Arsenal, Option<&mut crate::combat::Stunned>, &crate::player::Mover)>,
     mut noises: ResMut<Noises>,
     solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Player>)>,
-    smokes: Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>,
+    (smokes, pickups): (Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>, Query<(&Transform, &crate::loot::Pickup), Without<Player>>),
 ) {
     let dt = sim_dt(&time);
     // Everyone a bot might fight, humans and bots alike.
@@ -325,6 +325,17 @@ pub fn drive_bots(
                     let (x, z) = (rng.0.range(-40.0, 40.0), rng.0.range(-40.0, 40.0));
                     bot.goal = Vec3::new(x, map.height(x, z), z);
                     bot.path.clear();
+                }
+            } else if rules.loot
+                && bot.target.is_none()
+                && (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).count() < 2
+                && let Some(gun) = crate::loot::nearest_gun(feet, pickups.iter())
+            {
+                // Scavenge: a pistol is not enough - go and get a real gun.
+                if bot.goal.distance(gun) > 1.0 || bot.path.is_empty() {
+                    bot.goal = gun;
+                    bot.path.clear();
+                    bot.stuck = 0.0;
                 }
             } else if bot.target.is_none() && (bot.path.is_empty() || bot.goal.distance(feet) < 4.0 || bot.stuck > 1.5) {
                 // Hunt: head for an enemy's last position, or sweep through the town.

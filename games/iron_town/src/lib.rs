@@ -67,6 +67,7 @@ pub fn deathmatch_rules(seed: u64) -> Rules {
         score_limit: 25,
         hunt: false,
         ranked: false,
+        loot: false,
     }
 }
 
@@ -82,6 +83,11 @@ pub fn ranked_rules(seed: u64) -> Rules {
     Rules { ranked: true, team_size: 4, ..deathmatch_rules(seed) }
 }
 
+/// Scavenge: team deathmatch where you spawn with a pistol and loot the town for the rest.
+pub fn scavenge_rules(seed: u64) -> Rules {
+    Rules { loot: true, team_size: 3, score_limit: 30, ..deathmatch_rules(seed) }
+}
+
 pub struct IronTownPlugin;
 
 impl Plugin for IronTownPlugin {
@@ -89,6 +95,7 @@ impl Plugin for IronTownPlugin {
         let planned = |name, blurb| ModeDef { name, blurb, playable: false, rules: deathmatch_rules, catalog };
         app.insert_resource(Modes(vec![
             ModeDef { name: "TEAM DEATHMATCH", blurb: "Two squads, one town. Bots fill empty slots. First to the score limit wins.", playable: true, rules: deathmatch_rules, catalog },
+            ModeDef { name: "SCAVENGE", blurb: "Spawn with a pistol. Guns, ammo, gear and armour lie around town; the fallen drop theirs. Keep fighting to stay armed.", playable: true, rules: scavenge_rules, catalog },
             ModeDef { name: "RANKED TEAM DEATHMATCH", blurb: "Team deathmatch for rank: wins climb from bronze to diamond, losses cost points.", playable: true, rules: ranked_rules, catalog },
             ModeDef {
                 name: "TERRORIST HUNT",

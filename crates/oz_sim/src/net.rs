@@ -196,9 +196,11 @@ mod kind {
     pub const PROJECTILE: u8 = 2;
     pub const STRUCTURE: u8 = 3;
     pub const ORE: u8 = 4;
+    /// Scavenge loot on the ground; sent every snapshot so a taken one vanishes at once.
+    pub const PICKUP: u8 = 5;
 
     pub fn is_static(kind: u8) -> bool {
-        kind >= STRUCTURE
+        kind == STRUCTURE || kind == ORE
     }
 }
 
@@ -766,7 +768,7 @@ pub fn host_send(
     state: Res<MatchState>,
     players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput)>,
     enemies: Query<(&NetId, &Enemy, &Transform, &Health)>,
-    (shots, mines, drones): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>, Query<(&NetId, &crate::killstreak::Aircraft, &Transform)>),
+    (shots, mines, drones, pickups): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>, Query<(&NetId, &crate::killstreak::Aircraft, &Transform)>, Query<(&NetId, &crate::loot::Pickup, &Transform)>),
     structures: Query<(&NetId, &Structure, &Transform, &Health)>,
     ores: Query<(&NetId, &OreNode, &Transform)>,
     changed: Query<(), Or<(Added<Structure>, Added<OreNode>)>>,
@@ -862,6 +864,11 @@ pub fn host_send(
             flags: 0,
             limbs: 0,
         });
+    }
+    // Loot: sub = what it is, aux = which gun or gear, a gun's seven parts packed three bits each into hp / limbs / flags.
+    for (id, pickup, transform) in &pickups {
+        let (sub, aux, packed) = crate::loot::encode(&pickup.loot);
+        entities.push(EntState { id: id.0, kind: kind::PICKUP, sub, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: packed as u8, aux, flags: (packed >> 16) as u8, limbs: (packed >> 8) as u8 });
     }
     // Mines travel as projectiles that never move.
     for (id, _, transform) in &mines {
@@ -1038,6 +1045,10 @@ pub fn client_receive(
                             let mut structure = Structure::new(e.sub as u16, None);
                             structure.shots = e.aux;
                             commands.spawn((base, structure, Health { hp: def.hp * hp, max: def.hp }, Solid { half: crate::structures::oriented_half(def.half, yaw) })).id()
+                        }
+                        kind::PICKUP => {
+                            let packed = e.hp as u32 | (e.limbs as u32) << 8 | (e.flags as u32) << 16;
+                            commands.spawn((base, crate::loot::Pickup { loot: crate::loot::decode(e.sub, e.aux, packed), life: None })).id()
                         }
                         _ => commands.spawn((base, OreNode { ore: Ore::from_index(e.sub), amount: hp, max: 1.0 })).id(),
                     };

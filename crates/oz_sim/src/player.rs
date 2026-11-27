@@ -865,6 +865,9 @@ pub fn respawn(
     } else if rules.pvp {
         refill(content, player, arsenal);
     }
+    if rules.loot {
+        crate::loot::strip(content, player, arsenal);
+    }
     health.max = max_health(content, state, player);
     health.hp = health.max;
     transform.translation = spawn_point(map, player.id, rules.pvp.then_some(player.team));

@@ -69,6 +69,9 @@ pub struct Rules {
     /// Ranked playlist: wins and losses move each player's rank (kept on their own machine).
     #[serde(default)]
     pub ranked: bool,
+    /// Scavenge: spawn with a pistol, find everything else on the map (see `loot`).
+    #[serde(default)]
+    pub loot: bool,
 }
 
 /// The replicated heart of a match. Small enough to send with every snapshot.
@@ -186,6 +189,8 @@ pub enum PlayerCommand {
     UseStreak,
     /// Open or close the door with this index (see `breakables`).
     Door(u16),
+    /// Scavenge: swap the gun in hand for the one on the floor here.
+    Pickup,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
