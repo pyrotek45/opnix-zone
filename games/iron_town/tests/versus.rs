@@ -691,6 +691,9 @@ fn the_host_switches_mode_and_map_from_the_lobby() {
     assert_eq!(teams(&mut app), [(1, 1), (0, 2)]);
 
     // Terrorist hunt, one step back from team deathmatch: the same town, held by hostiles.
+    // Domination and search and destroy sit between terrorist hunt and team deathmatch.
+    lobby(&mut app, LobbyAction::Mode(-1));
+    lobby(&mut app, LobbyAction::Mode(-1));
     lobby(&mut app, LobbyAction::Mode(-1));
     assert_eq!(app.world().resource::<MatchState>().next_mode, 3, "the pick shows at once");
     assert_eq!(rules_of(&app).mode, 0, "and applies once it settles");
@@ -717,6 +720,9 @@ fn the_host_switches_mode_and_map_from_the_lobby() {
     assert!(tower.hunt, "changing the map keeps the mode");
 
     // Back to team deathmatch in the suburbs: the hostiles are gone, bots fill two teams again.
+    // Domination and search and destroy sit between terrorist hunt and team deathmatch.
+    lobby(&mut app, LobbyAction::Mode(1));
+    lobby(&mut app, LobbyAction::Mode(1));
     lobby(&mut app, LobbyAction::Mode(1));
     for _ in 0..fixed_map(Layout::OfficeTower) - 1 {
         lobby(&mut app, LobbyAction::Map(-1));
@@ -863,6 +869,9 @@ fn host_and_guest_change_maps_modes_and_names_together() {
     assert!(matches!(client.world().resource::<NetLink>(), NetLink::Client(_)), "the guest stays connected");
 
     // Terrorist hunt: every human joins the squad, hostiles hold the station.
+    // Domination and search and destroy sit between terrorist hunt and team deathmatch.
+    lobby(&mut host, LobbyAction::Mode(-1));
+    lobby(&mut host, LobbyAction::Mode(-1));
     lobby(&mut host, LobbyAction::Mode(-1));
     pump(&mut host, &mut client, "both switch to the hunt", |host, client| {
         rules_of(host).hunt && rules_of(client) == rules_of(host) && client.world().resource::<Map>().recipe == host.world().resource::<Map>().recipe && local_player(client).2 == 0

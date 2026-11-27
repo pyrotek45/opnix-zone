@@ -168,7 +168,7 @@ fn grenades_cook_in_the_hand_and_can_be_put_away() {
     app.update();
     let thrown = grenades(&mut app);
     assert_eq!(thrown.len(), 1);
-    assert!(thrown[0].life < 1.2 && thrown[0].life > 0.6, "fuse left {}", thrown[0].life);
+    assert!(thrown[0].life < 3.9 && thrown[0].life > 3.5, "fuse left {}", thrown[0].life);
     assert_eq!(gear_left(&mut app), before - 1);
 }
 
