@@ -63,8 +63,9 @@ const REACH: f32 = 1.4;
 /// Armour raises maximum health to this.
 pub const ARMORED: f32 = 150.0;
 
+/// Loot runs in scavenge, and in terrorist hunt (fallen hostiles drop their guns and ammo).
 pub fn scavenge(rules: Option<Res<Rules>>) -> bool {
-    rules.is_some_and(|rules| rules.loot)
+    rules.is_some_and(|rules| rules.loot || rules.hunt)
 }
 
 /// What appears at a spot: mostly guns (with a random set of parts), then ammo, gear, armour.
@@ -94,8 +95,9 @@ fn roll(content: &Content, rng: &mut SimRng) -> Loot {
 }
 
 /// Authority: lays the loot spots out once per match (after the lobby).
-pub fn place_spots(mut commands: Commands, map: Res<Map>, statics: Res<Statics>, mut rng: ResMut<SimRng>, spots: Query<(), With<LootSpot>>, state: Res<MatchState>) {
-    if !spots.is_empty() || state.phase == Phase::Lobby {
+pub fn place_spots(mut commands: Commands, map: Res<Map>, statics: Res<Statics>, mut rng: ResMut<SimRng>, spots: Query<(), With<LootSpot>>, state: Res<MatchState>, rules: Res<Rules>) {
+    // Loot lying about town is scavenge only; hunt just has what hostiles drop.
+    if !rules.loot || !spots.is_empty() || state.phase == Phase::Lobby {
         return;
     }
     for _ in 0..SPOTS {

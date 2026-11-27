@@ -14,7 +14,7 @@ use crate::{
     session::{Content, Map, Statics, player_bundle},
     sim_dt,
     objective::Objective,
-    state::{MatchState, Phase, Rules, SimRng},
+    state::{FxEvent, MatchState, Phase, Rules, SimRng},
     structures::Structure,
     weapons::obstruction,
 };
@@ -555,7 +555,7 @@ pub fn drive_bots(
     mut players: Query<(Entity, Option<&mut Bot>, &Player, &Transform, &mut PlayerInput, &Health, &Arsenal, Option<&mut crate::combat::Stunned>, &crate::player::Mover)>,
     mut noises: ResMut<Noises>,
     solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Player>)>,
-    (smokes, pickups): (Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>, Query<(&Transform, &crate::loot::Pickup), Without<Player>>),
+    (smokes, pickups, mut shots): (Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>, Query<(&Transform, &crate::loot::Pickup), Without<Player>>, EventReader<FxEvent>),
     mut leaves: Local<(u64, Vec<(Vec3, f32)>)>,
     mut intel: Local<TeamIntel>,
 ) {
@@ -599,6 +599,15 @@ pub fn drive_bots(
         }
     }
     let mut shouts: Vec<Noise> = Vec::new();
+    // Rounds fired this frame (who by, from where, to where): sentries notice fire aimed at them.
+    let teams: Vec<(u8, u8)> = players.iter().map(|(_, _, p, ..)| (p.id, p.team)).collect();
+    let fired: Vec<(u8, Vec3, Vec3)> = shots
+        .read()
+        .filter_map(|e| match e {
+            FxEvent::Shot { by, from, to, .. } => teams.iter().find(|(id, _)| id == by).map(|(_, team)| (*team, *from, *to)),
+            _ => None,
+        })
+        .collect();
     // Gunfire gives the shooter away to the other team.
     for noise in heard_now.iter().filter(|n| !n.shout && n.radius > 40.0) {
         intel.0[(1 - noise.team.min(1)) as usize] = Some((noise.at, now));
@@ -629,9 +638,27 @@ pub fn drive_bots(
                     }
                 }
             }
-            // Hit by someone it never saw: on edge, looking everywhere.
-            if health.hp < bot.last_hp - 0.5 {
+            // Shot at: a round cracking past or smacking in close gives the shooter away.
+            let chest = feet + Vec3::Y * 1.1;
+            let near_miss = fired.iter().filter(|(team, ..)| *team != me.team).find(|(_, from, to)| {
+                let span = *to - *from;
+                let along = ((chest - *from).dot(span) / span.length_squared().max(1e-4)).clamp(0.0, 1.0);
+                (*from + span * along).distance(chest) < 3.0
+            });
+            let hit = health.hp < bot.last_hp - 0.5;
+            // Hit by someone it never saw: it knows roughly where from (the nearest enemy).
+            let source = near_miss.map(|(_, from, _)| *from).or_else(|| {
+                hit.then(|| fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet)))).flatten()
+            });
+            if let Some(from) = source {
+                let fresh = bot.alert <= 0.0 || bot.heard.is_none();
                 bot.alert = 15.0;
+                bot.heard = Some(from);
+                bot.patrol = 0.0;
+                // It calls for help, now and then: friends within earshot come hunting too.
+                if fresh && rng.0.chance(0.6) {
+                    shouts.push(Noise { at: from, radius: 35.0, team: me.team, shout: true });
+                }
             }
             bot.last_hp = health.hp;
         }

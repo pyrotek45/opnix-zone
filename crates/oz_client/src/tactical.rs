@@ -588,7 +588,7 @@ fn loot_prompt(
 ) {
     use oz_sim::loot::Loot;
     let Ok((me, transform, arsenal, health)) = players.single() else { return };
-    if !rules.loot || !health.alive() || *screen != Screen::None {
+    if !(rules.loot || rules.hunt) || !health.alive() || *screen != Screen::None {
         return;
     }
     let owned = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).count();

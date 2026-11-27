@@ -343,7 +343,7 @@ pub fn break_things(
         fx.write(FxEvent::Explosion { at, radius });
         splash(&grid, &mut hits, at, radius, damage, (by != 255).then_some(by), None);
         if by != 255 {
-            blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, radius, damage, 255, by, None);
+            blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, radius, damage, 255, by, None, false);
         } else {
             // Nobody to credit: it just hurts whoever is close.
             for (transform, mut health, mut player) in &mut players {

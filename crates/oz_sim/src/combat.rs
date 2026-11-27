@@ -354,11 +354,14 @@ pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
     team: u8,
     owner: u8,
     skip: Option<u8>,
+    from_above: bool,
 ) {
     let name = state.roster.iter().find(|r| r.id == owner).map_or(String::new(), |r| r.name.clone());
     for (target, mut health, mut player) in players.iter_mut() {
         let distance = (target.translation + Vec3::Y).distance(at);
-        if player.team != team && Some(player.id) != skip && distance < radius && !sheltered(statics, at, target.translation) {
+        // Indoors is safe from what falls out of the sky (the roof takes it).
+        let roofed = from_above && at.y > target.translation.y + 2.0 && statics.raycast(target.translation + Vec3::Y * 1.7, Vec3::Y, 60.0).is_some();
+        if player.team != team && Some(player.id) != skip && distance < radius && !roofed && !sheltered(statics, at, target.translation) {
             let amount = damage * (1.0 - 0.7 * distance / radius) * blast_scale(content, &player);
             player.last_hit = crate::player::part::BLAST;
             // A big blast tears a leg off anyone it does not kill outright.
@@ -464,7 +467,9 @@ pub fn fly_projectiles(
                     }
                 }
                 if let (Some(at), true) = (impact, harmful && shot.splash > 0.0) {
-                    blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, shot.splash, shot.damage, shot.team, owner, direct);
+                    // Bombs and shells from the sky cannot reach anyone with a roof over them.
+                    let from_above = matches!(shot.look, ShotLook::Bomb | ShotLook::Shell);
+                    blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, shot.splash, shot.damage, shot.team, owner, direct, from_above);
                 }
             }
         } else {
@@ -565,7 +570,7 @@ pub fn run_mines(
         commands.entity(entity).despawn();
         fx.write(FxEvent::Explosion { at, radius: mine.radius });
         splash(&grid, &mut hits, at, mine.radius, mine.damage, Some(mine.owner), None);
-        blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, mine.radius, mine.damage, mine.team, mine.owner, None);
+        blast_players(&statics, &content, &mut state, &mut fx, &mut players, at, mine.radius, mine.damage, mine.team, mine.owner, None, false);
     }
 }
 
