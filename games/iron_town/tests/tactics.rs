@@ -402,3 +402,31 @@ fn vaulting_from_a_crouch_in_cover() {
     }
     assert!(tried > 0, "no barrier to try");
 }
+
+#[test]
+fn bots_jump_only_standing_and_never_get_down_in_mid_air() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(6);
+    rules.team_size = 4;
+    start(&mut app, rules);
+    let (mut jumps, mut rising) = (0, 0);
+    for _ in 0..(90.0 / FRAME) as usize {
+        app.update();
+        let world = app.world_mut();
+        for (player, input, mover, health) in world.query_filtered::<(&Player, &PlayerInput, &Mover, &Health), With<Bot>>().iter(world) {
+            if !health.alive() {
+                continue;
+            }
+            if input.held(buttons::JUMP) {
+                jumps += 1;
+                assert_eq!(input.stance, stance::STAND, "{} pressed jump while crouched or prone", player.name);
+            }
+            // Rising off the ground: a jump in progress.
+            if !mover.grounded && mover.vault.is_none() && !mover.climbing && mover.vertical > 0.0 {
+                rising += 1;
+                assert_eq!(input.stance, stance::STAND, "{} went low in mid-jump", player.name);
+            }
+        }
+    }
+    println!("{jumps} jump presses, {rising} rising bot-frames checked");
+}

@@ -575,6 +575,11 @@ pub const STANCE_HOLD: f32 = 0.3;
 pub fn limit_stance(time: Res<Time>, mut players: Query<(&mut PlayerInput, &mut Mover, &Health, &Player)>) {
     let dt = sim_dt(&time);
     for (mut input, mut mover, health, player) in &mut players {
+        // Nobody drops to a crouch or flat on their front in mid-jump: the stance waits for
+        // the landing. (Vaults set their own stance; ladders count as footing.)
+        if health.alive() && mover.vault.is_none() && !mover.grounded && !mover.climbing {
+            input.stance = mover.stance_was;
+        }
         // No legs: crawl. One leg: no standing up.
         if health.alive() {
             if player.lost & limb::LEGS == limb::LEGS {
