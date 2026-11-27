@@ -301,7 +301,7 @@ const ARMORY_PIVOT: Vec3 = Vec3::new(0.0, 3001.2, 0.0);
 /// The armory camera at a zoom (0 whole gun .. 1 close up): the gun stays a third of the
 /// screen right of centre, in the space the panels leave.
 fn armory_camera(zoom: f32) -> Transform {
-    let distance = 2.5 + (0.75 - 2.5) * zoom.clamp(0.0, 1.0);
+    let distance = 2.5 + (1.0 - 2.5) * zoom.clamp(0.0, 1.0);
     let side = 0.24 * distance;
     Transform::from_translation(ARMORY_PIVOT + Vec3::new(-side, 0.12 * distance, distance)).looking_at(ARMORY_PIVOT + Vec3::new(-side, 0.0, 0.0), Vec3::Y)
 }

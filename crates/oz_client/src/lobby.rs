@@ -121,6 +121,12 @@ fn card(parent: &mut ChildSpawnerCommands, entry: &RosterEntry, me: u8, show_sco
 }
 
 fn roster_column(parent: &mut ChildSpawnerCommands, team: u8, state: &MatchState, me: u8, show_score: bool, left: bool) {
+    roster_panel(parent, team, state, me, show_score, Some(left));
+}
+
+/// One team's list. `side` places it at the top left or right of the screen; `None` lets
+/// the parent stack it.
+fn roster_panel(parent: &mut ChildSpawnerCommands, team: u8, state: &MatchState, me: u8, show_score: bool, side: Option<bool>) {
     let mut node = Node {
         position_type: PositionType::Absolute,
         top: Val::Px(110.0),
@@ -130,10 +136,14 @@ fn roster_column(parent: &mut ChildSpawnerCommands, team: u8, state: &MatchState
         padding: UiRect::all(Val::Px(10.0)),
         ..default()
     };
-    if left {
-        node.left = Val::Px(24.0);
-    } else {
-        node.right = Val::Px(24.0);
+    match side {
+        Some(true) => node.left = Val::Px(24.0),
+        Some(false) => node.right = Val::Px(24.0),
+        None => {
+            node.position_type = PositionType::Relative;
+            node.top = Val::Auto;
+            node.width = Val::Px(340.0);
+        }
     }
     parent.spawn((node, BackgroundColor(Color::srgba(0.02, 0.04, 0.06, 0.8)))).with_children(|column| {
         column.spawn(ui::row(10.0)).with_children(|head| {
@@ -175,17 +185,18 @@ pub fn build_lobby(
     let order = &mut order;
 
     ui::root(&mut commands, 0.0).with_children(|root| {
+        // Left: what the match is, then everything you can do, as one list.
         root.spawn(Node {
             position_type: PositionType::Absolute,
             top: Val::Px(18.0),
-            width: Val::Percent(100.0),
+            left: Val::Px(24.0),
             flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
+            align_items: AlignItems::Start,
             row_gap: Val::Px(4.0),
             ..default()
         })
         .with_children(|top| {
-            ui::label(top, mode, 34.0, ui::TEXT);
+            ui::label(top, mode, 36.0, ui::TEXT);
             let n = state.team_size;
             let place = match rules.recipe.layout {
                 oz_core::worldgen::Layout::Town => {
@@ -201,17 +212,29 @@ pub fn build_lobby(
             };
             ui::label(top, line, 15.0, ui::ACCENT);
         });
-        roster_column(root, 0, &state, me.id, false, true);
-        if !rules.hunt {
-            roster_column(root, 1, &state, me.id, false, false);
-        }
+        // Right: both teams, one above the other.
+        root.spawn(Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(18.0),
+            right: Val::Px(24.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(12.0),
+            ..default()
+        })
+        .with_children(|teams| {
+            roster_panel(teams, 0, &state, me.id, false, None);
+            if !rules.hunt {
+                roster_panel(teams, 1, &state, me.id, false, None);
+            }
+        });
 
         root.spawn(Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(20.0),
-            width: Val::Percent(100.0),
+            top: Val::Px(110.0),
+            left: Val::Px(24.0),
+            width: Val::Px(420.0),
             flex_direction: FlexDirection::Column,
-            align_items: AlignItems::Center,
+            align_items: AlignItems::Start,
             row_gap: Val::Px(8.0),
             ..default()
         })
@@ -228,12 +251,12 @@ pub fn build_lobby(
             ui::label(bottom, status, 18.0, if state.countdown > 0.0 { ui::GOOD } else { ui::TEXT });
             // One list down the middle: actions, then (for the host) the match settings.
             // A on a setting starts editing it (left / right).
-            const WIDTH: f32 = 380.0;
+            const WIDTH: f32 = 420.0;
             let time = oz_sim::versus::TIME_MODES[(state.time_mode as usize).min(3)];
             let weather = oz_sim::versus::WEATHER_MODES[(state.weather_mode as usize).min(5)];
             let n = state.team_size;
             let size = if rules.hunt { format!("SQUAD  <  {n}  >") } else { format!("TEAMS  <  {n} V {n}  >") };
-            bottom.spawn(ui::column(6.0)).with_children(|list| {
+            bottom.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), ..default() }).with_children(|list| {
                 let mut at = 0;
                 let mut item = |list: &mut ChildSpawnerCommands, text: String, act: Act, left: Option<Act>| {
                     ui::grid_button(list, order, text, act, left, Val::Px(WIDTH), 0, at);

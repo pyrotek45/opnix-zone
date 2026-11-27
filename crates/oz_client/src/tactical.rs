@@ -552,29 +552,55 @@ fn loot_prompt(
     actions.0.insert(0, (key, format!("SWAP FOR {name}")));
 }
 
+/// A flat up-pointing chevron in the XY plane (seen from both sides): `width` across the
+/// tips, `height` from tips to point, arms `thick` deep.
+fn chevron_mesh(width: f32, height: f32, thick: f32) -> Mesh {
+    use bevy::render::{mesh::Indices, render_asset::RenderAssetUsages, render_resource::PrimitiveTopology};
+    let half = width / 2.0;
+    let inner = half * (height - thick) / height;
+    let base = -height / 2.0;
+    let outline = [[0.0, height / 2.0], [half, base], [inner, base], [0.0, height / 2.0 - thick], [-inner, base], [-half, base]];
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    for normal in [Vec3::Z, Vec3::NEG_Z] {
+        for [x, y] in outline {
+            positions.push([x, y, 0.0]);
+            normals.push(normal.to_array());
+        }
+    }
+    // A fan from the point, once facing each way.
+    let mut indices = Vec::new();
+    for i in 1..5u32 {
+        indices.extend([0, i + 1, i]);
+        indices.extend([6, 6 + i, 6 + i + 1]);
+    }
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_indices(Indices::U32(indices))
+}
+
 /// A glowing chevron bobbing over the ledge ahead: "you can go over this".
 fn point_at_ledge(
     mut commands: Commands,
     time: Res<Time>,
     art: Res<crate::art::Art>,
     ledge: Res<Ledge>,
+    mut meshes: ResMut<Assets<Mesh>>,
     camera: Query<&GlobalTransform, With<crate::view::WorldCamera>>,
     mut arrow: Query<(&mut Transform, &mut Visibility), With<LedgeArrow>>,
 ) {
     let Ok((mut transform, mut visibility)) = arrow.single_mut() else {
-        // Two bars leaning into a down-pointing V.
-        commands
-            .spawn((MatchEntity, LedgeArrow, Transform::default(), Visibility::Hidden))
-            .with_children(|v| {
-                for side in [-1.0f32, 1.0] {
-                    v.spawn((
-                        Mesh3d(art.primitive(Shape::Cube)),
-                        MeshMaterial3d(art.paint(Paint::Glow)),
-                        Transform::from_xyz(0.07 * side, 0.07, 0.0).with_rotation(Quat::from_rotation_z(0.8 * side)).with_scale(Vec3::new(0.045, 0.2, 0.02)),
-                        bevy::pbr::NotShadowCaster,
-                    ));
-                }
-            });
+        // One flat chevron, pointing up, with a clean sharp tip.
+        commands.spawn((
+            MatchEntity,
+            LedgeArrow,
+            Mesh3d(meshes.add(chevron_mesh(0.13, 0.075, 0.03))),
+            MeshMaterial3d(art.paint(Paint::Glow)),
+            Transform::default(),
+            Visibility::Hidden,
+            bevy::pbr::NotShadowCaster,
+        ));
         return;
     };
     let wanted = if ledge.0.is_some() { Visibility::Inherited } else { Visibility::Hidden };
@@ -583,7 +609,7 @@ fn point_at_ledge(
     }
     let Some(at) = ledge.0 else { return };
     let bob = (time.elapsed_secs() * 4.0).sin() * 0.05;
-    transform.translation = at + Vec3::Y * (0.35 + bob);
+    transform.translation = at + Vec3::Y * (0.3 + bob);
     // Always faces the camera.
     if let Ok(eye) = camera.single() {
         let to = eye.translation() - transform.translation;
