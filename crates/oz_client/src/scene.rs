@@ -306,6 +306,6 @@ fn day_night(
     let lamp_on = lamp.on;
     if let Ok(mut lamp) = lamps.single_mut() {
         // Switched with the d-pad (hold down) / H; when on it also lights dark rooms by day.
-        lamp.intensity = if lamp_on { (1_800_000.0 * (1.0 - day)).max(500_000.0) } else { 0.0 };
+        lamp.intensity = if lamp_on { 1_800_000.0 * (1.0 - day) } else { 0.0 };
     }
 }

@@ -64,8 +64,73 @@ impl Plugin for CoverPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Cover>()
             .add_systems(OnEnter(MatchPhase::Active), |mut cover: ResMut<Cover>| *cover = Cover::default())
-            .add_systems(Update, (take_cover, mark_cover).chain().in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (demo, take_cover, mark_cover).chain().in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
     }
+}
+
+/// Developer photo spots: `OPNIX_COVER_DEMO=corner` or `=window` drops the local player into
+/// cover at a building corner (to peek round) or under a window sill (to pop up and look out)
+/// once the match is live. Handy for screenshots and for testing the cover system.
+fn demo(
+    statics: Res<Statics>,
+    map: Res<Map>,
+    state: Res<MatchState>,
+    mut cover: ResMut<Cover>,
+    mut players: Query<(&mut Transform, &mut PlayerInput, &Health), With<LocalPlayer>>,
+    mut done: Local<bool>,
+) {
+    let Ok(which) = std::env::var("OPNIX_COVER_DEMO") else { return };
+    if *done || state.phase != Phase::Live {
+        return;
+    }
+    let Ok((mut transform, mut input, health)) = players.single_mut() else { return };
+    if !health.alive() {
+        return;
+    }
+    let dirs = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z];
+    let mut spot: Option<(Vec3, Vec3, Vec3)> = None; // feet, wall normal, where to look
+    if which == "window" {
+        'w: for window in &map.windows {
+            for normal in dirs.into_iter().filter(|n| if window.along_x { n.x == 0.0 } else { n.z == 0.0 }) {
+                let floor = window.center.y - oz_core::worldgen::WINDOW_SILL;
+                let feet = Vec3::new(window.center.x, floor, window.center.z) + normal * (OFFSET + 0.15);
+                // Inside: a ceiling overhead.
+                if statics.blocked(feet.x, feet.z, feet.y, 1.25, 0.3) || statics.raycast(feet + Vec3::Y, Vec3::Y, 3.0).is_none() {
+                    continue;
+                }
+                spot = Some((feet, normal, feet - normal * 10.0 + Vec3::Y * 1.2));
+                break 'w;
+            }
+        }
+    } else {
+        // A tall wall face with its end (the building's corner) a metre away.
+        'c: for block in map.blocks.iter().filter(|b| b.solid && b.aabb.half.y > 1.3 && b.aabb.half.x.max(b.aabb.half.z) > 1.5) {
+            let b = block.aabb;
+            for normal in dirs {
+                let along = Vec3::new(normal.z, 0.0, -normal.x);
+                let face = b.center + normal * (b.half.dot(normal.abs()) + OFFSET + 0.02);
+                let end = b.half.dot(along.abs());
+                let feet = face + along * (end - 0.9);
+                let feet = Vec3::new(feet.x, map.height(feet.x, feet.z), feet.z);
+                if feet.y + 0.2 < b.bottom() || statics.blocked(feet.x, feet.z, feet.y, 1.75, 0.3) {
+                    continue;
+                }
+                let chest = feet + Vec3::Y * 0.9;
+                let wall = Wall { normal, low: false };
+                if wall_behind(&statics, chest, &wall).is_some() && wall_behind(&statics, chest + along * 1.2, &wall).is_none() {
+                    spot = Some((feet, normal, feet + along * 10.0 + normal * 3.0 + Vec3::Y * 1.5));
+                    break 'c;
+                }
+            }
+        }
+    }
+    *done = true;
+    let Some((feet, normal, look)) = spot else { return };
+    transform.translation = feet;
+    let to = look - feet;
+    input.yaw = f32::atan2(-to.x, -to.z);
+    let low = which == "window";
+    cover.wall = Some(Wall { normal, low });
 }
 
 /// Tells everyone which way the wall at your back faces, so your robot sits with its back
