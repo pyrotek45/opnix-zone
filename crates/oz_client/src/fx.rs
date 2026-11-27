@@ -364,19 +364,37 @@ fn spawn_effects(
                 // A scorch mark that stays: a dark blast circle on the ground, singed walls nearby.
                 let ground = map.height(at.x, at.z).max(statics.support(at.x, at.z, at.y + 0.5));
                 if at.y - ground < radius * 0.6 {
-                    for i in 0..5 {
-                        let angle = i as f32 * 2.4 + at.x;
-                        let spread = if i == 0 { 0.0 } else { radius * 0.22 };
-                        let spot = Vec3::new(at.x + angle.cos() * spread, ground + 0.015 + i as f32 * 0.002, at.z + angle.sin() * spread);
-                        let size = Vec3::new(radius * 0.32, 0.01, radius * 0.32) * if i == 0 { 1.0 } else { 0.55 };
-                        fx.commands.spawn((
-                            MatchEntity,
-                            BulletHole,
-                            Mesh3d(fx.art.primitive(Shape::Shard)),
-                            MeshMaterial3d(fx.art.paint(if i == 0 { Paint::Dark } else { Paint::Steel })),
-                            Transform::from_translation(spot).with_rotation(Quat::from_rotation_y(angle)).with_scale(size),
-                            NotShadowCaster,
-                        ));
+                    // Built from small patches, each kept only where the surface under it is
+                    // the floor the blast hit: the mark stops at roof edges and ledges instead
+                    // of hanging out over them.
+                    let surface = |x: f32, z: f32| map.height(x, z).max(statics.support(x, z, ground + 0.3));
+                    let reach = radius * 0.4;
+                    let step = 0.45;
+                    let cells = (reach / step).ceil() as i32;
+                    for gz in -cells..=cells {
+                        for gx in -cells..=cells {
+                            let (dx, dz) = (gx as f32 * step + fx.rng.range(-0.08, 0.08), gz as f32 * step + fx.rng.range(-0.08, 0.08));
+                            let from_centre = (dx * dx + dz * dz).sqrt();
+                            if from_centre > reach * fx.rng.range(0.75, 1.0) {
+                                continue;
+                            }
+                            let (x, z) = (at.x + dx, at.z + dz);
+                            let half = step * 0.62;
+                            let flat = [(0.0, 0.0), (half, 0.0), (-half, 0.0), (0.0, half), (0.0, -half)].iter().all(|(ox, oz)| (surface(x + ox, z + oz) - ground).abs() < 0.06);
+                            if !flat {
+                                continue;
+                            }
+                            let dark = from_centre < reach * 0.55;
+                            let size = Vec3::new(step * 0.75, 0.01, step * 0.75) * fx.rng.range(0.85, 1.15);
+                            fx.commands.spawn((
+                                MatchEntity,
+                                BulletHole,
+                                Mesh3d(fx.art.primitive(Shape::Shard)),
+                                MeshMaterial3d(fx.art.paint(if dark { Paint::Dark } else { Paint::Steel })),
+                                Transform::from_translation(Vec3::new(x, ground + 0.015 + if dark { 0.002 } else { 0.0 }, z)).with_rotation(Quat::from_rotation_y(fx.rng.range(0.0, 6.28))).with_scale(size),
+                                NotShadowCaster,
+                            ));
+                        }
                     }
                 }
                 view.shake += rumble(*at, radius * 0.6);
