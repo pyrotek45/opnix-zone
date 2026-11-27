@@ -140,6 +140,14 @@ impl BlockModel {
         self
     }
 
+    /// A flat bar in the side (YZ) plane at `x`, from `from` to `to` (each `[y, z]`), `width` across
+    /// and `thick` deep. The way to draw sloped faces, raked stocks and struts.
+    pub fn plate(self, paint: Paint, x: f32, from: [f32; 2], to: [f32; 2], width: f32, thick: f32) -> Self {
+        let (dy, dz) = (to[0] - from[0], to[1] - from[1]);
+        let length = (dy * dy + dz * dz).sqrt().max(1e-4);
+        self.cube(paint, [x, (from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5], [width, thick, length]).rotated([(-dy).atan2(dz).to_degrees(), 0.0, 0.0])
+    }
+
     /// Keeps only the parts whose animation tag passes `keep`.
     pub fn filtered(&self, keep: impl Fn(Anim) -> bool) -> BlockModel {
         BlockModel { parts: self.parts.iter().copied().filter(|p| keep(p.anim)).collect() }
