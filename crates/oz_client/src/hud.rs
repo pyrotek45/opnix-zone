@@ -28,8 +28,8 @@ const AMMO_PIPS: u8 = 30;
 const SLOTS: u8 = 8;
 const GEAR_PIPS: u8 = 4;
 const BLIPS: u8 = 40;
-pub(crate) const RADAR: f32 = 124.0;
-pub(crate) const RADAR_RANGE: f32 = 48.0;
+pub(crate) const RADAR: f32 = 190.0;
+pub(crate) const RADAR_RANGE: f32 = 60.0;
 const TRACK: f32 = 260.0;
 const SCORE_TRACK: f32 = 190.0;
 
@@ -224,7 +224,7 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
         Text::new(""),
         TextFont { font_size: 12.0, ..default() },
         TextColor(ui::DIM),
-        Node { position_type: PositionType::Absolute, right: Val::Px(150.0), top: Val::Px(20.0), ..default() },
+        Node { position_type: PositionType::Absolute, right: Val::Px(RADAR + 32.0), top: Val::Px(20.0), ..default() },
         GlobalZIndex(-30),
     ));
     let full = || at(Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() });
