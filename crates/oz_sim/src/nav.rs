@@ -34,6 +34,9 @@ pub struct Nav {
     floor: Vec<f32>,
     /// Column of each node.
     column: Vec<u32>,
+    /// Ladders: (foot node, roof node, climb cost). Bots climb up them, and come back down
+    /// the short ones by dropping off the edge.
+    links: Vec<(u32, u32, u32, bool)>,
 }
 
 /// Reusable A* buffers.
@@ -97,7 +100,23 @@ impl Nav {
             }
         }
         start.push(floor.len() as u32);
-        Nav { half, side, start, floor, column }
+        let mut nav = Nav { half, side, start, floor, column, links: Vec::new() };
+        for ladder in &map.ladders {
+            let out = Vec3::new(ladder.out.x, 0.0, ladder.out.y);
+            let foot = ladder.foot + out * crate::player::LADDER_STANDOFF;
+            let roof = Vec3::new(ladder.foot.x, ladder.top, ladder.foot.z) - out * 0.9;
+            let bottom = nav.column_at(foot.xz()).and_then(|c| nav.nodes(c).min_by(|a, b| (nav.floor[*a] - foot.y).abs().total_cmp(&(nav.floor[*b] - foot.y).abs())));
+            let top = nav.column_at(roof.xz()).and_then(|c| nav.nodes(c).find(|n| (nav.floor[*n] - ladder.top).abs() < 0.4));
+            if let (Some(bottom), Some(top)) = (bottom, top)
+                && (nav.floor[bottom] - foot.y).abs() < 0.8
+            {
+                let climb = ((ladder.top - foot.y).max(0.0) / CELL) as u32 * STRAIGHT * 2 + STRAIGHT;
+                // Dropping back down is only sensible off a low roof.
+                let drop = ladder.top - foot.y < 4.5;
+                nav.links.push((bottom as u32, top as u32, climb, drop));
+            }
+        }
+        nav
     }
 
     pub fn walkable_cells(&self) -> usize {
@@ -253,6 +272,23 @@ impl Nav {
                     open.push(Reverse((cost + heuristic(next), next as u32)));
                 }
             }
+            // Up a ladder (or back down a short one).
+            for &(bottom, top, climb, drop) in &self.links {
+                let next = if bottom as usize == current {
+                    top as usize
+                } else if drop && top as usize == current {
+                    bottom as usize
+                } else {
+                    continue;
+                };
+                let cost = scratch.cost[current] + climb;
+                if scratch.stamp[next] != generation || cost < scratch.cost[next] {
+                    scratch.stamp[next] = generation;
+                    scratch.cost[next] = cost;
+                    scratch.came[next] = current as u32;
+                    open.push(Reverse((cost + heuristic(next), next as u32)));
+                }
+            }
         }
         if !found {
             return None;
@@ -359,6 +395,30 @@ mod tests {
                 assert!(reached * 10 >= sample.len() * 9, "{what}: only {reached} of {} waypoints reachable", sample.len());
             }
         }
+    }
+
+    #[test]
+    fn ladders_lead_up_onto_roofs() {
+        // Find a town with a ladder, and path from its foot to the roof it reaches.
+        for seed in 1..40 {
+            let map = GameMap::generate(WorldRecipe::town(seed, Biome::IronShoals));
+            let Some(ladder) = map.ladders.first().copied() else { continue };
+            let mut statics = StaticWorld::new(map.recipe.half_extent);
+            for aabb in map.solids() {
+                statics.add(aabb);
+            }
+            let nav = Nav::build(&map, &statics);
+            if nav.links.is_empty() {
+                continue;
+            }
+            let out = Vec3::new(ladder.out.x, 0.0, ladder.out.y);
+            let from = ladder.foot + out * 3.0;
+            let to = Vec3::new(ladder.foot.x, ladder.top, ladder.foot.z) - out * 1.5;
+            let path = nav.path(&mut NavScratch::default(), from, to).expect("a way up");
+            assert!(path.iter().any(|p| p.y > ladder.top - 0.5), "the path should reach the roof: {path:?}");
+            return;
+        }
+        panic!("no town had a usable ladder");
     }
 
     #[test]
