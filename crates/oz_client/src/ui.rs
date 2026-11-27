@@ -20,6 +20,7 @@ const PANEL: Color = Color::srgba(0.025, 0.05, 0.075, 0.95);
 const BUTTON: Color = Color::srgba(0.08, 0.13, 0.17, 0.95);
 const BUTTON_FOCUS: Color = Color::srgb(0.24, 0.30, 0.26);
 const BORDER: Color = Color::srgb(0.30, 0.40, 0.42);
+const BUTTON_EDIT: Color = Color::srgb(0.16, 0.34, 0.22);
 const BORDER_FOCUS: Color = Color::srgb(1.0, 0.80, 0.40);
 
 /// Which full-screen UI is open. `None` means "playing".
@@ -144,6 +145,14 @@ pub enum Act {
 #[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub struct FocusRequest(pub Option<Act>);
 
+/// Where a button sits on a screen's grid (column, row), for d-pad / arrow navigation.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct GridPos(pub IVec2);
+
+/// The value button being edited (its layout order), if any.
+#[derive(Resource, Default)]
+pub struct Editing(pub Option<u32>);
+
 /// The action of the button that currently has focus (hover, keyboard or pad).
 #[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub struct Focused(pub Option<Act>);
@@ -182,6 +191,7 @@ impl Plugin for UiKitPlugin {
             .init_resource::<Focus>()
             .init_resource::<Focused>()
             .init_resource::<FocusRequest>()
+            .init_resource::<Editing>()
             .insert_resource(UiDirty(true))
             .add_event::<ActEvent>()
             .add_systems(Update, (mark_dirty, interact).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices));
@@ -302,19 +312,35 @@ pub fn chip(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Int
     parent.spawn((button_node(width), Clickable { act, left: None, order: order.0 })).with_children(|button| label(button, text, 15.0, color));
 }
 
+/// A button at a place on the screen's grid (`col`, `row`): the d-pad moves along rows and
+/// between them. `left` makes it a value button (A to edit, then left / right).
+#[allow(clippy::too_many_arguments)]
+pub fn grid_button(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, width: Val, col: i32, row: i32) {
+    order.0 += 1;
+    parent.spawn((button_node(width), Clickable { act, left, order: order.0 }, GridPos(IVec2::new(col, row)))).with_children(|button| label(button, text, 17.0, TEXT));
+}
+
 /// A slim button for long lists (the armory): less padding, smaller type.
 pub fn slim(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, selected: bool, width: Val) {
+    slim_at(parent, order, text, act, left, selected, width, None);
+}
+
+/// [`slim`] at a place on the screen's grid (`col`, `row`).
+#[allow(clippy::too_many_arguments)]
+pub fn slim_at(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, selected: bool, width: Val, cell: Option<IVec2>) {
     order.0 += 1;
     let color = if selected { GOOD } else { TEXT };
-    parent
-        .spawn((
-            Button,
-            Node { width, padding: UiRect::axes(Val::Px(10.0), Val::Px(3.0)), border: UiRect::all(Val::Px(2.0)), ..default() },
-            BackgroundColor(BUTTON),
-            BorderColor(BORDER),
-            Clickable { act, left, order: order.0 },
-        ))
-        .with_children(|button| label(button, text, 13.0, color));
+    let mut button = parent.spawn((
+        Button,
+        Node { width, padding: UiRect::axes(Val::Px(10.0), Val::Px(3.0)), border: UiRect::all(Val::Px(2.0)), ..default() },
+        BackgroundColor(BUTTON),
+        BorderColor(BORDER),
+        Clickable { act, left, order: order.0 },
+    ));
+    if let Some(cell) = cell {
+        button.insert(GridPos(cell));
+    }
+    button.with_children(|button| label(button, text, 13.0, color));
 }
 
 /// A greyed-out row that cannot be focused.
@@ -346,12 +372,13 @@ fn neighbour(from: Vec2, dir: Vec2, others: impl Iterator<Item = (usize, Vec2)>)
 fn interact(
     controls: Res<Controls>,
     mut focus: ResMut<Focus>,
-    mut buttons: Query<(&Interaction, &Clickable, &mut BackgroundColor, &mut BorderColor, &GlobalTransform)>,
+    mut buttons: Query<(&Interaction, &Clickable, &mut BackgroundColor, &mut BorderColor, &GlobalTransform, Option<&GridPos>)>,
     changed: Query<(&Interaction, &Clickable), Changed<Interaction>>,
     mut acts: EventWriter<ActEvent>,
     mut sounds: EventWriter<PlaySfx>,
     mut focused: ResMut<Focused>,
     mut request: ResMut<FocusRequest>,
+    mut editing: ResMut<Editing>,
 ) {
     let mut orders: Vec<u32> = buttons.iter().map(|(_, clickable, ..)| clickable.order).collect();
     if orders.is_empty() {
@@ -384,33 +411,74 @@ fn interact(
         }
     }
     let nav = controls.ui;
-    let centres: Vec<(usize, Vec2)> = buttons.iter().map(|(_, clickable, _, _, at)| (rank(clickable.order), at.translation().truncate())).collect();
-    let here = centres.iter().find(|(r, _)| *r == now).map_or(Vec2::ZERO, |(_, at)| *at);
-    let others = || centres.iter().copied().filter(|(r, _)| *r != now);
-    let stepper = buttons.iter().find(|(_, clickable, ..)| clickable.order == orders[now]).is_some_and(|(_, clickable, ..)| clickable.left.is_some());
-    if nav.down {
-        now = neighbour(here, Vec2::Y, others()).unwrap_or((now + 1) % orders.len());
-    } else if nav.up {
-        now = neighbour(here, Vec2::NEG_Y, others()).unwrap_or((now + orders.len() - 1) % orders.len());
-    } else if !stepper && (nav.left || nav.right) {
-        let dir = if nav.right { Vec2::X } else { Vec2::NEG_X };
-        if let Some(next) = neighbour(here, dir, others()) {
-            now = next;
-        }
+    let current_order = orders[now];
+    let focused_button = buttons.iter().find(|(_, clickable, ..)| clickable.order == current_order);
+    let stepper = focused_button.is_some_and(|(_, clickable, ..)| clickable.left.is_some());
+    // Editing a value: A started it, left / right change it, A or B (or moving off) ends it.
+    if editing.0.is_some_and(|order| order != current_order) {
+        editing.0 = None;
     }
-    if let Some((_, clickable, ..)) = buttons.iter().find(|(_, clickable, ..)| clickable.order == orders[now]) {
-        if nav.accept || (nav.right && stepper && clickable.left.is_some()) {
-            acts.write(ActEvent(clickable.act.clone()));
-            fired = true;
-        } else if nav.left
-            && stepper
-            && let Some(left) = &clickable.left
+    let mut swallow_back = false;
+    if let Some(order) = editing.0 {
+        if nav.accept || nav.back || nav.up || nav.down {
+            editing.0 = None;
+            swallow_back = nav.back;
+            sounds.write(PlaySfx::ui(Sfx::UiMove));
+        } else if let Some((_, clickable, ..)) = buttons.iter().find(|(_, c, ..)| c.order == order) {
+            if nav.right {
+                acts.write(ActEvent(clickable.act.clone()));
+                fired = true;
+            } else if nav.left
+                && let Some(left) = &clickable.left
+            {
+                acts.write(ActEvent(left.clone()));
+                fired = true;
+            }
+        }
+    } else {
+        // Moving: along a row / between rows of a grid when the buttons are laid out on one,
+        // otherwise toward the nearest button on screen in that direction.
+        let cells: Vec<(usize, IVec2)> = buttons.iter().filter_map(|(_, clickable, _, _, _, cell)| cell.map(|c| (rank(clickable.order), c.0))).collect();
+        let here_cell = cells.iter().find(|(r, _)| *r == now).map(|(_, c)| *c);
+        let step = |dir: IVec2| -> Option<usize> {
+            let here = here_cell?;
+            cells
+                .iter()
+                .filter(|(r, c)| *r != now && (*c - here).dot(dir) > 0)
+                .min_by_key(|(_, c)| {
+                    let d = *c - here;
+                    let along = d.dot(dir).abs();
+                    let across = (d - dir * d.dot(dir)).abs();
+                    (along, across.x + across.y)
+                })
+                .map(|(r, _)| *r)
+        };
+        let centres: Vec<(usize, Vec2)> = buttons.iter().map(|(_, clickable, _, _, at, _)| (rank(clickable.order), at.translation().truncate())).collect();
+        let here = centres.iter().find(|(r, _)| *r == now).map_or(Vec2::ZERO, |(_, at)| *at);
+        let others = || centres.iter().copied().filter(|(r, _)| *r != now);
+        if nav.down {
+            now = step(IVec2::Y).or_else(|| neighbour(here, Vec2::Y, others())).unwrap_or((now + 1) % orders.len());
+        } else if nav.up {
+            now = step(IVec2::NEG_Y).or_else(|| neighbour(here, Vec2::NEG_Y, others())).unwrap_or((now + orders.len() - 1) % orders.len());
+        } else if nav.left || nav.right {
+            let (dir, flat) = if nav.right { (IVec2::X, Vec2::X) } else { (IVec2::NEG_X, Vec2::NEG_X) };
+            if let Some(next) = step(dir).or_else(|| neighbour(here, flat, others())) {
+                now = next;
+            }
+        } else if nav.accept
+            && let Some((_, clickable, ..)) = focused_button
         {
-            acts.write(ActEvent(left.clone()));
-            fired = true;
+            if stepper {
+                // A value: start editing it.
+                editing.0 = Some(clickable.order);
+                sounds.write(PlaySfx::ui(Sfx::UiAccept));
+            } else {
+                acts.write(ActEvent(clickable.act.clone()));
+                fired = true;
+            }
         }
     }
-    if nav.back {
+    if nav.back && !swallow_back {
         acts.write(ActEvent(Act::Back));
     }
     if nav.tab_prev || nav.tab_next {
@@ -427,12 +495,77 @@ fn interact(
         focused.0 = current;
     }
 
-    for (_, clickable, mut background, mut border, _) in &mut buttons {
+    for (_, clickable, mut background, mut border, _, _) in &mut buttons {
         let focused = clickable.order == orders[now];
-        let (fill, edge) = if focused { (BUTTON_FOCUS, BORDER_FOCUS) } else { (BUTTON, BORDER) };
+        let (fill, edge) = if editing.0 == Some(clickable.order) {
+            (BUTTON_EDIT, GOOD)
+        } else if focused {
+            (BUTTON_FOCUS, BORDER_FOCUS)
+        } else {
+            (BUTTON, BORDER)
+        };
         if background.0 != fill {
             background.0 = fill;
             border.0 = edge;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::UiNav;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_event::<ActEvent>()
+            .add_event::<PlaySfx>()
+            .init_resource::<Controls>()
+            .init_resource::<Focus>()
+            .init_resource::<Focused>()
+            .init_resource::<FocusRequest>()
+            .init_resource::<Editing>()
+            .add_systems(Update, interact);
+        app
+    }
+
+    fn press(app: &mut App, nav: UiNav) -> Vec<Act> {
+        app.world_mut().resource_mut::<Controls>().ui = nav;
+        app.update();
+        app.world_mut().resource_mut::<Controls>().ui = UiNav::default();
+        app.world_mut().resource_mut::<Events<ActEvent>>().drain().map(|e| e.0).collect()
+    }
+
+    #[test]
+    fn the_dpad_walks_the_grid_and_values_edit_on_a() {
+        let mut app = app();
+        // Row 0: two buttons. Row 1: a value (team size) under the first.
+        let mut spawn = |order: u32, act: Act, left: Option<Act>, cell: (i32, i32)| {
+            app.world_mut().spawn((Interaction::None, Clickable { act, left, order }, BackgroundColor(BUTTON), BorderColor(BORDER), GlobalTransform::default(), GridPos(IVec2::new(cell.0, cell.1))));
+        };
+        spawn(1, Act::Solo, None, (0, 0));
+        spawn(2, Act::Host, None, (1, 0));
+        spawn(3, Act::TeamSize(1), Some(Act::TeamSize(-1)), (0, 1));
+        app.update();
+        let focused = |app: &App| app.world().resource::<Focused>().0.clone();
+        assert_eq!(focused(&app), Some(Act::Solo));
+        press(&mut app, UiNav { right: true, ..default() });
+        assert_eq!(focused(&app), Some(Act::Host));
+        press(&mut app, UiNav { left: true, ..default() });
+        assert_eq!(focused(&app), Some(Act::Solo));
+        press(&mut app, UiNav { down: true, ..default() });
+        assert_eq!(focused(&app), Some(Act::TeamSize(1)));
+        // On a value, A starts editing (and changes nothing by itself)...
+        assert!(press(&mut app, UiNav { accept: true, ..default() }).is_empty());
+        assert_eq!(press(&mut app, UiNav { right: true, ..default() }), vec![Act::TeamSize(1)]);
+        assert_eq!(press(&mut app, UiNav { left: true, ..default() }), vec![Act::TeamSize(-1)]);
+        // ...B ends editing without leaving the screen, and then right just moves on.
+        assert!(press(&mut app, UiNav { back: true, ..default() }).is_empty());
+        assert!(press(&mut app, UiNav { right: true, ..default() }).is_empty());
+        assert_eq!(focused(&app), Some(Act::Host));
+        press(&mut app, UiNav { down: true, ..default() });
+        press(&mut app, UiNav { up: true, ..default() });
+        assert_eq!(focused(&app), Some(Act::Solo));
     }
 }

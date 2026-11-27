@@ -560,7 +560,7 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                         let other = if class.tab == 0 { c.secondary } else { c.primary };
                         // Two columns: the whole arsenal fits on one page.
                         panel.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(4.0), row_gap: Val::Px(4.0), ..default() }).with_children(|panel| {
-                        for (i, def) in content.weapons.iter().enumerate().filter(|(_, w)| w.frame.is_some()) {
+                        for (k, (i, def)) in content.weapons.iter().enumerate().filter(|(_, w)| w.frame.is_some()).enumerate() {
                             let tag = if !career.gun_unlocked(i as u8) {
                                 format!("  LOCKED - LV {}", crate::career::gun_level(i as u8))
                             } else if i as u8 == other {
@@ -569,7 +569,7 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                                 String::new()
                             };
                             let tag = if tag.starts_with("  LOCKED") { tag.replace("  LOCKED - ", "\n  ") } else { tag };
-                            ui::slim(panel, order, format!("{}\n{}{tag}", def.name, def.class.name()), Act::ArmoryItem(i as u8), None, i as u8 == held, Val::Px(186.0));
+                            ui::slim_at(panel, order, format!("{}\n{}{tag}", def.name, def.class.name()), Act::ArmoryItem(i as u8), None, i as u8 == held, Val::Px(186.0), Some(IVec2::new(k as i32 % 2, k as i32 / 2)));
                         }
                         });
                     }
@@ -682,9 +682,9 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                 }
                 (Page::Parts, true) => {
                     if pad {
-                        "D-PAD LEFT / RIGHT  CHANGE PART    (B) BACK    RIGHT STICK  TURN"
+                        "(A) EDIT A PART, THEN LEFT / RIGHT    (B) BACK    RIGHT STICK  TURN"
                     } else {
-                        "LEFT / RIGHT OR CLICK: CHANGE PART    ESC BACK    DRAG TO TURN"
+                        "ENTER ON A PART, THEN LEFT / RIGHT (OR CLICK)    ESC BACK    DRAG TO TURN"
                     }
                 }
             };

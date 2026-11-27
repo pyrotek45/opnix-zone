@@ -226,20 +226,20 @@ pub fn build_lobby(
                 "WAITING FOR THE HOST TO START".to_string()
             };
             ui::label(bottom, status, 18.0, if state.countdown > 0.0 { ui::GOOD } else { ui::TEXT });
-            // Actions in one row (d-pad left / right moves along it), settings in the row below
-            // (left / right changes the focused one, up / down moves between the rows).
+            // A grid: actions on the top row, settings on the one below; the d-pad moves
+            // along and between them. A on a setting starts editing it (left / right).
+            const CELL: f32 = 236.0;
             bottom.spawn(ui::row(8.0)).with_children(|row| {
-                if host {
-                    ui::sized_button(row, order, "START MATCH", Act::Lobby(LobbyAction::Start), None, Val::Px(190.0));
-                } else {
-                    let ready = state.roster.iter().any(|r| r.id == me.id && r.ready);
-                    ui::sized_button(row, order, if ready { "NOT READY" } else { "READY UP" }, Act::Lobby(LobbyAction::ToggleReady), None, Val::Px(190.0));
-                }
-                ui::sized_button(row, order, "ARMORY", Act::Go(Screen::Loadout), None, Val::Px(170.0));
+                let ready = state.roster.iter().any(|r| r.id == me.id && r.ready);
+                let first = if host { ("START MATCH", LobbyAction::Start) } else { (if ready { "NOT READY" } else { "READY UP" }, LobbyAction::ToggleReady) };
+                ui::grid_button(row, order, first.0, Act::Lobby(first.1), None, Val::Px(CELL), 0, 0);
+                ui::grid_button(row, order, "ARMORY", Act::Go(Screen::Loadout), None, Val::Px(CELL), 1, 0);
+                let mut col = 2;
                 if !rules.hunt {
-                    ui::sized_button(row, order, "SWITCH TEAM", Act::Lobby(LobbyAction::SwitchTeam), None, Val::Px(170.0));
+                    ui::grid_button(row, order, "SWITCH TEAM", Act::Lobby(LobbyAction::SwitchTeam), None, Val::Px(CELL), col, 0);
+                    col += 1;
                 }
-                ui::sized_button(row, order, "LEAVE", Act::Leave, None, Val::Px(110.0));
+                ui::grid_button(row, order, "LEAVE", Act::Leave, None, Val::Px(CELL), col, 0);
             });
             // Match settings: the host steps them, everyone sees them.
             let time = oz_sim::versus::TIME_MODES[(state.time_mode as usize).min(3)];
@@ -248,9 +248,9 @@ pub fn build_lobby(
             let size = if rules.hunt { format!("SQUAD  <  {n}  >") } else { format!("TEAMS  <  {n} V {n}  >") };
             if host {
                 bottom.spawn(ui::row(8.0)).with_children(|row| {
-                    ui::sized_button(row, order, size, Act::Lobby(LobbyAction::TeamSize(1)), Some(Act::Lobby(LobbyAction::TeamSize(-1))), Val::Px(240.0));
-                    ui::sized_button(row, order, format!("TIME  <  {time}  >"), Act::Lobby(LobbyAction::TimeOfDay(1)), Some(Act::Lobby(LobbyAction::TimeOfDay(-1))), Val::Px(300.0));
-                    ui::sized_button(row, order, format!("WEATHER  <  {weather}  >"), Act::Lobby(LobbyAction::Weather(1)), Some(Act::Lobby(LobbyAction::Weather(-1))), Val::Px(300.0));
+                    ui::grid_button(row, order, size, Act::Lobby(LobbyAction::TeamSize(1)), Some(Act::Lobby(LobbyAction::TeamSize(-1))), Val::Px(CELL), 0, 1);
+                    ui::grid_button(row, order, format!("TIME  <  {time}  >"), Act::Lobby(LobbyAction::TimeOfDay(1)), Some(Act::Lobby(LobbyAction::TimeOfDay(-1))), Val::Px(CELL), 1, 1);
+                    ui::grid_button(row, order, format!("WEATHER  <  {weather}  >"), Act::Lobby(LobbyAction::Weather(1)), Some(Act::Lobby(LobbyAction::Weather(-1))), Val::Px(CELL * 2.0 + 8.0), 2, 1);
                 });
             } else {
                 ui::label(bottom, format!("TIME: {time}      WEATHER: {weather}"), 14.0, ui::ACCENT);
@@ -258,7 +258,7 @@ pub fn build_lobby(
             if let NetLink::Host(host) = &*link {
                 ui::label(bottom, hosting_info(host), 13.0, ui::ACCENT);
             }
-            let hint = if controls.gamepad { "D-PAD / STICK MOVES   (A) SELECT   LEFT / RIGHT ON A SETTING CHANGES IT" } else { "CLICK, OR ARROWS + ENTER.  LEFT / RIGHT ON A SETTING CHANGES IT." };
+            let hint = if controls.gamepad { "D-PAD / STICK MOVES   (A) SELECT   (A) ON A SETTING TO EDIT, LEFT / RIGHT CHANGES IT, (A) / (B) DONE" } else { "CLICK, OR ARROWS + ENTER.  ENTER ON A SETTING TO EDIT IT, LEFT / RIGHT CHANGES IT, ENTER / ESC DONE." };
             ui::label(bottom, hint, 12.0, ui::DIM);
         });
     });
