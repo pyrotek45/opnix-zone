@@ -317,7 +317,18 @@ fn scoreboard(
         commands.entity(entity).despawn();
     }
     let me = players.single().map_or(255, |p| p.id);
+    let results = *screen == Screen::GameOver;
     commands.spawn((Scoreboard, Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, GlobalZIndex(20))).with_children(|root| {
+        if results {
+            // The results panel has the left: both teams stack on the right.
+            root.spawn(Node { position_type: PositionType::Absolute, top: Val::Px(110.0), right: Val::Px(24.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), ..default() }).with_children(|teams| {
+                roster_panel(teams, 0, &state, me, true, None);
+                if !rules.hunt {
+                    roster_panel(teams, 1, &state, me, true, None);
+                }
+            });
+            return;
+        }
         roster_column(root, 0, &state, me, true, true);
         if !rules.hunt {
             roster_column(root, 1, &state, me, true, false);
