@@ -558,6 +558,8 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                     0 | 1 => {
                         let held = if class.tab == 0 { c.primary } else { c.secondary };
                         let other = if class.tab == 0 { c.secondary } else { c.primary };
+                        // Two columns: the whole arsenal fits on one page.
+                        panel.spawn(Node { flex_direction: FlexDirection::Row, flex_wrap: FlexWrap::Wrap, column_gap: Val::Px(4.0), row_gap: Val::Px(4.0), ..default() }).with_children(|panel| {
                         for (i, def) in content.weapons.iter().enumerate().filter(|(_, w)| w.frame.is_some()) {
                             let tag = if !career.gun_unlocked(i as u8) {
                                 format!("  LOCKED - LV {}", crate::career::gun_level(i as u8))
@@ -566,8 +568,10 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                             } else {
                                 String::new()
                             };
-                            ui::slim(panel, order, format!("{:<19}{:<8}{tag}", def.name, def.class.name()), Act::ArmoryItem(i as u8), None, i as u8 == held, Val::Percent(100.0));
+                            let tag = if tag.starts_with("  LOCKED") { tag.replace("  LOCKED - ", "\n  ") } else { tag };
+                            ui::slim(panel, order, format!("{}\n{}{tag}", def.name, def.class.name()), Act::ArmoryItem(i as u8), None, i as u8 == held, Val::Px(186.0));
                         }
+                        });
                     }
                     2 => {
                         for (i, perk) in content.perks.iter().enumerate() {

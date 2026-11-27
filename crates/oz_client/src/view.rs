@@ -559,13 +559,20 @@ fn viewmodel(
                 roll = 0.4 * hold;
                 dip = 0.08 * hold;
                 // Out with the old: drop and fall away; in with the new: rise into the well and slap home.
+                // Which way the magazine leaves: down out of the well, up off a top-fed gun,
+                // or a revolver cylinder swinging out to the side.
+                let away = match def.frame.map(|f| f.mag) {
+                    Some(oz_core::arsenal::MagShape::Top) => Vec3::new(0.0, 0.5, 0.12),
+                    Some(oz_core::arsenal::MagShape::Cylinder) => Vec3::new(-0.3, -0.12, 0.0),
+                    _ => Vec3::new(0.0, -0.6, 0.0),
+                };
                 if p < 0.35 {
-                    mag = Vec3::new(0.0, -0.6 * (p / 0.35).powi(2), 0.05 * p);
+                    mag = away * (p / 0.35).powi(2) + Vec3::Z * 0.05 * p;
                 } else if p < 0.45 {
                     mag_hidden = true;
                 } else if p < 0.7 {
                     let rise = ease((p - 0.45) / 0.25);
-                    mag = Vec3::new(0.08 * (1.0 - rise), -0.45 * (1.0 - rise), 0.0);
+                    mag = away * 0.75 * (1.0 - rise) + Vec3::X * 0.08 * (1.0 - rise);
                 }
                 dip -= 0.03 * bump(p, 0.68, 0.76);
                 if arsenal.reload_empty {
