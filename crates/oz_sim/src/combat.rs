@@ -221,7 +221,7 @@ pub fn bounces(shot: &Projectile) -> bool {
 
 /// One step of a bouncing throw: falls, glances off walls, skips along the ground and
 /// rolls to a stop. Returns the new position. Shared by the host and predicted copies.
-pub fn bounce_step(map: &oz_core::worldgen::GameMap, statics: &oz_core::collide::StaticWorld, at: Vec3, shot: &mut Projectile, dt: f32) -> Vec3 {
+pub fn bounce_step(map: &oz_core::worldgen::World, statics: &oz_core::collide::StaticWorld, at: Vec3, shot: &mut Projectile, dt: f32) -> Vec3 {
     const RADIUS: f32 = 0.08;
     shot.velocity.y -= shot.gravity * dt;
     let step = shot.velocity * dt;
