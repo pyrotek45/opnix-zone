@@ -234,8 +234,10 @@ fn ambience(
     listener: Query<&Transform, With<WorldCamera>>,
     mut loops: Query<(&Ambience, &mut AudioSink)>,
     mut levels: Local<HashMap<Sfx, f32>>,
+    screen: Res<crate::ui::Screen>,
 ) {
-    let playing = *phase.get() == MatchPhase::Active;
+    // The world is only heard while you are in it, not behind a menu.
+    let playing = *phase.get() == MatchPhase::Active && matches!(*screen, crate::ui::Screen::None | crate::ui::Screen::Chat);
     let day = state.as_ref().filter(|_| playing).map_or(1.0, |state| state.daylight);
     let weather = if playing { state.as_ref().map_or(Weather::Clear, |s| s.weather) } else { Weather::Clear };
     let _ = &rules;
@@ -245,7 +247,7 @@ fn ambience(
     let dt = time.delta_secs();
     for (ambience, mut sink) in &mut loops {
         let wanted = match ambience.0 {
-            Sfx::Surf => if playing { 0.22 * roof } else { 0.1 },
+            Sfx::Surf => if playing { 0.22 * roof } else { 0.0 },
             Sfx::NightDrone => (1.0 - day) * 0.4,
             Sfx::Rain => if weather == Weather::Rain { 0.55 * roof.max(0.5) } else { 0.0 },
             Sfx::Wind => match weather {
@@ -253,7 +255,7 @@ fn ambience(
                 Weather::Fog => 0.22 * roof,
                 Weather::Clear => if playing { 0.1 * roof } else { 0.0 },
             },
-            Sfx::Birds if weather == Weather::Clear && playing => day * 0.3 * roof,
+            // The bird chirps came out as an endless beeping: off.
             _ => 0.0,
         } * (1.0 - deafened * 0.8);
         // Glide between levels so walking indoors softens the world instead of cutting it.

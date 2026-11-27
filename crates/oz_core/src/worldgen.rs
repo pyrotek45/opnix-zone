@@ -531,6 +531,19 @@ impl World {
         architecture.chain(props)
     }
 
+    /// Leaves that hide what is behind them (but stop no bullets): tree crowns and bushes,
+    /// as spheres (centre, radius).
+    pub fn foliage(&self) -> Vec<(Vec3, f32)> {
+        self.props
+            .iter()
+            .filter_map(|p| match p.kind {
+                PropKind::Tree => Some((p.pos + Vec3::Y * p.scale * 0.9, p.scale * 0.42)),
+                PropKind::Bush => Some((p.pos + Vec3::Y * 0.45 * p.scale, 0.65 * p.scale)),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn ground(&self, x: f32, z: f32) -> Vec3 {
         Vec3::new(x, self.height(x, z), z)
     }
