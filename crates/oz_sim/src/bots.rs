@@ -116,7 +116,7 @@ pub fn spawn_bot(commands: &mut Commands, ids: &mut NetIds, content: &Content, r
         return entity;
     }
     let primary = guns[1 + rng.0.below(guns.len() - 1)];
-    let loadout = Loadout { primary, secondary: guns[0], perk: rng.0.below(content.perks.len().max(1)) as u8, gear: rng.0.below(content.gear.len().max(1)) as u8, parts: None, streaks: [0; 3] };
+    let loadout = Loadout { primary, secondary: guns[0], perk: rng.0.below(content.perks.len().max(1)) as u8, gear: rng.0.below(content.gear.len().max(1)) as u8, parts: None, streaks: [0; 3], vision: 0 };
     // Kit the primary out: each slot has an even chance of a random part that fits.
     let mut parts = content.weapons[primary as usize].defaults;
     for (slot_index, part) in parts.iter_mut().enumerate().take(SLOT_COUNT) {
@@ -193,6 +193,9 @@ pub fn drive_bots(
     // Everyone a bot might fight, humans and bots alike.
     let fighters: Vec<(Entity, u8, Vec3, u8)> =
         players.iter().filter(|(.., health, _, _, _)| health.alive()).map(|(entity, _, player, transform, input, ..)| (entity, player.team, transform.translation, input.stance)).collect();
+    // Torches lit in the dark give their carriers away.
+    let dark = state.daylight < 0.5;
+    let lit: Vec<Entity> = players.iter().filter(|(_, _, _, _, input, health, ..)| dark && input.light && health.alive()).map(|(entity, ..)| entity).collect();
     // Living humans, for squadmates to stay with.
     let humans: Vec<(u8, Vec3)> = players.iter().filter(|(_, bot, .., health, _, _, _)| bot.is_none() && health.alive()).map(|(_, _, p, t, ..)| (p.team, t.translation)).collect();
     // What can be heard this frame: everything made since last frame, plus everyone's footsteps.
@@ -281,20 +284,21 @@ pub fn drive_bots(
             let (sentry, alert) = (bot.sentry, bot.alert > 0.0);
             let facing_dir = Vec2::new(-input.yaw.sin(), -input.yaw.cos());
             // Sentries only notice what is in front of them, and low, still shapes are hard to spot.
-            let noticed = |at: Vec3, enemy_stance: u8| {
+            let noticed = |at: Vec3, enemy_stance: u8, torch: bool| {
                 if !sentry {
                     return true;
                 }
                 let to = at - feet;
                 let distance = to.length();
-                let range = if alert { 70.0 } else { 40.0 * [1.0, 0.7, 0.45][(enemy_stance as usize).min(2)] };
-                let cone = if alert { -0.3 } else { 0.4 };
+                let range: f32 = if alert { 70.0 } else { 40.0 * [1.0, 0.7, 0.45][(enemy_stance as usize).min(2)] };
+                // A lit torch in the dark shows from much further, and catches the eye off to the side.
+                let (range, cone) = if torch { (range.max(40.0) * 1.8, -0.1) } else { (range, if alert { -0.3 } else { 0.4 }) };
                 distance < 2.5 || (distance < range && to.xz().normalize_or_zero().dot(facing_dir) > cone)
             };
             let found = fighters
                 .iter()
                 .filter(|(_, team, ..)| *team != me.team)
-                .filter(|(_, _, at, enemy_stance)| noticed(*at, *enemy_stance))
+                .filter(|(entity, _, at, enemy_stance)| noticed(*at, *enemy_stance, lit.contains(entity)))
                 .filter_map(|(entity, _, at, enemy_stance)| {
                     let chest = *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4);
                     // Face the target before testing a lean, so the lean goes the right way.
@@ -483,6 +487,10 @@ pub fn drive_bots(
         let right = Vec2::new(input.yaw.cos(), -input.yaw.sin());
         input.movement = Vec2::new(wish.dot(right), wish.dot(forward)).clamp_length_max(1.0);
         input.buttons = held;
+        // Bots light up at night (it gives them away, as it does anyone).
+        if input.light != dark {
+            input.light = dark;
+        }
     }
     noises.0 = shouts;
 }

@@ -30,7 +30,7 @@ use oz_sim::prelude::*;
 
 pub const CLASS_COUNT: usize = 5;
 pub const CLASS_NAMES: [&str; CLASS_COUNT] = ["ASSAULT", "CLOSE QUARTERS", "MARKSMAN", "BREACHER", "RECON"];
-const TABS: [&str; 5] = ["PRIMARY", "SECONDARY", "PERK", "GEAR", "STREAKS"];
+const TABS: [&str; 6] = ["PRIMARY", "SECONDARY", "PERK", "GEAR", "STREAKS", "VISION"];
 
 /// The player's five classes: which one they spawn with, and the armory's place.
 #[derive(Resource, Clone)]
@@ -58,7 +58,7 @@ pub enum Page {
 
 impl Default for Class {
     fn default() -> Self {
-        let class = |primary: usize, secondary: usize, perk: u8, gear: u8| Loadout { primary: primary as u8, secondary: secondary as u8, perk, gear, parts: None, streaks: [0; 3] };
+        let class = |primary: usize, secondary: usize, perk: u8, gear: u8| Loadout { primary: primary as u8, secondary: secondary as u8, perk, gear, parts: None, streaks: [0; 3], vision: 0 };
         Self {
             slots: [
                 class(gun::CARBINE, gun::PISTOL, 0, 0),
@@ -94,7 +94,7 @@ fn encode(loadout: &Loadout) -> String {
     let parts = loadout.parts.unwrap_or_default();
     let list = |p: &[u8; SLOT_COUNT]| p.iter().map(u8::to_string).collect::<Vec<_>>().join(",");
     let streaks = loadout.streaks.iter().map(u8::to_string).collect::<Vec<_>>().join(",");
-    format!("{},{},{},{};{};{};{streaks}", loadout.primary, loadout.secondary, loadout.perk, loadout.gear, list(&parts[0]), list(&parts[1]))
+    format!("{},{},{},{};{};{};{streaks};{}", loadout.primary, loadout.secondary, loadout.perk, loadout.gear, list(&parts[0]), list(&parts[1]), loadout.vision)
 }
 
 fn decode(text: &str) -> Option<Loadout> {
@@ -114,7 +114,8 @@ fn decode(text: &str) -> Option<Loadout> {
             *slot = value;
         }
     }
-    (head.len() == 4).then(|| Loadout { primary: head[0], secondary: head[1], perk: head[2], gear: head[3], parts: Some(parts), streaks })
+    let vision = sections.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    (head.len() == 4).then(|| Loadout { primary: head[0], secondary: head[1], perk: head[2], gear: head[3], parts: Some(parts), streaks, vision })
 }
 
 fn is_gun(content: &Content, index: u8) -> bool {
@@ -267,7 +268,7 @@ fn armory_actions(
                 dirty.0 = true;
             }
             Act::ArmoryTab(tab) if edit => {
-                class.tab = (*tab).min(4);
+                class.tab = (*tab).min(5);
                 class.page = Page::Pick;
                 request.0 = Some(tab_focus(&class));
                 dirty.0 = true;
@@ -336,6 +337,11 @@ fn armory_actions(
                             *s = id;
                         }
                     }
+                    5 => {
+                        slot.vision = (*item).min(oz_sim::player::vision::THERMAL);
+                        class.page = Page::Class;
+                        request.0 = Some(Act::ArmoryTab(tab));
+                    }
                     _ => {}
                 }
                 changed = true;
@@ -391,7 +397,8 @@ fn tab_focus(class: &Class) -> Act {
         1 => c.secondary,
         2 => c.perk,
         3 => c.gear,
-        _ => c.streaks[0],
+        4 => c.streaks[0],
+        _ => c.vision,
     })
 }
 
@@ -496,7 +503,8 @@ fn slot_value(content: &Content, loadout: &Loadout, tab: u8) -> String {
         1 => name(loadout.secondary),
         2 => content.perks.get(loadout.perk as usize).map_or("-", |p| p.name).to_string(),
         3 => content.gear.get(loadout.gear as usize).map_or("-".to_string(), |g| format!("{} x{}", g.name, g.count)),
-        _ => streak_names(loadout),
+        4 => streak_names(loadout),
+        _ => oz_sim::player::vision::NAMES.get(loadout.vision as usize).copied().unwrap_or("-").to_string(),
     }
 }
 
@@ -582,6 +590,12 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                         for (i, gear) in content.gear.iter().enumerate() {
                             ui::slim(panel, order, format!("{}  x{}", gear.name, gear.count), Act::ArmoryItem(i as u8), None, i as u8 == c.gear, Val::Percent(100.0));
                         }
+                    }
+                    5 => {
+                        for (i, name) in oz_sim::player::vision::NAMES.iter().enumerate() {
+                            ui::slim(panel, order, *name, Act::ArmoryItem(i as u8), None, i as u8 == c.vision, Val::Percent(100.0));
+                        }
+                        ui::label(panel, "TOGGLE IN A MATCH WITH N / D-PAD LEFT.", 11.0, ui::DIM);
                     }
                     _ => {
                         for def in oz_sim::killstreak::STREAKS.iter() {
@@ -746,12 +760,13 @@ fn preview(
                 let text = match t {
                     2 => content.perks.get(c.perk as usize).map_or(String::new(), |p| p.blurb.to_string()),
                     3 => content.gear.get(c.gear as usize).map_or(String::new(), |g| g.blurb.to_string()),
+                    5 => oz_sim::player::vision::BLURBS.get(c.vision as usize).copied().unwrap_or("").to_string(),
                     _ => c.streaks.iter().filter_map(|id| oz_sim::killstreak::def(*id)).map(|d| format!("{:>2} KILLS  {}", d.kills, d.name)).collect::<Vec<_>>().join("\n"),
                 };
                 (format!("{}: {}", TABS[*t as usize], slot_value(&content, &c, *t)), text)
             }
             _ => {
-                let lines: Vec<String> = (0..5u8).map(|t| format!("{:<10} {}", TABS[t as usize], slot_value(&content, &c, t))).collect();
+                let lines: Vec<String> = (0..6u8).map(|t| format!("{:<10} {}", TABS[t as usize], slot_value(&content, &c, t))).collect();
                 (format!("{}  {}", index + 1, CLASS_NAMES[index]), lines.join("\n"))
             }
         };
@@ -774,6 +789,7 @@ fn preview(
         let (head, body) = match (&focused.0, class.tab) {
             (Some(Act::ArmoryItem(i)), 2) => content.perks.get(*i as usize).map_or((String::new(), String::new()), |p| (p.name.to_string(), p.blurb.to_string())),
             (Some(Act::ArmoryItem(i)), 3) => content.gear.get(*i as usize).map_or((String::new(), String::new()), |g| (format!("{}  x{}", g.name, g.count), g.blurb.to_string())),
+            (Some(Act::ArmoryItem(i)), 5) => oz_sim::player::vision::NAMES.get(*i as usize).map_or((String::new(), String::new()), |n| (n.to_string(), oz_sim::player::vision::BLURBS[*i as usize].to_string())),
             (Some(Act::ArmoryItem(i)), _) => oz_sim::killstreak::def(*i).map_or((String::new(), String::new()), |d| (format!("{}  -  {} KILLS", d.name, d.kills), d.blurb.to_string())),
             _ => (String::new(), String::new()),
         };
@@ -855,7 +871,7 @@ mod tests {
 
     #[test]
     fn classes_round_trip_through_text() {
-        let loadout = Loadout { primary: 3, secondary: 0, perk: 4, gear: 2, parts: Some([[1, 0, 2, 0, 1, 0, 3], [0; SLOT_COUNT]]), streaks: [1, 3, 5] };
+        let loadout = Loadout { primary: 3, secondary: 0, perk: 4, gear: 2, parts: Some([[1, 0, 2, 0, 1, 0, 3], [0; SLOT_COUNT]]), streaks: [1, 3, 5], vision: 2 };
         assert_eq!(decode(&encode(&loadout)), Some(loadout));
         assert_eq!(decode("garbage"), None);
     }

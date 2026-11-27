@@ -142,7 +142,7 @@ fn grenades_cook_in_the_hand_and_can_be_put_away() {
     app.world_mut().resource_mut::<PendingMatch>().0 = Some(MatchSetup::offline(rules, "TEST"));
     run(&mut app, 2.0);
     // A frag in the class.
-    let loadout = Loadout { primary: oz_core::kit::gun::CARBINE as u8, secondary: oz_core::kit::gun::PISTOL as u8, perk: 0, gear: 0, parts: None, streaks: [0; 3] };
+    let loadout = Loadout { primary: oz_core::kit::gun::CARBINE as u8, secondary: oz_core::kit::gun::PISTOL as u8, perk: 0, gear: 0, parts: None, streaks: [0; 3], vision: 0 };
     app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Loadout(loadout) });
     app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Lobby(LobbyAction::Start) });
     run(&mut app, 6.0);

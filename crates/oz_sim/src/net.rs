@@ -223,6 +223,8 @@ pub struct EntState {
     pub flags: u8,
     /// Players: limbs shot off (`player::limb` bits).
     pub limbs: u8,
+    /// Players: bit 0 = flashlight on.
+    pub extra: u8,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -249,6 +251,7 @@ pub struct Private {
     pub streak: u16,
     pub rewards: [u8; crate::killstreak::STACK],
     pub streaks: [u8; 3],
+    pub vision: u8,
     /// Limbs shot off.
     pub lost: u8,
     /// The perk in effect (client effects like thermal need it).
@@ -821,6 +824,7 @@ pub fn host_send(
             flags: player.flags,
             // Low four bits: limbs lost; high four: the cover facing (others see your back to the wall).
             limbs: player.lost | (input.cover & 0x0F) << 4,
+            extra: input.light as u8,
         });
     }
     for (id, enemy, transform, health) in &enemies {
@@ -835,6 +839,7 @@ pub fn host_send(
             aux: enemy.attacks,
             flags: 0,
             limbs: 0,
+            extra: 0,
         });
     }
     for (id, shot, transform) in &shots {
@@ -850,6 +855,7 @@ pub fn host_send(
             aux: shot.owner.map_or(0, |o| o.saturating_add(1)),
             flags: 0,
             limbs: 0,
+            extra: 0,
         });
     }
     for (id, _, transform) in &drones {
@@ -864,16 +870,17 @@ pub fn host_send(
             aux: 0,
             flags: 0,
             limbs: 0,
+            extra: 0,
         });
     }
     // Loot: sub = what it is, aux = which gun or gear, a gun's seven parts packed three bits each into hp / limbs / flags.
     for (id, pickup, transform) in &pickups {
         let (sub, aux, packed) = crate::loot::encode(&pickup.loot);
-        entities.push(EntState { id: id.0, kind: kind::PICKUP, sub, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: packed as u8, aux, flags: (packed >> 16) as u8, limbs: (packed >> 8) as u8 });
+        entities.push(EntState { id: id.0, kind: kind::PICKUP, sub, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: packed as u8, aux, flags: (packed >> 16) as u8, limbs: (packed >> 8) as u8, extra: 0 });
     }
     // Mines travel as projectiles that never move.
     for (id, _, transform) in &mines {
-        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Mine as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: 255, aux: 0, flags: 0, limbs: 0 });
+        entities.push(EntState { id: id.0, kind: kind::PROJECTILE, sub: ShotLook::Mine as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: 255, aux: 0, flags: 0, limbs: 0, extra: 0 });
     }
     if full {
         for (id, structure, transform, health) in &structures {
@@ -888,11 +895,12 @@ pub fn host_send(
                 aux: structure.shots,
                 flags: 0,
                 limbs: 0,
+                extra: 0,
             });
         }
         for (id, node, transform) in &ores {
             let left = ((node.amount / node.max.max(1.0)) * 255.0).ceil() as u8;
-            entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0, limbs: 0 });
+            entities.push(EntState { id: id.0, kind: kind::ORE, sub: node.ore as u8, pos: q.pack(transform.translation), yaw: 0, pitch: 0, hp: left, aux: 0, flags: 0, limbs: 0, extra: 0 });
         }
     }
     link.host.broadcast_latest(&S2C::Snapshot(Snapshot { time: time.elapsed_secs(), full, state: state.clone(), entities }));
@@ -913,7 +921,7 @@ pub fn host_send(
                     gear: player.gear,
                     streak: player.streak,
                     rewards: player.rewards,
-                    streaks: player.streaks,
+                    streaks: player.streaks, vision: player.vision,
                     lost: player.lost,
                     perk: player.perk,
                     teleport,
@@ -989,6 +997,7 @@ pub fn client_receive(
                             input.stance = e.flags & crate::player::flags::STANCE;
                             input.lean = crate::player::flags::lean(e.flags);
                             input.cover = e.limbs >> 4;
+                            input.light = e.extra & 1 != 0;
                         }
                         if let Some(mut player) = player {
                             player.flags = e.flags;
@@ -1075,6 +1084,7 @@ pub fn client_receive(
                     player.streak = private.streak;
                     player.rewards = private.rewards;
                     player.streaks = private.streaks;
+                    player.vision = private.vision;
                     player.lost = private.lost;
                     player.perk = private.perk;
                     // While dead the host owns our position, so we wake up at the spawn point.
@@ -1202,7 +1212,7 @@ mod tests {
 
     #[test]
     fn entity_state_is_compact() {
-        let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7, limbs: 9 };
+        let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7, limbs: 9, extra: 1 };
         assert_eq!(bincode::serialize(&state).unwrap().len(), 18);
     }
 

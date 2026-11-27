@@ -32,8 +32,6 @@ pub fn catalog(_: &Rules) -> Catalog {
             PerkDef { name: "FLAK JACKET", blurb: "Take 55% less explosive damage", effect: PerkEffect::FlakJacket(0.45) },
             PerkDef { name: "QUICK DRAW", blurb: "Aim and swap 30% faster", effect: PerkEffect::Handling(1.3) },
             PerkDef { name: "STEADY HANDS", blurb: "40% tighter hip fire", effect: PerkEffect::Hipfire(0.6) },
-            PerkDef { name: "THERMAL OPTICS", blurb: "Aiming shows enemies glowing hot, even through smoke", effect: PerkEffect::Thermal },
-            PerkDef { name: "NIGHT VISION", blurb: "A visor for night maps - toggle with N", effect: PerkEffect::NightVision },
         ],
         gear: vec![
             GearDef { name: "FRAG GRENADE", blurb: "Thrown explosive on a short fuse", kind: GearKind::Frag { damage: 170.0, radius: 10.0 }, count: 2 },

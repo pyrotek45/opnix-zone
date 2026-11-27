@@ -231,6 +231,8 @@ pub struct Player {
     pub rewards: [u8; crate::killstreak::STACK],
     /// The killstreaks this player's class carries.
     pub streaks: [u8; 3],
+    /// Vision equipment carried (see [`vision`]).
+    pub vision: u8,
     /// Which part the hit being applied right now struck (see [`part`]), for kill credits.
     pub last_hit: u8,
     /// Health left in each limb: left arm, right arm, left leg, right leg.
@@ -340,6 +342,7 @@ impl Player {
             streak: 0,
             rewards: [0; crate::killstreak::STACK],
             streaks: crate::killstreak::DEFAULT_STREAKS,
+            vision: 0,
             last_hit: part::TORSO,
             limb_hp: [LIMB_HP; 4],
             lost: 0,
@@ -366,6 +369,23 @@ pub struct Loadout {
     pub parts: Option<[[u8; oz_core::arsenal::SLOT_COUNT]; 2]>,
     /// Up to three killstreaks (ids of `killstreak::reward`; zeros = the defaults).
     pub streaks: [u8; 3],
+    /// Vision equipment: see [`vision`].
+    pub vision: u8,
+}
+
+/// Vision equipment a class can carry, switched on and off in the field.
+pub mod vision {
+    pub const NONE: u8 = 0;
+    /// A green visor that brightens dark maps.
+    pub const NIGHT: u8 = 1;
+    /// Enemies glow hot: through smoke, in shadow, at night.
+    pub const THERMAL: u8 = 2;
+    pub const NAMES: [&str; 3] = ["NONE", "NIGHT VISION", "THERMAL"];
+    pub const BLURBS: [&str; 3] = [
+        "Nothing on the helmet: nothing to give you away.",
+        "A green visor that turns night into day. Washes out in daylight.",
+        "Enemy robots glow hot - through smoke, in shadow, at night.",
+    ];
 }
 
 /// Looks up the active perk's effect, if any.
@@ -397,6 +417,7 @@ pub fn apply_loadout(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsen
     }
     player.perk = loadout.perk.min(catalog.perks.len().saturating_sub(1) as u8);
     player.streaks = crate::killstreak::chosen(loadout.streaks);
+    player.vision = loadout.vision.min(vision::THERMAL);
     player.gear = loadout.gear.min(catalog.gear.len().saturating_sub(1) as u8);
     arsenal.current = loadout.primary;
     refill(catalog, player, arsenal);
@@ -464,6 +485,8 @@ pub struct PlayerInput {
     /// In cover (presentation): 0 = no; otherwise 1 + 2 x the direction out of the wall in
     /// eighths of a turn (see [`cover_yaw`]). Others see your back against the wall.
     pub cover: u8,
+    /// Flashlight on: everyone sees the beam (and hostiles see you further off in the dark).
+    pub light: bool,
 }
 
 /// The facing (yaw) of a body with its back to the wall, from [`PlayerInput::cover`].

@@ -129,7 +129,7 @@ fn loadouts_apply_with_perks_and_free_attachments() {
     };
     // The client switches to its new primary as it sends the class.
     app.world_mut().query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().weapon = 2;
-    order(&mut app, PlayerCommand::Loadout(Loadout { primary: 2, secondary: 0, perk: 1, gear: 1, parts: None, streaks: [0; 3] }));
+    order(&mut app, PlayerCommand::Loadout(Loadout { primary: 2, secondary: 0, perk: 1, gear: 1, parts: None, streaks: [0; 3], vision: 0 }));
     // A suppressor on the shotgun, then a sniper scope it must refuse.
     order(&mut app, PlayerCommand::EquipPart { weapon: 2, slot: 1, variant: 2 });
     order(&mut app, PlayerCommand::EquipPart { weapon: 2, slot: 0, variant: 4 });
@@ -141,7 +141,7 @@ fn loadouts_apply_with_perks_and_free_attachments() {
     assert_eq!(arsenal.weapons[2].equipped[1], 2, "attachments are free in versus");
     assert_eq!(arsenal.weapons[2].equipped[0], 0, "shotguns cannot take sniper scopes");
     // Same weapon twice is not a class.
-    order(&mut app, PlayerCommand::Loadout(Loadout { primary: 3, secondary: 3, perk: 0, gear: 0, parts: None, streaks: [0; 3] }));
+    order(&mut app, PlayerCommand::Loadout(Loadout { primary: 3, secondary: 3, perk: 0, gear: 0, parts: None, streaks: [0; 3], vision: 0 }));
     let world = app.world_mut();
     assert_eq!(world.query_filtered::<&Arsenal, With<LocalPlayer>>().single(world).unwrap().current, 2);
 }
@@ -448,7 +448,7 @@ fn a_class_saved_in_the_lobby_is_used_at_kickoff() {
         app.update();
     }
     let gear = app.world().resource::<Content>().gear.len() as u8 - 1;
-    let loadout = Loadout { primary: oz_core::kit::gun::SHOTGUN as u8, secondary: oz_core::kit::gun::PISTOL as u8, perk: 1, gear, parts: None, streaks: [0; 3] };
+    let loadout = Loadout { primary: oz_core::kit::gun::SHOTGUN as u8, secondary: oz_core::kit::gun::PISTOL as u8, perk: 1, gear, parts: None, streaks: [0; 3], vision: 0 };
     app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Loadout(loadout) });
     app.update();
     lobby(&mut app, LobbyAction::Start);

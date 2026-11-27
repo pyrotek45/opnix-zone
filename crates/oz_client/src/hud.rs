@@ -178,8 +178,10 @@ pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Notices>()
+            .init_resource::<HandActions>()
+            .init_resource::<StripActions>()
             .add_systems(OnEnter(MatchPhase::Active), spawn_hud)
-            .add_systems(Update, (update_text, update_shapes, scope_and_stance, net_stats).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, ((update_text, update_strip).chain(), update_shapes, scope_and_stance, net_stats).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -354,6 +356,7 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
             }
         });
 
+        spawn_strip(hud);
         let centered = |top: f32| at(Node { width: Val::Percent(100.0), top: Val::Percent(top), justify_content: JustifyContent::Center, ..default() });
         for (kind, top, size, color) in [(Num::Notice, 21.0, 21.0, ui::TEXT), (Num::Prompt, 62.0, 19.0, ui::ACCENT), (Num::Hint, 85.0, 13.0, ui::DIM)] {
             hud.spawn(centered(top)).with_children(|c| {
@@ -362,6 +365,67 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
         }
     });
 }
+
+/// What you can do right now, as key chips stacked bottom left above your health: out of
+/// the middle of the screen, where they used to cover what you were shooting at.
+pub const STRIP_ROWS: usize = 4;
+
+#[derive(Component)]
+struct StripRow(usize);
+
+#[derive(Component)]
+struct StripKey(usize);
+
+#[derive(Component)]
+struct StripLabel(usize);
+
+/// Context actions other systems offer this frame (vault, cook, stabilize, swap).
+#[derive(Resource, Default, Clone, PartialEq)]
+pub struct HandActions(pub Vec<(String, String)>);
+
+fn spawn_strip(hud: &mut ChildSpawnerCommands) {
+    hud.spawn(at(Node { left: Val::Px(20.0), bottom: Val::Px(104.0), ..column(4.0, AlignItems::Start) })).with_children(|strip| {
+        // Top row is the newest thing to do; keep rows in a fixed order so they never jump.
+        for i in 0..STRIP_ROWS {
+            strip.spawn((StripRow(i), row(7.0), Visibility::Hidden)).with_children(|line| {
+                line.spawn((
+                    Node { padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)), border: UiRect::all(Val::Px(1.0)), min_width: Val::Px(26.0), justify_content: JustifyContent::Center, ..default() },
+                    BackgroundColor(Color::srgba(0.02, 0.04, 0.06, 0.8)),
+                    BorderColor(ui::ACCENT),
+                    BorderRadius::all(Val::Px(3.0)),
+                ))
+                .with_children(|chip| {
+                    chip.spawn((StripKey(i), Text::new(""), TextFont { font_size: 12.0, ..default() }, TextColor(ui::ACCENT)));
+                });
+                line.spawn((StripLabel(i), Text::new(""), TextFont { font_size: 13.0, ..default() }, TextColor(ui::TEXT), TextShadow::default()));
+            });
+        }
+    });
+}
+
+fn update_strip(
+    actions: Res<StripActions>,
+    mut rows: Query<(&StripRow, &mut Visibility)>,
+    mut keys: Query<(&StripKey, &mut Text), Without<StripLabel>>,
+    mut labels: Query<(&StripLabel, &mut Text), Without<StripKey>>,
+) {
+    if !actions.is_changed() {
+        return;
+    }
+    for (row, mut visibility) in &mut rows {
+        set(&mut *visibility, if row.0 < actions.0.len() { Visibility::Inherited } else { Visibility::Hidden });
+    }
+    for (key, mut text) in &mut keys {
+        set(&mut text.0, actions.0.get(key.0).map_or(String::new(), |a| a.0.clone()));
+    }
+    for (label, mut text) in &mut labels {
+        set(&mut text.0, actions.0.get(label.0).map_or(String::new(), |a| a.1.clone()));
+    }
+}
+
+/// Everything in the strip this frame.
+#[derive(Resource, Default, Clone, PartialEq)]
+struct StripActions(Vec<(String, String)>);
 
 fn set<T: PartialEq>(slot: &mut T, value: T) {
     if *slot != value {
@@ -392,6 +456,7 @@ fn update_text(
     (players, subject): (Query<(&Health, &Arsenal, &Player, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
     mut texts: Query<(&Num, &mut Text)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
+    (hand_actions, mut strip): (Res<HandActions>, ResMut<StripActions>),
     mut shown_for: Local<f32>,
 ) {
     let dt = time.delta_secs();
@@ -429,31 +494,43 @@ fn update_text(
     } else if let Some(kind) = placing.kind {
         let name = content.structures.get(kind as usize).map_or("STRUCTURE", |s| s.name);
         format!("{name}\n[{fire_key}] BUILD   [{rotate_key}] ROTATE   [{cancel_key}] DONE")
-    } else if let Some((_, open)) = door_prompt.0 {
-        format!("[{use_key}]  {} DOOR", if open { "CLOSE" } else { "OPEN" })
-    } else if let Some((_, kind)) = nearby.0 {
-        format!("[{use_key}]  {}", content.stations.get(kind as usize).map_or("STATION", |s| s.name))
-    } else if weapon.is_some_and(|(def, owned)| def.mag > 0 && owned.ammo == 0 && arsenal.reload <= 0.0) {
-        format!("[{}]  RELOAD", if controls.gamepad { "X".into() } else { key(Action::Reload) })
-    } else if let Some(def) = oz_sim::killstreak::next(&player.rewards).filter(|_| rules.pvp) {
-        format!("[{}]  CALL IN {}", if controls.gamepad { "D-PAD RIGHT".into() } else { key(Action::Killstreak) }, def.name)
-    } else if cover.wall.is_some() && !cover.aiming {
-        let (cover_key, aim_key) = if controls.gamepad { ("LB".to_string(), "LT".to_string()) } else { (key(Action::Cover), key(Action::Aim)) };
-        let what = match cover.wall.map(|w| w.low) {
-            Some(true) => "POP UP",
-            _ if cover.edges.contains(&true) => "PEEK",
-            _ => "AIM",
-        };
-        let fire_key = if controls.gamepad { "RT".to_string() } else { key(Action::Fire) };
-        let jump_key = if controls.gamepad { "X".to_string() } else { key(Action::Jump) };
-        let vault = if cover.wall.is_some_and(|w| w.low) { format!("   [{jump_key}] VAULT") } else { String::new() };
-        format!("[{aim_key}] {what}   [{fire_key}] BLIND FIRE{vault}   [{cover_key}] LEAVE COVER")
-    } else if cover.available && cover.wall.is_none() {
-        format!("[{}]  TAKE COVER", if controls.gamepad { "LB".into() } else { key(Action::Cover) })
     } else {
         String::new()
     };
-    // Controls are shown while a match is young, then get out of the way.
+    // Things to do here, as key chips in the strip.
+    let mut chips: Vec<(String, String)> = Vec::new();
+    if health.alive() && !spectate.enabled && placing.kind.is_none() {
+        if let Some((_, open)) = door_prompt.0 {
+            chips.push((use_key.clone(), format!("{} DOOR", if open { "CLOSE" } else { "OPEN" })));
+        } else if let Some((_, kind)) = nearby.0 {
+            chips.push((use_key.clone(), content.stations.get(kind as usize).map_or("STATION", |s| s.name).to_string()));
+        }
+        if weapon.is_some_and(|(def, owned)| def.mag > 0 && owned.ammo == 0 && arsenal.reload <= 0.0) {
+            chips.push((if controls.gamepad { "X".into() } else { key(Action::Reload) }, "RELOAD".into()));
+        }
+        chips.extend(hand_actions.0.iter().cloned());
+        if cover.wall.is_some() && !cover.aiming {
+            let (cover_key, aim_key) = if controls.gamepad { ("LB".to_string(), "LT".to_string()) } else { (key(Action::Cover), key(Action::Aim)) };
+            let what = match cover.wall.map(|w| w.low) {
+                Some(true) => "POP UP",
+                _ if cover.edges.contains(&true) => "PEEK",
+                _ => "AIM",
+            };
+            chips.push((aim_key, what.into()));
+            chips.push((if controls.gamepad { "RT".to_string() } else { key(Action::Fire) }, "BLIND FIRE".into()));
+            if cover.wall.is_some_and(|w| w.low) && !chips.iter().any(|c| c.1 == "VAULT") {
+                chips.push((if controls.gamepad { "X".to_string() } else { key(Action::Jump) }, "VAULT".into()));
+            }
+            chips.push((cover_key, "LEAVE COVER".into()));
+        } else if cover.available && cover.wall.is_none() {
+            chips.push((if controls.gamepad { "LB".into() } else { key(Action::Cover) }, "TAKE COVER".into()));
+        }
+    }
+    chips.truncate(STRIP_ROWS);
+    if strip.0 != chips {
+        strip.0 = chips;
+    }
+    // Controls are shown while a match is young    // Controls are shown while a match is young, then get out of the way.
     let help = if rules.pvp {
         format!(
             "{} FIRE   {} AIM   {} RELOAD   {} COVER   HOLD {} COOK GEAR   {} MELEE   {} CLASS   {} SPRINT   ESC PAUSE",

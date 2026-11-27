@@ -182,7 +182,7 @@ impl Plugin for AvatarPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GunCache>().add_systems(Startup, bake_robots).add_systems(
             Update,
-            ((attach_to_players, pose_players, react_to_shots, hold_weapons, show_own_robot).run_if(in_state(MatchPhase::Active)), animate_rigs.in_set(AnimateRigs)).chain().in_set(ClientSet::Present),
+            ((attach_to_players, pose_players, react_to_shots, hold_weapons, show_own_robot, shine_torches).run_if(in_state(MatchPhase::Active)), animate_rigs.in_set(AnimateRigs)).chain().in_set(ClientSet::Present),
         );
     }
 }
@@ -450,6 +450,54 @@ fn attach_to_players(
         if local {
             // Your own robot only shows when the camera is outside your head (cover).
             commands.entity(entity).insert((OwnRobot, Visibility::Hidden));
+        }
+    }
+}
+
+/// A robot's shoulder lamp: the beam other players see coming round a corner at night.
+#[derive(Component)]
+pub struct Torch {
+    owner: Entity,
+}
+
+/// Switches every other robot's lamp to follow its owner's flashlight toggle. Lights only
+/// show in the dark; in daylight nobody would notice.
+fn shine_torches(
+    mut commands: Commands,
+    art: Res<Art>,
+    state: Res<MatchState>,
+    added: Query<(Entity, &Rig), (Added<Rig>, With<PlayerRobot>, Without<LocalPlayer>)>,
+    owners: Query<(&PlayerInput, &Health)>,
+    mut torches: Query<(&Torch, Option<&mut SpotLight>, &mut Visibility)>,
+) {
+    for (owner, rig) in &added {
+        commands.spawn((
+            Torch { owner },
+            SpotLight { color: Color::srgb(1.0, 0.93, 0.8), intensity: 0.0, range: 40.0, outer_angle: 0.45, inner_angle: 0.25, shadows_enabled: false, ..default() },
+            Transform::from_xyz(0.16, 0.06, -0.12),
+            Visibility::Hidden,
+            ChildOf(rig.aim),
+        ));
+        // The lens: a bright dot that gives the light away even when the beam points elsewhere.
+        commands.spawn((
+            Torch { owner },
+            Mesh3d(art.primitive(Shape::Cube)),
+            MeshMaterial3d(art.paint(Paint::Glow)),
+            Transform::from_xyz(0.16, 0.06, -0.13).with_scale(Vec3::new(0.05, 0.05, 0.02)),
+            Visibility::Hidden,
+            bevy::pbr::NotShadowCaster,
+            ChildOf(rig.aim),
+        ));
+    }
+    let night = (1.0 - state.daylight.clamp(0.0, 1.0) * 2.0).clamp(0.0, 1.0);
+    for (torch, light, mut visibility) in &mut torches {
+        let on = night > 0.0 && owners.get(torch.owner).is_ok_and(|(input, health)| input.light && health.alive());
+        let wanted = if on { Visibility::Inherited } else { Visibility::Hidden };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+        if let Some(mut light) = light {
+            light.intensity = if on { 1_200_000.0 * night } else { 0.0 };
         }
     }
 }

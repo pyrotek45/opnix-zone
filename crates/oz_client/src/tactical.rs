@@ -71,16 +71,25 @@ struct HandText;
 #[derive(Component)]
 struct HuntText;
 
+/// The chevron that hangs over a ledge you can vault right now.
+#[derive(Component)]
+struct LedgeArrow;
+
+/// Where the vault chevron goes this frame (top of the ledge ahead).
+#[derive(Resource, Default)]
+struct Ledge(Option<Vec3>);
+
 pub struct TacticalPlugin;
 
 impl Plugin for TacticalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hands>()
             .init_resource::<Lamp>()
-            .add_systems(Update, toggles.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
+            .init_resource::<Ledge>()
+            .add_systems(Update, (toggles, share_lamp).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
             .add_systems(OnEnter(MatchPhase::Active), (spawn, |mut hands: ResMut<Hands>| *hands = Hands { since_throw: 9.0, since_cancel: 9.0, since_melee: 9.0, ..default() }))
             .add_systems(Update, track_hands.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, ((update, loot_prompt).chain(), minimap, dress_loot, spin_loot).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, ((update, loot_prompt, point_at_ledge).chain(), minimap, dress_loot, spin_loot).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -194,7 +203,7 @@ fn spawn(mut commands: Commands) {
             Visibility::Hidden,
         ))
         .with_children(|meter| {
-            meter.spawn((Node { width: Val::Px(150.0), height: Val::Px(6.0), ..default() }, BackgroundColor(Color::srgba(0.1, 0.14, 0.17, 0.85)))).with_children(|track| {
+            meter.spawn((Node { width: Val::Px(90.0), height: Val::Px(4.0), ..default() }, BackgroundColor(Color::srgba(0.1, 0.14, 0.17, 0.85)))).with_children(|track| {
                 track.spawn((HandFill, Node { height: Val::Percent(100.0), width: Val::Percent(0.0), ..default() }, BackgroundColor(ui::TEXT)));
             });
             meter.spawn((HandText, Text::new(""), TextFont { font_size: 12.0, ..default() }, TextColor(ui::TEXT), TextShadow::default()));
@@ -230,6 +239,7 @@ fn update(
     mut slots: Query<(&StreakSlot, &Children, &mut BackgroundColor, &mut BorderColor)>,
     mut texts: Query<&mut Text, (Without<StreakText>, Without<HandText>, Without<HuntText>)>,
     mut streak_text: Query<&mut Text, (With<StreakText>, Without<HandText>, Without<HuntText>)>,
+    (mut actions, mut ledge): (ResMut<crate::hud::HandActions>, ResMut<Ledge>),
     (mut meter, mut fill, mut hand_text, mut hunt_text): (
         Query<&mut Visibility, (With<HandMeter>, Without<StreakPanel>)>,
         Query<(&mut Node, &mut BackgroundColor), (With<HandFill>, Without<StreakSlot>)>,
@@ -290,34 +300,49 @@ fn update(
         }
     }
 
-    // The meter under the crosshair.
+    // The meter under the crosshair: just the gauge and a word. What the buttons do goes in
+    // the strip bottom left, and a vault shows as a chevron over the ledge itself.
     let pin_key = if controls.gamepad { "X".to_string() } else { key(Action::Reload) };
+    let mut offered: Vec<(String, String)> = Vec::new();
+    let mut over = None;
     let (shown, fraction, color, line) = if let Some(cooked) = hands.cooking.filter(|_| playing) {
         let left = (hands.fuse - cooked).max(0.0);
         let fraction = if hands.live { left / hands.fuse.max(0.01) } else { 1.0 };
         let color = if hands.live && left < 0.6 { ui::WARN } else { Color::srgb(1.0, 0.8, 0.35) };
-        let line = if hands.live { format!("COOKING  {left:.1}s   RELEASE: THROW   [{pin_key}] PIN BACK") } else { format!("RELEASE: THROW   [{pin_key}] PUT AWAY") };
-        (true, fraction, color, line)
+        let gear_key = if controls.gamepad { "RB".to_string() } else { key(Action::Gear) };
+        offered.push((gear_key, "RELEASE TO THROW".into()));
+        offered.push((pin_key, if hands.live { "PIN BACK".into() } else { "PUT AWAY".into() }));
+        (true, fraction, color, if hands.live { format!("{left:.1}") } else { String::new() })
     } else if view.scoped > 0.5 && playing {
         let stab = if controls.gamepad { "L3".to_string() } else { key(Action::Sprint) };
         if steady.left > 0.0 {
-            (true, steady.left / steady.total.max(0.01), ui::GOOD, "STABILIZED".to_string())
+            (true, steady.left / steady.total.max(0.01), ui::GOOD, "STEADY".to_string())
         } else if steady.cooldown > 0.0 {
-            (true, 1.0 - steady.cooldown / 2.0, ui::DIM, "SERVOS RECOVERING".to_string())
+            (true, 1.0 - steady.cooldown / 2.0, ui::DIM, String::new())
         } else {
-            (true, 1.0, ui::ACCENT, format!("[{stab}] STABILIZE  ({:.0}s)", Steady::duration(input.stance)))
+            offered.push((stab, format!("HOLD BREATH  {:.0}s", Steady::duration(input.stance))));
+            (false, 1.0, ui::ACCENT, String::new())
         }
-    } else if playing && mover.grounded && input.stance != stance::PRONE && mover.vault.is_none() {
-        // Something low ahead to go over?
-        let wish = Quat::from_rotation_y(input.yaw) * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
-        let dir = if wish.length() > 0.2 { wish } else { Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z };
-        let ahead = oz_sim::player::vault_target(&map, &statics, transform.translation, dir).is_some()
-            && statics.raycast(transform.translation + Vec3::Y * 0.35, Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero(), 0.9).is_some();
-        let jump = if controls.gamepad { "X".to_string() } else { key(Action::Jump) };
-        (ahead, 0.0, ui::ACCENT, format!("[{jump}] VAULT"))
     } else {
+        if playing && mover.grounded && input.stance != stance::PRONE && mover.vault.is_none() {
+            // Something low ahead to go over?
+            let wish = Quat::from_rotation_y(input.yaw) * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
+            let dir = if wish.length() > 0.2 { wish } else { Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z };
+            let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+            if let Some((_, top)) = oz_sim::player::vault_target(&map, &statics, transform.translation, dir)
+                && let Some((d, _)) = statics.raycast(transform.translation + Vec3::Y * 0.35, flat, 0.9)
+            {
+                let at = transform.translation + flat * (d + 0.1);
+                over = Some(Vec3::new(at.x, top, at.z));
+                offered.push((if controls.gamepad { "X".to_string() } else { key(Action::Jump) }, "VAULT".into()));
+            }
+        }
         (false, 0.0, ui::TEXT, String::new())
     };
+    if actions.0 != offered {
+        actions.0 = offered;
+    }
+    ledge.0 = over;
     if let Ok(mut visibility) = meter.single_mut() {
         let wanted = if shown { Visibility::Inherited } else { Visibility::Hidden };
         if *visibility != wanted {
@@ -504,8 +529,7 @@ fn loot_prompt(
     players: Query<(&Player, &Transform, &Arsenal, &Health), With<LocalPlayer>>,
     pickups: Query<(&Transform, &oz_sim::loot::Pickup)>,
     mut orders: EventWriter<CommandEvent>,
-    mut hand_text: Query<&mut Text, (With<HandText>, Without<StreakText>, Without<HuntText>)>,
-    mut meter: Query<&mut Visibility, (With<HandMeter>, Without<StreakPanel>)>,
+    mut actions: ResMut<crate::hud::HandActions>,
 ) {
     use oz_sim::loot::Loot;
     let Ok((me, transform, arsenal, health)) = players.single() else { return };
@@ -525,11 +549,45 @@ fn loot_prompt(
         orders.write(CommandEvent { player: me.id, command: PlayerCommand::Pickup });
     }
     let key = if controls.gamepad { "X".to_string() } else { settings.bindings.label(Action::Interact) };
-    if let Ok(mut text) = hand_text.single_mut() {
-        text.0 = format!("[{key}] SWAP FOR {name}");
+    actions.0.insert(0, (key, format!("SWAP FOR {name}")));
+}
+
+/// A glowing chevron bobbing over the ledge ahead: "you can go over this".
+fn point_at_ledge(
+    mut commands: Commands,
+    time: Res<Time>,
+    art: Res<crate::art::Art>,
+    ledge: Res<Ledge>,
+    camera: Query<&GlobalTransform, With<crate::view::WorldCamera>>,
+    mut arrow: Query<(&mut Transform, &mut Visibility), With<LedgeArrow>>,
+) {
+    let Ok((mut transform, mut visibility)) = arrow.single_mut() else {
+        // Two bars leaning into a down-pointing V.
+        commands
+            .spawn((MatchEntity, LedgeArrow, Transform::default(), Visibility::Hidden))
+            .with_children(|v| {
+                for side in [-1.0f32, 1.0] {
+                    v.spawn((
+                        Mesh3d(art.primitive(Shape::Cube)),
+                        MeshMaterial3d(art.paint(Paint::Glow)),
+                        Transform::from_xyz(0.07 * side, 0.07, 0.0).with_rotation(Quat::from_rotation_z(0.8 * side)).with_scale(Vec3::new(0.045, 0.2, 0.02)),
+                        bevy::pbr::NotShadowCaster,
+                    ));
+                }
+            });
+        return;
+    };
+    let wanted = if ledge.0.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+    if *visibility != wanted {
+        *visibility = wanted;
     }
-    if let Ok(mut visibility) = meter.single_mut() {
-        *visibility = Visibility::Inherited;
+    let Some(at) = ledge.0 else { return };
+    let bob = (time.elapsed_secs() * 4.0).sin() * 0.05;
+    transform.translation = at + Vec3::Y * (0.35 + bob);
+    // Always faces the camera.
+    if let Ok(eye) = camera.single() {
+        let to = eye.translation() - transform.translation;
+        transform.rotation = Quat::from_rotation_y(to.x.atan2(to.z));
     }
 }
 
@@ -542,6 +600,17 @@ pub struct Lamp {
 impl Default for Lamp {
     fn default() -> Self {
         Self { on: true }
+    }
+}
+
+/// The lamp's state rides your input to the host, so everyone else sees your beam (and
+/// the bots notice it).
+fn share_lamp(lamp: Res<Lamp>, mut players: Query<(&mut PlayerInput, &Health), With<LocalPlayer>>) {
+    for (mut input, health) in &mut players {
+        let on = lamp.on && health.alive();
+        if input.light != on {
+            input.light = on;
+        }
     }
 }
 

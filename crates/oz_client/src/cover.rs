@@ -89,7 +89,23 @@ fn demo(
     }
     let dirs = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z];
     let mut spot: Option<(Vec3, Vec3, Vec3)> = None; // feet, wall normal, where to look
-    if which == "window" {
+    if which == "ledge" {
+        // Facing a low wall a step away, out of cover: the vault chevron should show.
+        'l: for block in map.blocks.iter().filter(|b| b.solid && b.aabb.half.y < 0.6 && b.aabb.half.y > 0.25 && b.aabb.half.x.max(b.aabb.half.z) > 0.8) {
+            let b = block.aabb;
+            for normal in dirs {
+                let face = b.center + normal * (b.half.dot(normal.abs()) + 0.75);
+                let feet = Vec3::new(face.x, map.height(face.x, face.z), face.z);
+                if (b.bottom() - feet.y).abs() > 0.2 || statics.blocked(feet.x, feet.z, feet.y, 1.75, 0.3) {
+                    continue;
+                }
+                if oz_sim::player::vault_target(&map, &statics, feet, -normal).is_some() {
+                    spot = Some((feet, normal, feet - normal * 10.0 + Vec3::Y * 0.6));
+                    break 'l;
+                }
+            }
+        }
+    } else if which == "window" {
         'w: for window in &map.windows {
             for normal in dirs.into_iter().filter(|n| if window.along_x { n.x == 0.0 } else { n.z == 0.0 }) {
                 let floor = window.center.y - oz_core::worldgen::WINDOW_SILL;
@@ -129,6 +145,9 @@ fn demo(
     transform.translation = feet;
     let to = look - feet;
     input.yaw = f32::atan2(-to.x, -to.z);
+    if which == "ledge" {
+        return;
+    }
     let low = which == "window";
     cover.wall = Some(Wall { normal, low });
 }
