@@ -178,6 +178,10 @@ fn bounds(model: &BlockModel) -> (Vec3, Vec3) {
         lo = lo.min(part.pos - part.size * 0.5);
         hi = hi.max(part.pos + part.size * 0.5);
     }
+    for point in model.hulls.iter().flat_map(|h| &h.points) {
+        lo = lo.min(*point);
+        hi = hi.max(*point);
+    }
     if lo.x > hi.x { (Vec3::ZERO, Vec3::ONE) } else { ((lo + hi) * 0.5, hi - lo) }
 }
 

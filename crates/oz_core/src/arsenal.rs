@@ -786,16 +786,22 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
     // Grip and trigger guard.
     let gy = -top - 0.085;
     m = match f.grip {
+        // A thin seat flush under the receiver, fused with the tilted grip: the grip meets
+        // the frame along a clean edge instead of a notch.
         GripShape::Pistol => m
             .cube(f.furniture, [0.0, gy, 0.02], [w * 0.75, 0.19, 0.1])
             .rotated([-14.0, 0.0, 0.0])
+            .cube(f.furniture, [0.0, -top - 0.004, -0.002], [w * 0.75, 0.008, 0.11])
+            .hull(2)
             .cube(Paint::Dark, [0.0, gy + 0.008, 0.07], [w * 0.6, 0.15, 0.012])
             .rotated([-14.0, 0.0, 0.0]),
         GripShape::Raked => m
             .cube(f.furniture, [0.0, gy + 0.005, 0.035], [w * 0.75, 0.18, 0.09])
             .rotated([-26.0, 0.0, 0.0])
             .cylinder(f.furniture, [0.0, gy - 0.07, 0.075], [0.09, w * 0.78, 0.09])
-            .rotated([0.0, 0.0, 90.0]),
+            .rotated([0.0, 0.0, 90.0])
+            .cube(f.furniture, [0.0, -top - 0.004, 0.0], [w * 0.75, 0.008, 0.11])
+            .hull(3),
         GripShape::Wrist | GripShape::Lever => m.plate(f.furniture, 0.0, [-top + 0.025, BACK - 0.04], [-top - 0.12, 0.13], w * 0.7, 0.065),
         GripShape::Thumbhole => {
             m = m
@@ -1206,6 +1212,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             m = m
                 .cube(f.furniture, [0.0, h * 0.22, BACK + 0.14], [w * 0.8, h * 0.5, 0.28])
                 .plate(f.furniture, 0.0, [-h * 0.08, BACK], [-h * 0.5, BACK + 0.28], w * 0.8, h * 0.62)
+                .hull(2)
                 .cube(Paint::Dark, [0.0, -h * 0.2, BACK + 0.285], [w * 0.85, h * 1.4, 0.012]);
             Some((-h * 0.2, 0.31, h * 1.4))
         }
@@ -1222,6 +1229,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
                 .cube(f.furniture, [0.0, h * 0.12, BACK + 0.15], [w * 0.9, h * 0.6, 0.3])
                 .plate(f.furniture, 0.0, [-top + 0.02, BACK + 0.01], [-h * 1.0, BACK + 0.27], w * 0.85, h * 0.42)
                 .cube(f.furniture, [0.0, -h * 0.25, BACK + 0.3], [w * 0.95, h * 1.45, 0.06])
+                .hull(3)
                 .cube(Paint::Dark, [0.0, h * 0.45, BACK + 0.17], [w * 0.6, 0.03, 0.18])
                 .cube(Paint::Dark, [0.0, -h * 0.25, BACK + 0.335], [w, h * 1.5, 0.012]);
             Some((-h * 0.25, 0.355, h * 1.5))
@@ -1239,6 +1247,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
                 .plate(f.furniture, 0.0, [top - 0.015, BACK - 0.01], [top - 0.03, BACK + 0.3], w * 0.8, 0.04)
                 .plate(f.furniture, 0.0, [-top - 0.03, BACK + 0.02], [-h * 1.05, BACK + 0.26], w * 0.8, 0.05)
                 .cube(f.furniture, [0.0, -h * 0.3, BACK + 0.28], [w * 0.85, h * 1.6, 0.08])
+                .hull(2)
                 .cube(Paint::Dark, [0.0, -h * 0.3, BACK + 0.325], [w * 0.9, h * 1.65, 0.012]);
             Some((-h * 0.3, 0.345, h * 1.65))
         }
@@ -1246,6 +1255,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             m = m
                 .plate(f.furniture, 0.0, [h * 0.05, BACK - 0.01], [-h * 0.35, BACK + 0.34], w * 0.85, h * 0.9)
                 .plate(f.furniture, 0.0, [-top, BACK + 0.02], [-h * 1.15, BACK + 0.33], w * 0.8, h * 0.5)
+                .hull(2)
                 .cube(Paint::Dark, [0.0, -h * 0.62, BACK + 0.345], [w * 0.88, h * 1.45, 0.015]);
             Some((-h * 0.62, 0.365, h * 1.45))
         }
@@ -1256,6 +1266,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
                 .cube(f.furniture, [0.0, h * 0.02, BACK + 0.2], [w * 0.8, h * 0.55, 0.12])
                 .plate(f.furniture, 0.0, [h * 0.32, BACK + 0.14], [h * 0.42, BACK + 0.27], w * 0.75, 0.03)
                 .plate(f.furniture, 0.0, [-h * 0.2, BACK + 0.15], [-h * 0.68, BACK + 0.27], w * 0.75, 0.04)
+                .hull(3)
                 .cube(Paint::Dark, [0.0, -h * 0.1, BACK + 0.28], [w * 0.85, h * 1.2, 0.025]);
             Some((-h * 0.1, 0.3, h * 1.2))
         }

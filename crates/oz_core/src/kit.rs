@@ -837,7 +837,8 @@ mod tests {
             let state = WeaponState::fresh(gun);
             let stats = resolve(gun, &state, &table);
             assert!(gun.mag > 0 && stats.damage > 0.0 && stats.interval > 0.0 && stats.length > 0.1, "{}", gun.name);
-            assert!(assemble(gun, &state.equipped).parts.len() >= 12, "{}", gun.name);
+            let plain = assemble(gun, &state.equipped);
+            assert!(plain.parts.len() + plain.hulls.len() * 2 >= 12, "{}", gun.name);
             // Every part in one model stays sane and within a modest budget, even fully kitted.
             let kitted = assemble(gun, &[3, 2, 1, 1, 2, 2, 0]);
             assert!(kitted.parts.len() <= 80, "{} has {} parts", gun.name, kitted.parts.len());

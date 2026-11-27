@@ -14,7 +14,7 @@ use bevy::{
     render::mesh::{MeshBuilder as _, PrimitiveTopology},
 };
 use oz_core::{
-    model::{Anim, BlockModel, Paint, Part, Shape},
+    model::{Anim, BlockModel, Hull, Paint, Part, Shape, convex_hull},
     worldgen::srgb_to_linear,
 };
 
@@ -124,10 +124,28 @@ impl Art {
         }
     }
 
+    /// A fused solid: its convex hull, faceted.
+    pub fn add_hull(&self, builder: &mut MeshBuilder, hull: &Hull, offset: Transform) {
+        let matrix = offset.compute_matrix();
+        let color = linear(hull.paint);
+        for triangle in convex_hull(&hull.points) {
+            let [a, b, c] = triangle.map(|p| matrix.transform_point3(p));
+            let normal = (b - a).cross(c - a).normalize_or_zero().to_array();
+            for p in [a, b, c] {
+                builder.positions.push(p.to_array());
+                builder.normals.push(normal);
+                builder.colors.push(color);
+            }
+        }
+    }
+
     /// Merges a whole model (any paints) into lit and unlit builders at `offset`.
     pub fn add_model(&self, lit: &mut MeshBuilder, unlit: &mut MeshBuilder, model: &BlockModel, offset: Transform) {
         for part in &model.parts {
             self.add_part(if part.paint.unlit() { &mut *unlit } else { &mut *lit }, part, offset);
+        }
+        for hull in &model.hulls {
+            self.add_hull(if hull.paint.unlit() { &mut *unlit } else { &mut *lit }, hull, offset);
         }
     }
 
@@ -140,6 +158,12 @@ impl Art {
                 Anim::None | Anim::Mag | Anim::Slide => self.add_part(if part.paint.unlit() { &mut unlit } else { &mut lit }, part, Transform::IDENTITY),
                 Anim::Leg { phase } => self.add_part(&mut legs[(phase.fract() >= 0.5) as usize], part, Transform::IDENTITY),
                 _ => extras.push(*part),
+            }
+        }
+        for hull in &model.hulls {
+            match hull.anim {
+                Anim::Leg { phase } => self.add_hull(&mut legs[(phase.fract() >= 0.5) as usize], hull, Transform::IDENTITY),
+                _ => self.add_hull(if hull.paint.unlit() { &mut unlit } else { &mut lit }, hull, Transform::IDENTITY),
             }
         }
         let mut finish = |builder: MeshBuilder| (!builder.is_empty()).then(|| meshes.add(builder.build()));

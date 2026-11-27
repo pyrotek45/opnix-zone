@@ -92,10 +92,97 @@ pub struct Part {
     pub anim: Anim,
 }
 
+/// A solid wrapped tight round a cloud of points (OpenSCAD's `hull()`): the way to fuse
+/// boxes and cylinders that meet at odd angles into one clean piece, with no gaps or
+/// notches where they join. Drawn faceted, in one paint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hull {
+    pub paint: Paint,
+    pub points: Vec<Vec3>,
+    pub anim: Anim,
+}
+
 /// A list of parts in model space: +Y up, -Z forward, origin at the feet.
 #[derive(Clone, Debug, Default)]
 pub struct BlockModel {
     pub parts: Vec<Part>,
+    /// Fused solids (see [`BlockModel::hull`]).
+    pub hulls: Vec<Hull>,
+}
+
+/// Corner points of a part, in model space (a cylinder's rims, a ball's extremes).
+pub fn part_points(part: &Part) -> Vec<Vec3> {
+    let local: Vec<Vec3> = match part.shape {
+        Shape::Cube => {
+            let mut corners = Vec::with_capacity(8);
+            for x in [-0.5, 0.5] {
+                for y in [-0.5, 0.5] {
+                    for z in [-0.5, 0.5] {
+                        corners.push(Vec3::new(x, y, z));
+                    }
+                }
+            }
+            corners
+        }
+        Shape::Cylinder | Shape::Cone => {
+            // Eight sides, like the drawn primitive; a cone's top is its point.
+            let mut rims = Vec::with_capacity(16);
+            for i in 0..8 {
+                let a = (i as f32 + 0.5) * std::f32::consts::TAU / 8.0;
+                let (x, z) = (a.cos() * 0.5, a.sin() * 0.5);
+                rims.push(Vec3::new(x, -0.5, z));
+                rims.push(if part.shape == Shape::Cone { Vec3::new(0.0, 0.5, 0.0) } else { Vec3::new(x, 0.5, z) });
+            }
+            rims
+        }
+        Shape::Shard => vec![Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z],
+    };
+    local.into_iter().map(|p| part.pos + part.rot * (p * part.size)).collect()
+}
+
+/// Outward-facing triangles of the convex hull of `points` (empty if they are flat).
+pub fn convex_hull(points: &[Vec3]) -> Vec<[Vec3; 3]> {
+    let eps = 1e-6;
+    if points.len() < 4 {
+        return Vec::new();
+    }
+    // A starting tetrahedron from extreme points.
+    let a = 0;
+    let b = (0..points.len()).max_by(|i, j| points[*i].distance_squared(points[a]).total_cmp(&points[*j].distance_squared(points[a]))).unwrap_or(0);
+    let line = (points[b] - points[a]).normalize_or_zero();
+    let off_line = |p: Vec3| {
+        let d = p - points[a];
+        (d - line * d.dot(line)).length_squared()
+    };
+    let c = (0..points.len()).max_by(|i, j| off_line(points[*i]).total_cmp(&off_line(points[*j]))).unwrap_or(0);
+    let normal = (points[b] - points[a]).cross(points[c] - points[a]).normalize_or_zero();
+    let d = (0..points.len()).max_by(|i, j| (points[*i] - points[a]).dot(normal).abs().total_cmp(&(points[*j] - points[a]).dot(normal).abs())).unwrap_or(0);
+    if line == Vec3::ZERO || normal == Vec3::ZERO || (points[d] - points[a]).dot(normal).abs() < 1e-5 {
+        return Vec::new();
+    }
+    let centre = (points[a] + points[b] + points[c] + points[d]) * 0.25;
+    let facing = |f: [usize; 3]| (points[f[1]] - points[f[0]]).cross(points[f[2]] - points[f[0]]);
+    let outward = |f: [usize; 3]| if facing(f).dot(points[f[0]] - centre) < 0.0 { [f[0], f[2], f[1]] } else { f };
+    let mut faces: Vec<[usize; 3]> = [[a, b, c], [a, b, d], [a, c, d], [b, c, d]].into_iter().map(outward).collect();
+    for (i, p) in points.iter().enumerate() {
+        if [a, b, c, d].contains(&i) {
+            continue;
+        }
+        let sees = |f: &[usize; 3]| facing(*f).normalize_or_zero().dot(*p - points[f[0]]) > eps;
+        if !faces.iter().any(sees) {
+            continue;
+        }
+        let (lit, kept): (Vec<[usize; 3]>, Vec<[usize; 3]>) = faces.into_iter().partition(sees);
+        // The horizon: edges of the faces this point sees that no other seen face shares.
+        let edges: Vec<(usize, usize)> = lit.iter().flat_map(|f| [(f[0], f[1]), (f[1], f[2]), (f[2], f[0])]).collect();
+        faces = kept;
+        for &(u, v) in &edges {
+            if !edges.contains(&(v, u)) {
+                faces.push([u, v, i]);
+            }
+        }
+    }
+    faces.into_iter().map(|f| [points[f[0]], points[f[1]], points[f[2]]]).collect()
 }
 
 impl BlockModel {
@@ -150,7 +237,27 @@ impl BlockModel {
 
     /// Keeps only the parts whose animation tag passes `keep`.
     pub fn filtered(&self, keep: impl Fn(Anim) -> bool) -> BlockModel {
-        BlockModel { parts: self.parts.iter().copied().filter(|p| keep(p.anim)).collect() }
+        BlockModel { parts: self.parts.iter().copied().filter(|p| keep(p.anim)).collect(), hulls: self.hulls.iter().filter(|h| keep(h.anim)).cloned().collect() }
+    }
+
+    /// Fuses the last `count` parts into one solid shrink-wrapped round them, in the first
+    /// one's paint (like OpenSCAD's `hull()`). Use it where pieces meet at an angle and leave
+    /// a gap or a notch - a stock's comb and toe, a grip and its frame. Only fuse parts that
+    /// never move apart: an animated magazine or slide must stay a part of its own.
+    pub fn hull(mut self, count: usize) -> Self {
+        let from = self.parts.len().saturating_sub(count);
+        let taken: Vec<Part> = self.parts.drain(from..).collect();
+        if let Some(first) = taken.first() {
+            let points = taken.iter().flat_map(part_points).collect();
+            self.hulls.push(Hull { paint: first.paint, points, anim: first.anim });
+        }
+        self
+    }
+
+    /// A hull through the given points directly.
+    pub fn hull_points(mut self, paint: Paint, points: &[[f32; 3]]) -> Self {
+        self.hulls.push(Hull { paint, points: points.iter().map(|p| Vec3::from(*p)).collect(), anim: Anim::None });
+        self
     }
 
     /// Rotates the most recently added part (XYZ Euler, degrees).
@@ -182,6 +289,7 @@ impl BlockModel {
     pub fn merged(mut self, other: &BlockModel, offset: [f32; 3]) -> Self {
         let offset = Vec3::from(offset);
         self.parts.extend(other.parts.iter().map(|p| Part { pos: p.pos + offset, ..*p }));
+        self.hulls.extend(other.hulls.iter().map(|h| Hull { points: h.points.iter().map(|p| *p + offset).collect(), ..h.clone() }));
         self
     }
 
@@ -189,6 +297,11 @@ impl BlockModel {
         for part in &mut self.parts {
             part.pos *= factor;
             part.size *= factor;
+        }
+        for hull in &mut self.hulls {
+            for point in &mut hull.points {
+                *point *= factor;
+            }
         }
         self
     }
@@ -204,5 +317,23 @@ mod tests {
         assert_eq!(m.parts.len(), 3);
         assert_eq!(m.parts[1].pos.x, -m.parts[2].pos.x);
         assert_eq!(Paint::White.rgb(), [1.0; 3]);
+    }
+
+    #[test]
+    fn hull_wraps_a_cube_in_twelve_triangles_and_fuses_parts() {
+        let cube = Part { shape: Shape::Cube, paint: Paint::Dark, pos: Vec3::ZERO, size: Vec3::ONE, rot: Quat::IDENTITY, anim: Anim::None };
+        let mut points = part_points(&cube);
+        points.push(Vec3::ZERO); // inside: ignored
+        let tris = convex_hull(&points);
+        assert_eq!(tris.len(), 12);
+        for [a, b, c] in tris {
+            // Every face points away from the middle.
+            assert!((b - a).cross(c - a).dot(a + b + c) > 0.0);
+        }
+        let m = BlockModel::new().cube(Paint::Wood, [0.0; 3], [1.0; 3]).cube(Paint::Dark, [0.0, 0.0, 2.0], [0.5; 3]).hull(2);
+        assert!(m.parts.is_empty());
+        assert_eq!(m.hulls.len(), 1);
+        assert_eq!(m.hulls[0].paint, Paint::Wood);
+        assert!(convex_hull(&m.hulls[0].points).len() >= 12);
     }
 }
