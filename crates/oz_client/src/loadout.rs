@@ -206,9 +206,10 @@ fn toggle(controls: Res<Controls>, rules: Res<Rules>, state: Res<MatchState>, mu
     }
 }
 
-/// The armory edits only between matches; during one it only picks.
-fn editable(state: &MatchState) -> bool {
-    state.phase != Phase::Live
+/// Classes are edited between matches, and in unranked play during them too (changes apply
+/// on the next spawn); in a ranked match they are locked and can only be picked.
+fn editable(state: &MatchState, ranked: bool) -> bool {
+    state.phase != Phase::Live || !ranked
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -232,8 +233,8 @@ fn armory_actions(
     let Ok((player, mut input)) = players.single_mut() else {
         return;
     };
-    let edit = editable(&state);
     let ranked = rules.ranked;
+    let edit = editable(&state, ranked);
     let mut changed = false;
     let mut leave = |class: &mut Class, settings: &mut Settings, screen: &mut Screen, send: bool| {
         if send {
@@ -500,12 +501,11 @@ fn slot_value(content: &Content, loadout: &Loadout, tab: u8) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Screen>, class: Res<Class>, controls: Res<Controls>, content: Option<Res<Content>>, state: Option<Res<MatchState>>, career: Res<crate::career::Career>, rules: Option<Res<Rules>>) {
     let (Screen::Loadout, true, Some(content), Some(state)) = (&*screen, dirty.0, content, state) else {
         return;
     };
-    let edit = editable(&state);
+    let edit = editable(&state, rules.as_ref().is_some_and(|r| r.ranked));
     let page = if edit { class.page } else { Page::Classes };
     let c = class.slots[class.active];
     // Locks only show (and only bind) in ranked; everywhere else everything is open.
@@ -543,7 +543,7 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                     ui::slim(panel, order, format!("{}   {name}", i + 1), Act::ClassPick(i as u8), None, i == class.active, Val::Percent(100.0));
                 }
                 if !edit {
-                    ui::label(panel, "CLASSES ARE LOCKED DURING A MATCH. EDIT THEM IN THE LOBBY.", 11.0, ui::DIM);
+                    ui::label(panel, "RANKED: CLASSES ARE LOCKED DURING A MATCH. EDIT THEM IN THE LOBBY.", 11.0, ui::DIM);
                 }
             }
             Page::Class => {
@@ -709,7 +709,7 @@ fn preview(
     focused: Res<Focused>,
     class: Res<Class>,
     content: Res<Content>,
-    state: Res<MatchState>,
+    (state, rules): (Res<MatchState>, Res<Rules>),
     players: Query<&Player, With<LocalPlayer>>,
     mut stage: ResMut<Stage>,
     mut fills: Query<(&ArmoryFill, &mut Node), Without<ArmoryDelta>>,
@@ -721,7 +721,7 @@ fn preview(
         return;
     }
     let team = players.single().map_or(0, |p| p.team);
-    let edit = editable(&state);
+    let edit = editable(&state, rules.ranked);
     let page = if edit { class.page } else { Page::Classes };
     let operator = |index: usize| {
         let c = class.slots[index];

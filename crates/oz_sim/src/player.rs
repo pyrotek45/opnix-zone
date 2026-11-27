@@ -507,6 +507,8 @@ pub struct Mover {
     pub vault: Option<Vault>,
     /// Where the body was last frame (to measure remote players' speed on the host).
     pub last: Vec3,
+    /// On a ladder right now (for the climbing animation).
+    pub climbing: bool,
 }
 
 /// Authority: remote players move on their own machines, so measure how fast they are going
@@ -719,10 +721,12 @@ pub fn move_players(
             mover.vertical = 0.0;
             mover.grounded = true;
             mover.speed = (pos - before).xz().length() / dt.max(1e-4);
+            mover.climbing = true;
             transform.translation = pos;
             transform.rotation = Quat::from_rotation_y(input.yaw);
             continue;
         }
+        mover.climbing = false;
         let ground = ground_under(&map, &statics, pos.x, pos.z, pos.y);
         if mover.grounded && standing && input.held(buttons::JUMP) {
             mover.vertical = JUMP_SPEED;

@@ -1041,8 +1041,9 @@ impl World {
         // Detailing: a dark plinth, corner pilasters, a drainpipe, the odd air-conditioning unit.
         let o = 0.06;
         self.ring(x0, x1, z0, z1, g, g + 0.4, o, Paint::Dark);
-        // Pilasters stand proud of the walls and are cover: solid, so nobody walks into them.
-        for (x, z) in [(x0, z0), (x1, z0), (x0, z1), (x1, z1)] {
+        // Corner pilasters: solid, and set into the corner so they stand only a few centimetres
+        // proud - a robot in cover slides along the wall right up to the corner and peeks round it.
+        for (x, z) in [(x0 + 0.14, z0 + 0.14), (x1 - 0.14, z0 + 0.14), (x0 + 0.14, z1 - 0.14), (x1 - 0.14, z1 - 0.14)] {
             self.solid(Aabb::new(Vec3::new(x, g + (roof_y - g) * 0.5, z), Vec3::new(0.2, (roof_y - g) * 0.5, 0.2)), trim);
         }
         // The drainpipe is too thin to hide behind: walk-through, like every pole and wire.

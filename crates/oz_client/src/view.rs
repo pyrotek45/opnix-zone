@@ -114,6 +114,10 @@ pub struct ViewState {
     cycle: f32,
     /// Seconds left of the weapon inspect animation.
     pub inspect: f32,
+    /// 0..1: how far the gun is pulled back from a wall right in front of you.
+    pub tuck: f32,
+    /// 0..1: on a ladder (gun slung, hand-over-hand rhythm).
+    pub climb: f32,
     /// Scope overlay strength, 0..1 (0 = none, the HUD draws it).
     pub scoped: f32,
     pub scope_kind: u8,
@@ -364,8 +368,9 @@ fn follow_player(
     view.hurt = (view.hurt - dt * 1.6).max(0.0);
     view.blind = (view.blind - dt).max(0.0);
     view.hit = (view.hit - dt).max(0.0);
-    let walking = (mover.speed / 5.4).min(1.6) * mover.grounded as u8 as f32;
-    view.bob += dt * 9.5 * walking;
+    let walking = (mover.speed / 5.4).min(1.6) * mover.grounded as u8 as f32 * (!mover.climbing) as u8 as f32;
+    view.bob += dt * 9.5 * walking + if mover.climbing { dt * 7.0 } else { 0.0 };
+    view.climb += ((mover.climbing && local) as u8 as f32 - view.climb) * (1.0 - (-dt * 10.0).exp());
     // One footstep per half bob cycle; what it sounds like depends on how you move and what is underfoot.
     let step = (view.bob / std::f32::consts::PI) as i32;
     if step != view.step {
@@ -417,7 +422,8 @@ fn follow_player(
     view.lean = lean + (wanted_lean - lean) * lean_k;
     let wanted_third = if cover.third_person() && health.alive() && local { 1.0 } else { 0.0 };
     view.third += (wanted_third - view.third) * (1.0 - (-dt * 9.0).exp());
-    let (eye, roll) = (view.eye, if health.alive() { 0.0 } else { 0.5 });
+    // Hauling up a ladder rocks the view a little with each pull.
+    let (eye, roll) = (view.eye, if health.alive() { (view.bob).sin() * 0.04 * view.climb } else { 0.5 });
     let t = time.elapsed_secs();
     let shake = Vec3::new((t * 61.0).sin(), (t * 53.0).cos(), (t * 47.0).sin()) * view.shake * 0.012;
     let head = player.translation + Vec3::Y * (eye - view.land * 0.13) + bob + view.lean;
@@ -473,6 +479,7 @@ fn viewmodel(
         Query<(&mut Transform, &mut Visibility), (With<ThrowArm>, Without<GunRoot>, Without<GunGroup>, Without<MuzzleFlash>, Without<ThrowGrenade>)>,
         Query<&mut Visibility, (With<ThrowGrenade>, Without<ThrowArm>, Without<GunRoot>, Without<GunGroup>, Without<MuzzleFlash>)>,
     ),
+    (statics, eyes): (Res<Statics>, Query<&Transform, (With<WorldCamera>, Without<GunRoot>, Without<GunGroup>, Without<MuzzleFlash>, Without<ThrowArm>)>),
 ) {
     let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
     let (Some((arsenal, health, mover, input, _)), Ok((root, mut transform, mut visibility))) = (pick, gun.single_mut()) else {
@@ -662,6 +669,11 @@ fn viewmodel(
         }
     }
 
+    // Up against a wall the gun pulls back and points its muzzle up instead of sinking into it.
+    let room = eyes.single().ok().and_then(|eye| statics.raycast(eye.translation, eye.forward().as_vec3(), 1.2).map(|(d, _)| d)).unwrap_or(1.2);
+    let wanted_tuck = ((0.95 + stats.length * 0.3 - room) / 0.6).clamp(0.0, 1.0);
+    let tuck_rate = 1.0 - (-time.delta_secs() * 12.0).exp();
+    view.tuck += (wanted_tuck - view.tuck) * tuck_rate;
     let ads_pos = Vec3::new(0.0, -stats.sight * GUN_SCALE, -0.40);
     let sprint = view.sprint * (1.0 - view.ads);
     // Breathing: the gun drifts in a slow figure eight, much less down the sights.
@@ -675,9 +687,11 @@ fn viewmodel(
         )
         + Vec3::X * view.kick_side
         + Vec3::new(0.12, -0.32, 0.05) * busy
+        + Vec3::new(0.04, -0.1, 0.3) * view.tuck
+        + Vec3::new(0.14, -0.5, 0.12) * view.climb
         + Vec3::new(-0.08, 0.04, -0.2) * melee;
     transform.rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint + view.kick_side * 2.0 + 0.6 * melee)
-        * Quat::from_rotation_x(view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip - 0.5 * busy + 0.35 * melee)
+        * Quat::from_rotation_x(view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip - 0.5 * busy + 0.35 * melee + 0.9 * view.tuck - 0.7 * view.climb)
         * Quat::from_rotation_z(roll + view.sway.x * 1.6 + 1.2 * flip + 0.25 * sprint + view.kick_roll + (t * 0.7).sin() * 0.012 * (1.0 - view.ads * 0.6));
     // Tracers leave from here, sights up or not.
     view.muzzle = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.05) * GUN_SCALE);

@@ -67,6 +67,9 @@ pub struct Pose {
     pub aiming: bool,
     pub reloading: bool,
     pub sprinting: bool,
+    /// On a ladder, and how fast it is climbing (m/s).
+    pub climbing: bool,
+    pub climb_rate: f32,
     pub dead: bool,
     /// Leaning around cover, -1 (left) to 1 (right), smoothed.
     pub lean: f32,
@@ -120,6 +123,9 @@ pub struct Rig {
     pub(crate) steps: i32,
     /// Holding a grenade with the pin out, seconds since it was thrown, and since a melee strike.
     pub(crate) cook: bool,
+    /// Ladder: how much of the climbing pose is showing, and where in the hand-over-hand cycle.
+    pub(crate) climb: f32,
+    pub(crate) climb_phase: f32,
     /// The body's current turn away from the view (cover), eased.
     pub(crate) turn: f32,
     pub(crate) throw_t: f32,
@@ -406,6 +412,8 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
         throw_t: 9.0,
         melee_t: 9.0,
         turn: 0.0,
+        climb: 0.0,
+        climb_phase: 0.0,
     }
 }
 
@@ -481,11 +489,12 @@ fn hold_weapons(
 
 fn pose_players(
     time: Res<Time>,
-    mut robots: Query<(&mut Rig, &mut Pose, &Transform, &Player, &PlayerInput, &Health, Has<LocalPlayer>), With<PlayerRobot>>,
+    mut robots: Query<(&mut Rig, &mut Pose, &Transform, &Player, &PlayerInput, &Health, Has<LocalPlayer>, Option<&Mover>), With<PlayerRobot>>,
     mut sounds: EventWriter<crate::fx::PlaySfx>,
+    map: Res<Map>,
 ) {
     let dt = time.delta_secs().max(1e-4);
-    for (mut rig, mut pose, transform, player, input, health, local) in &mut robots {
+    for (mut rig, mut pose, transform, player, input, health, local, mover) in &mut robots {
         // Everyone else's feet are heard where they fall: listen for people coming.
         let footfalls = (rig.phase / PI).floor() as i32;
         if footfalls != rig.steps {
@@ -503,6 +512,12 @@ fn pose_players(
         }
         let moved = if rig.last_pos.is_finite() { transform.translation - rig.last_pos } else { Vec3::ZERO };
         rig.last_pos = transform.translation;
+        // Climbing: known for our own body; for others, rising steadily right at a ladder.
+        let rising = moved.y / dt;
+        let at = transform.translation;
+        let on_ladder = map.ladders.iter().any(|l| (Vec2::new(at.x, at.z) - (Vec2::new(l.foot.x, l.foot.z) + l.out * 0.45)).length() < 0.7 && at.y > l.foot.y - 0.2 && at.y < l.top);
+        pose.climbing = health.alive() && if local { mover.is_some_and(|m| m.climbing) } else { on_ladder && rising > 0.5 };
+        pose.climb_rate += (rising.max(0.0) - pose.climb_rate) * (1.0 - (-dt * 8.0).exp());
         let forward = transform.rotation * Vec3::NEG_Z;
         let speed = moved.xz().length() / dt;
         let along = if moved.xz().dot(forward.xz()) < -0.01 { -1.0 } else { 1.0 };
@@ -590,6 +605,8 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         rig.phase += pose.speed * dt * cadence;
         rig.throw_t += dt;
         rig.melee_t += dt;
+        rig.climb += ((pose.climbing as u8 as f32) - rig.climb) * (1.0 - (-dt * 10.0).exp());
+        rig.climb_phase += pose.climb_rate * dt * 5.5;
         let p = rig.phase;
         rig.dead_for = if pose.dead { rig.dead_for + dt } else { 0.0 };
         rig.angry = (rig.angry - dt).max(0.0);
@@ -652,6 +669,9 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             let prone = (s * 0.15 * k.min(1.0), -lift * 0.3 * k.min(1.0));
             let thigh = st * stand.0 + c * crouch.0 + pr * prone.0;
             let shin = st * stand.1 + c * crouch.1 + pr * prone.1;
+            // On a ladder: knees come up one after the other, in time with the hands.
+            let step = (rig.climb_phase + side as f32 * PI).sin();
+            let (thigh, shin) = (thigh + (0.75 + 0.55 * step - thigh) * rig.climb, shin + (-1.0 - 0.5 * step.max(0.0) - shin) * rig.climb);
             set(&mut transforms, rig.thighs[side], Vec3::new(-0.12 * sign, -0.02, 0.0), rot(thigh), blend);
             set(&mut transforms, rig.shins[side], Vec3::new(0.0, -THIGH, 0.0), rot(shin), blend);
         }
@@ -683,6 +703,7 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let carry = if pose.sprinting && !pose.aiming { -0.75 } else { 0.0 } - 0.5 * r;
         let correction = pr * FRAC_PI_2 - (1.0 - pr) * torso_lean;
         let aim_pitch = if pose.dead { -0.9 } else { (pose.pitch + carry).clamp(-1.3, 1.3) + correction + kick * 0.12 };
+        let aim_pitch = aim_pitch + (-1.35 - aim_pitch) * rig.climb;
         let tilt = Quat::from_rotation_z(0.45 * r + fumble * 2.0);
         let melee = if rig.melee_t < 0.42 { (rig.melee_t / 0.42 * PI).sin() } else { 0.0 };
         let aim_at = Vec3::Y * SHOULDER
@@ -699,7 +720,15 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         } else {
             Quat::IDENTITY
         };
+        // On a ladder both hands reach up rung over rung; the gun hangs on its sling.
+        let reach = |side: f32| rot(2.5 + 0.45 * (rig.climb_phase + side * PI).sin());
+        let arm = arm.slerp(reach(0.0), rig.climb);
         set(&mut transforms, rig.arms[0], Vec3::ZERO, arm, blend);
+        if rig.climb > 0.01 {
+            set(&mut transforms, rig.arms[1], Vec3::ZERO, Quat::IDENTITY.slerp(reach(1.0), rig.climb), blend);
+        } else {
+            set(&mut transforms, rig.arms[1], Vec3::ZERO, Quat::IDENTITY, blend);
+        }
         // The head follows the aim, and glances down at the gun while reloading.
         let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r };
         set(&mut transforms, rig.head, Vec3::Y * NECK, rot(head_pitch), blend);

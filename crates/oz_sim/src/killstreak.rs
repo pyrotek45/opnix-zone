@@ -125,8 +125,8 @@ const JET_HP: f32 = 260.0;
 const JET_SPEED: f32 = 48.0;
 const JET_HEIGHT: f32 = 30.0;
 const RECON_HP: f32 = 240.0;
-const RECON_HEIGHT: f32 = 48.0;
-const RECON_ORBIT: f32 = 42.0;
+const RECON_HEIGHT: f32 = 90.0;
+const RECON_ORBIT: f32 = 55.0;
 const DRONE_HP: f32 = 130.0;
 /// Seconds a bomb takes to fall from the jet.
 const BOMB_FALL: f32 = 1.1;
@@ -217,7 +217,7 @@ pub fn use_streaks(
                     MatchEntity,
                     ids.next(),
                     Recon { life: UAV_SECONDS, angle },
-                    Aircraft { look: oz_core::content::ShotLook::RadarPlane, hp: RECON_HP, team, owner: id, radius: 3.2, hit_by: None },
+                    Aircraft { look: oz_core::content::ShotLook::RadarPlane, hp: RECON_HP, team, owner: id, radius: 4.0, hit_by: None },
                     Transform::from_translation(at),
                 ));
             }

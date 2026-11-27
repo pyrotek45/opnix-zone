@@ -323,6 +323,24 @@ struct Body {
     crouch_from: u8,
     /// X vaulted: no reload from that same press.
     vault_press: bool,
+    /// Recoil: shots seen so far, shots into this burst, time since the last one,
+    /// kick still to be applied to the aim, and how far the muzzle has climbed.
+    shots: Option<u32>,
+    burst: u32,
+    since_shot: f32,
+    kick: Vec2,
+    climbed: f32,
+}
+
+/// Where a gun's muzzle goes on shot `n` of a burst: always up, climbing a little harder as
+/// the burst goes on, and sideways along a wander that belongs to that gun (learn it, pull
+/// against it). In units of the gun's recoil.
+pub fn recoil_pattern(weapon: u8, n: u32) -> Vec2 {
+    let seed = weapon as f32 * 1.37 + 0.4;
+    let k = n as f32;
+    let up = 1.0 + 0.35 * (k.min(10.0) / 10.0);
+    let side = 0.6 * ((k * 0.7 + seed).sin() + 0.5 * (k * 1.9 + seed * 2.3).sin()) * if n < 3 { 0.3 } else { 1.0 };
+    Vec2::new(side, up)
 }
 
 /// Stance from the crouch button. Each press does exactly one thing however long it is held,
@@ -376,6 +394,7 @@ fn drive_player(
     (map, statics): (Res<Map>, Res<Statics>),
     mut steady: ResMut<Steady>,
     cover: Res<crate::cover::Cover>,
+    (role, prediction): (Res<NetRole>, Res<crate::predict::Prediction>),
     mut players: Query<(Entity, &Transform, &mut PlayerInput, &Arsenal, &Health, &Mover), With<LocalPlayer>>,
     mut body: Local<Body>,
     mut whose: Local<Option<Entity>>,
@@ -452,6 +471,43 @@ fn drive_player(
 
     input.movement = controls.movement;
     let mut look = controls.look;
+
+    // Recoil: every shot kicks the aim itself (this is where the next round goes), up and to
+    // the side along the gun's own pattern. Heavier guns kick harder; crouching, going prone
+    // and aiming brace it. Let go of the trigger and the muzzle settles part of the way back.
+    let shots = if *role == NetRole::Client { prediction.total } else { arsenal.shots };
+    let fired = body.shots.map_or(0, |seen| shots.saturating_sub(seen)).min(4);
+    body.shots = Some(shots);
+    let dt_kick = time.delta_secs();
+    body.since_shot += dt_kick;
+    if body.since_shot > 0.32 {
+        body.burst = 0;
+    }
+    if fired > 0
+        && let Some(stats) = content.weapons.get(arsenal.current as usize).zip(arsenal.state()).map(|(def, state)| resolve(def, state, &content.attachments))
+    {
+        let brace = stance::recoil(body.stance) * if controls.aim { 0.8 } else { 1.0 };
+        for _ in 0..fired {
+            body.burst += 1;
+            let kick = recoil_pattern(arsenal.current, body.burst) * stats.recoil * 0.0045 * brace;
+            body.kick += kick;
+            body.climbed += kick.y;
+        }
+        body.since_shot = 0.0;
+    }
+    // The kick lands over a few hundredths of a second, so it feels like a shove, not a jump.
+    let landing = body.kick * (1.0 - (-dt_kick * 28.0).exp());
+    body.kick -= landing;
+    look += Vec2::new(landing.x, -landing.y);
+    if body.since_shot > 0.15 && body.climbed > 0.0 {
+        let settle = body.climbed * (1.0 - (-dt_kick * 5.0).exp());
+        body.climbed -= settle;
+        look.y += settle * 0.55;
+    }
+    // Pulling down against the climb uses it up, so recovery never drags you below your aim.
+    if look.y > 0.0 && controls.look.y > 0.0 {
+        body.climbed = (body.climbed - controls.look.y).max(0.0);
+    }
 
     // Magnified optics sway. Going low steadies them, and stabilizing (L3 / Shift) locks the
     // servos: the sway slows to a stop where it is - the crosshair never jumps - for a few
