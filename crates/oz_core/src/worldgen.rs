@@ -1,10 +1,27 @@
 //! Procedural maps.
 //!
 //! A [`World`] is generated from a [`WorldRecipe`] and is fully deterministic:
-//! host and clients only exchange the recipe, never geometry. The current
-//! generator builds archipelagos (one home island, outlying islets joined by
-//! sandbars). New generators only need to fill in the same [`World`] struct to
-//! work with the rest of the engine.
+//! host and clients only exchange the recipe, never geometry. [`Layout`] picks
+//! the generator: archipelagos (one home island, outlying islets joined by
+//! sandbars) for co-op, and towns for versus - the random town, which rolls a
+//! [`Theme`] from its seed (suburbs, desert outpost, farmland, industrial
+//! town, woods park) so everything on the map belongs together, and the fixed
+//! maps (Crossroads, Dockyard, Office Tower, Space Station, Mountainside).
+//! Every generator fills in the same [`World`] struct to work with the rest of
+//! the engine.
+//!
+//! The pieces live in submodules: `shapes` (building shapes, roofs,
+//! silos, towers, fences, furniture), `themes` (the random town per theme),
+//! `office`, `station` and `mountain` (the big fixed maps).
+
+mod mountain;
+mod office;
+mod shapes;
+mod station;
+mod themes;
+
+pub use themes::Theme;
+use shapes::{Furnish, Plan, Roof};
 
 use crate::{collide::Aabb, economy::Ore, model::Paint, noise, rng::Rng};
 use glam::{Vec2, Vec3};
@@ -115,8 +132,9 @@ impl Biome {
 pub enum Layout {
     /// A home island ringed by ore-rich islets joined by sandbars.
     Archipelago,
-    /// A compact island town: a street grid of solid buildings and cover, with two team bases.
-    /// Different every seed.
+    /// The random town: a big map (about 220 m across) whose [`Theme`] - suburbs, desert
+    /// outpost, farmland, industrial town or woods park - is rolled from the seed and sets the
+    /// buildings, colours, cover and street pattern. Different every seed.
     Town,
     /// Fixed map: three lanes between the bases - a tight alley, the main street through
     /// the fountain plaza, and a long market lane watched by a three-storey tower.
@@ -124,6 +142,15 @@ pub enum Layout {
     /// Fixed map: a container yard - corridors of stacked shipping containers, a big
     /// warehouse in the middle, offices on the flanks.
     Dockyard,
+    /// Fixed indoor map: a four-storey office block round an atrium - cubicles, glass-walled
+    /// offices, meeting rooms, a lobby - with four stairwells, a roof and a plaza outside.
+    OfficeTower,
+    /// Fixed indoor map: an enclosed station - a hangar and a cargo bay at the ends, airlocks
+    /// and corridors to a ring round a two-level hub, labs, quarters and a reactor.
+    SpaceStation,
+    /// Fixed map on a slope: terraces joined by a switchback road and stairs, cliffs to hold,
+    /// a village in the valley and a lodge and radio station on the summit.
+    Mountainside,
 }
 
 impl Layout {
@@ -133,7 +160,7 @@ impl Layout {
     }
 
     /// Versus map choices: the random town, then the fixed maps.
-    pub const VERSUS: [Layout; 3] = [Layout::Town, Layout::Crossroads, Layout::Dockyard];
+    pub const VERSUS: [Layout; 6] = [Layout::Town, Layout::Crossroads, Layout::Dockyard, Layout::OfficeTower, Layout::SpaceStation, Layout::Mountainside];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -141,7 +168,15 @@ impl Layout {
             Layout::Town => "RANDOM TOWN",
             Layout::Crossroads => "CROSSROADS",
             Layout::Dockyard => "DOCKYARD",
+            Layout::OfficeTower => "OFFICE TOWER",
+            Layout::SpaceStation => "SPACE STATION",
+            Layout::Mountainside => "MOUNTAINSIDE",
         }
+    }
+
+    /// Indoor maps: a roof over nearly all of the play area.
+    pub fn is_indoor(self) -> bool {
+        matches!(self, Layout::OfficeTower | Layout::SpaceStation)
     }
 }
 
@@ -193,8 +228,15 @@ impl WorldRecipe {
         Self { seed, biome, half_extent: 160.0, cell: 2.0, main_radius: 46.0, islets: 5, layout: Layout::Archipelago, weather: Weather::from_seed(seed) }
     }
 
+    /// The random town: a big square of land about 230 m across, themed by its seed.
     pub fn town(seed: u64, biome: Biome) -> Self {
-        Self { seed, biome, half_extent: 96.0, cell: 2.0, main_radius: 68.0, islets: 0, layout: Layout::Town, weather: Weather::from_seed(seed) }
+        Self { seed, biome, half_extent: 150.0, cell: 2.0, main_radius: 128.0, islets: 0, layout: Layout::Town, weather: Weather::from_seed(seed) }
+    }
+
+    /// The random town with a chosen theme: the first seed from `seed` on that rolls it.
+    pub fn themed(seed: u64, biome: Biome, theme: Theme) -> Self {
+        let seed = (seed..).find(|s| Theme::from_seed(*s) == theme).unwrap_or(seed);
+        Self::town(seed, biome)
     }
 
     /// A fixed map: the same streets every time (its own seed), in any biome and weather.
@@ -202,9 +244,19 @@ impl WorldRecipe {
         let seed = match layout {
             Layout::Crossroads => 0xC055_2045,
             Layout::Dockyard => 0xD0C5_1D0C,
+            Layout::OfficeTower => 0x0FF1_CE00,
+            Layout::SpaceStation => 0x57A7_1000,
+            Layout::Mountainside => 0x3077_7A15,
             _ => 7,
         };
-        Self { layout, weather, ..Self::town(seed, biome) }
+        // The compact maps keep the original island; the others get a square of land.
+        let (half_extent, main_radius) = match layout {
+            Layout::Crossroads | Layout::Dockyard => (96.0, 68.0),
+            Layout::OfficeTower => (100.0, 84.0),
+            Layout::SpaceStation => (104.0, 96.0),
+            _ => (150.0, 128.0),
+        };
+        Self { layout, weather, half_extent, main_radius, ..Self::town(seed, biome) }
     }
 }
 
@@ -410,6 +462,20 @@ pub struct World {
     pub flags: Vec<Vec3>,
     /// Breakable street furniture.
     pub clutter: Vec<Clutter>,
+    /// Places worth going to on the indoor maps - rooms, corridors, upper floors, the roof -
+    /// where bots sweep and hostiles hold posts (empty elsewhere: anywhere in the arena will do).
+    pub waypoints: Vec<Vec3>,
+    /// The random town's theme (`None` on every other layout).
+    pub theme: Option<Theme>,
+    /// Half the side of the square the fighting happens in: bots sweep it, hostiles hold posts
+    /// in it, loot lies in it.
+    pub arena: f32,
+    /// How buildings look on this map (wall and roof paints).
+    style: shapes::Style,
+    /// Streets and paths laid so far, (from, to, width), for parking cars and lining with trees.
+    roads: Vec<(Vec2, Vec2, f32)>,
+    /// Building sites chosen before the ground is shaped, (centre, radius): the ground stays flat there.
+    flats: Vec<(Vec2, f32)>,
     side: usize,
     heights: Vec<f32>,
 }
@@ -419,6 +485,12 @@ pub const WATER_LEVEL: f32 = -0.35;
 pub const COVER_HEIGHT: f32 = 1.2;
 /// Window sills: crouch below one to hide; vault through it.
 pub const WINDOW_SILL: f32 = 1.15;
+/// A doorway: wide enough for a robot, and a door that swings in it.
+pub const DOOR_WIDTH: f32 = 1.7;
+/// Doorway height.
+pub const DOOR_HEIGHT: f32 = 2.35;
+/// Storey height of every building: eleven stair steps of 0.29 m.
+pub const STOREY: f32 = 3.2;
 /// How deep a player may wade before the sea pushes back.
 pub const WADE_DEPTH: f32 = 0.65;
 const SEABED: f32 = -1.4;
@@ -458,7 +530,23 @@ impl World {
             fountain: None,
             flags: Vec::new(),
             clutter: Vec::new(),
+            waypoints: Vec::new(),
+            theme: (recipe.layout == Layout::Town).then(|| Theme::from_seed(recipe.seed)),
+            arena: match recipe.layout {
+                Layout::Archipelago => recipe.main_radius,
+                Layout::Crossroads | Layout::Dockyard => 58.0,
+                Layout::OfficeTower => 72.0,
+                Layout::SpaceStation => 86.0,
+                _ => 112.0,
+            },
+            style: shapes::Style::default(),
+            roads: Vec::new(),
+            flats: Vec::new(),
         };
+        if let Some(theme) = world.theme {
+            world.style = theme.style();
+            world.flats = world.plan_flats();
+        }
         world.heights = (0..side * side)
             .map(|i| {
                 let (ix, iz) = (i % side, i / side);
@@ -471,7 +559,7 @@ impl World {
                 world.pads = (0..6).map(|i| Vec2::from_angle(TAU * (i as f32 + 0.5) / 6.0) * 10.0).collect();
                 world.scatter(&mut rng.fork());
             }
-            Layout::Town | Layout::Crossroads | Layout::Dockyard => world.build_town(&mut rng.fork()),
+            _ => world.build_town(&mut rng.fork()),
         }
         world
     }
@@ -480,6 +568,12 @@ impl World {
     fn raw_height(&self, x: f32, z: f32) -> f32 {
         let seed = self.recipe.seed;
         let p = Vec2::new(x, z);
+        match self.recipe.layout {
+            Layout::Town => return self.themed_height(x, z),
+            Layout::Mountainside => return self.mountain_height(x, z),
+            Layout::OfficeTower | Layout::SpaceStation => return self.square_land(x, z),
+            _ => {}
+        }
         let mut best = SEABED + 0.25 * noise::fbm(seed ^ 0xbed, x * 0.03, z * 0.03, 2);
         for (index, island) in self.islands.iter().enumerate() {
             let d = p - island.center;
@@ -632,49 +726,15 @@ impl World {
 
     /// A street grid of enterable buildings, cover in the lanes, and a base on each side.
     fn build_town(&mut self, rng: &mut Rng) {
-        const LOT: f32 = 21.0;
         match self.recipe.layout {
             Layout::Crossroads => self.crossroads(rng),
             Layout::Dockyard => self.dockyard(rng),
-            _ => self.random_lots(rng, LOT),
+            Layout::OfficeTower => return self.office_tower(rng),
+            Layout::SpaceStation => return self.space_station(rng),
+            Layout::Mountainside => return self.mountainside(rng),
+            _ => return self.themed_town(rng),
         }
         self.finish_town(rng);
-    }
-
-    /// The random town: a 5 x 5 grid of lots around an open plaza.
-    fn random_lots(&mut self, rng: &mut Rng, lot: f32) {
-        const LOT: f32 = 21.0;
-        let _ = lot;
-        for gx in -2i32..=2 {
-            for gz in -2i32..=2 {
-                if (gx, gz) == (0, 0) {
-                    continue; // The plaza stays open.
-                }
-                let center = Vec2::new(gx as f32 * LOT, gz as f32 * LOT);
-                let roll = rng.unit();
-                if roll < 0.12 {
-                    self.courtyard(rng, center);
-                } else if roll < 0.42 {
-                    // Two narrow houses with an alley between them.
-                    for side in [-1.0, 1.0] {
-                        let half = Vec2::new(rng.range(3.6, 6.2), rng.range(2.9, 3.4));
-                        let at = center + Vec2::new(rng.range(-0.8, 0.8), side * 4.2);
-                        self.building(rng, at, half, 1);
-                    }
-                } else {
-                    let half = Vec2::new(rng.range(4.4, 6.6), rng.range(4.2, 6.6));
-                    let floors = if half.x > 5.6 && half.y > 5.0 && rng.chance(0.4) {
-                        3
-                    } else if rng.chance(0.55) {
-                        2
-                    } else {
-                        1
-                    };
-                    let at = center + Vec2::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
-                    self.building(rng, at, half, floors);
-                }
-            }
-        }
     }
 
     /// Fixed map: three lanes. North alley (z = 24): two rows of tight two-storey houses.
@@ -711,22 +771,7 @@ impl World {
             self.building(rng, Vec2::new(x, z), Vec2::new(6.0, 5.0), 2);
         }
         // Containers: rows that make corridors, some stacked two high.
-        let colours = [Paint::Rust, Paint::Teal, Paint::Coral, Paint::Gold, Paint::Steel, Paint::Blue];
-        let container = |world: &mut World, at: Vec2, along_x: bool, high: bool, rng: &mut Rng| {
-            let half = if along_x { Vec3::new(3.05, 1.3, 1.22) } else { Vec3::new(1.22, 1.3, 3.05) };
-            let g = world.height(at.x, at.y);
-            for level in 0..if high { 2 } else { 1 } {
-                let paint = *rng.pick(&colours).unwrap_or(&Paint::Rust);
-                let c = Vec3::new(at.x, g + half.y + level as f32 * 2.6, at.y);
-                world.solid(Aabb::new(c, half), paint);
-                // Corrugation ribs and a door end.
-                let rib = if along_x { Vec3::new(0.04, half.y * 0.95, half.z + 0.03) } else { Vec3::new(half.x + 0.03, half.y * 0.95, 0.04) };
-                for k in -3..=3 {
-                    let offset = if along_x { Vec3::X * k as f32 * 0.85 } else { Vec3::Z * k as f32 * 0.85 };
-                    world.decor(Aabb::new(c + offset, rib), Paint::Dark);
-                }
-            }
-        };
+        let container = |world: &mut World, at: Vec2, along_x: bool, high: bool, rng: &mut Rng| world.container(rng, at, along_x, if high { 2 } else { 1 });
         for (x, z0, z1) in [(-18.0, -40.0, -14.0), (-18.0, 14.0, 40.0), (18.0, -40.0, -14.0), (18.0, 14.0, 40.0)] {
             let mut z = z0;
             while z < z1 {
@@ -830,11 +875,20 @@ impl World {
     /// A band `out` thick around the outside of a footprint (plinths, floor-line trims):
     /// four strips hugging the walls, never a slab through the rooms inside.
     #[allow(clippy::too_many_arguments)]
-    fn ring(&mut self, x0: f32, x1: f32, z0: f32, z1: f32, y0: f32, y1: f32, out: f32, paint: Paint) {
-        self.decor(Aabb::span(Vec3::new(x0 - out, y0, z0 - out), Vec3::new(x1 + out, y1, z0)), paint);
-        self.decor(Aabb::span(Vec3::new(x0 - out, y0, z1), Vec3::new(x1 + out, y1, z1 + out)), paint);
-        self.decor(Aabb::span(Vec3::new(x0 - out, y0, z0), Vec3::new(x0, y1, z1)), paint);
-        self.decor(Aabb::span(Vec3::new(x1, y0, z0), Vec3::new(x1 + out, y1, z1)), paint);
+    /// `skip` leaves sides out (south, west, east, north), where a wing joins on.
+    fn ring(&mut self, x0: f32, x1: f32, z0: f32, z1: f32, y0: f32, y1: f32, out: f32, paint: Paint, skip: [bool; 4]) {
+        if !skip[0] {
+            self.decor(Aabb::span(Vec3::new(x0 - out, y0, z0 - out), Vec3::new(x1 + out, y1, z0)), paint);
+        }
+        if !skip[3] {
+            self.decor(Aabb::span(Vec3::new(x0 - out, y0, z1), Vec3::new(x1 + out, y1, z1 + out)), paint);
+        }
+        if !skip[1] {
+            self.decor(Aabb::span(Vec3::new(x0 - out, y0, z0), Vec3::new(x0, y1, z1)), paint);
+        }
+        if !skip[2] {
+            self.decor(Aabb::span(Vec3::new(x1, y0, z0), Vec3::new(x1 + out, y1, z1)), paint);
+        }
     }
 
     /// Is anything solid within `margin` of this point?
@@ -870,19 +924,22 @@ impl World {
                 if along_x { Aabb::span(Vec3::new(a, base + y0, fixed.0), Vec3::new(b, base + y1, fixed.1)) } else { Aabb::span(Vec3::new(fixed.0, base + y0, a), Vec3::new(fixed.1, base + y1, b)) };
             self.solid(aabb, paint);
         }
-        // Remember every opening: doors get doors, windows get glass.
+        // Remember every opening: doors get doors, windows get glass. Openings wider than a
+        // doorway (garage mouths, barn doors, archways) stay open.
         for (u0, u1, y0, y1) in openings.iter().copied() {
             let mid = start + (u0 + u1) * 0.5;
             let across = (fixed.0 + fixed.1) * 0.5;
             let center = if along_x { Vec3::new(mid, base + y0, across) } else { Vec3::new(across, base + y0, mid) };
             if y0 <= 0.0 {
-                self.doors.push(DoorSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
+                if u1 - u0 <= DOOR_WIDTH + 0.05 {
+                    self.doors.push(DoorSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
+                }
             } else {
                 self.windows.push(WindowSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
             }
         }
         // Sills under windows read better with a dark ledge, and a lintel over each opening.
-        for (u0, u1, _, y1) in openings.iter().copied() {
+        for (u0, u1, _, y1) in openings.iter().copied().filter(|o| o.3 < height - 0.13) {
             let (a, b) = (start + u0 - 0.08, start + u1 + 0.08);
             let lintel = if along_x {
                 Aabb::span(Vec3::new(a, base + y1, fixed.0 - 0.05), Vec3::new(b, base + y1 + 0.12, fixed.1 + 0.05))
@@ -904,12 +961,21 @@ impl World {
 
     /// Openings for one side of one storey: maybe a door, and windows wherever they fit.
     fn openings(rng: &mut Rng, length: f32, door: bool, windows: bool) -> Vec<(f32, f32, f32, f32)> {
+        let door = door.then(|| (rng.range(1.6, length - 1.6), DOOR_WIDTH));
+        Self::openings_at(rng, length, door, windows)
+    }
+
+    /// Openings for one side of one storey: a doorway at `door` (centre along the wall, width;
+    /// wider than [`DOOR_WIDTH`] is an open gateway), and windows wherever they fit around it.
+    pub(crate) fn openings_at(rng: &mut Rng, length: f32, door: Option<(f32, f32)>, windows: bool) -> Vec<(f32, f32, f32, f32)> {
         let mut out = Vec::new();
         let mut taken: Vec<(f32, f32)> = Vec::new();
-        if door {
-            let center = rng.range(1.6, length - 1.6);
-            out.push((center - 0.85, center + 0.85, 0.0, 2.35));
-            taken.push((center - 1.3, center + 1.3));
+        if let Some((center, width)) = door {
+            let lo = width * 0.5 + 0.35;
+            let center = center.clamp(lo, (length - lo).max(lo));
+            let top = if width > DOOR_WIDTH + 0.05 { 2.9 } else { DOOR_HEIGHT };
+            out.push((center - width * 0.5, center + width * 0.5, 0.0, top));
+            taken.push((center - width * 0.5 - 0.45, center + width * 0.5 + 0.45));
         }
         if windows {
             let mut u = 1.0;
@@ -925,52 +991,104 @@ impl World {
         out
     }
 
-    /// One building: foundation, walls with doors and windows, up to three
-    /// storeys joined by switchback stairs, interior rooms, roof, detailing,
-    /// and sometimes a ladder up to the roof.
+    /// One building in this map's style, with its doors and roof left to chance.
     fn building(&mut self, rng: &mut Rng, c: Vec2, half: Vec2, floors: u32) {
+        self.building_plan(rng, c, half, floors, &Plan::default());
+    }
+
+    /// One building: foundation, walls with doors and windows, storeys joined by switchback
+    /// stairs, interior rooms and furniture, a flat roof with parapets or a stepped pitched one,
+    /// detailing, and sometimes a ladder up to the roof. `plan` fixes what is not left to chance
+    /// (paint, roof, doors, sides left open to join a neighbouring wing, a balcony door).
+    /// Returns (floor level, roof level).
+    pub(crate) fn building_plan(&mut self, rng: &mut Rng, c: Vec2, half: Vec2, floors: u32, plan: &Plan) -> (f32, f32) {
         const T: f32 = 0.3;
-        const STOREY: f32 = 3.2;
         const STEPS: usize = 11;
         const RUN: f32 = 0.42;
         const LANE: f32 = 1.2;
         let (hx, hz) = (half.x, half.y);
         let (x0, x1, z0, z1) = (c.x - hx, c.x + hx, c.y - hz, c.y + hz);
-        let mut g = f32::MIN;
-        for (x, z) in [(x0, z0), (x1, z0), (x0, z1), (x1, z1), (c.x, c.y)] {
-            g = g.max(self.height(x, z));
-        }
-        let g = g + 0.12;
-        let paint = *rng.pick(&[Paint::Concrete, Paint::Rust, Paint::Bone, Paint::Teal, Paint::Steel, Paint::Sand]).unwrap_or(&Paint::Concrete);
-        let trim = if matches!(paint, Paint::Bone | Paint::Sand | Paint::Concrete) { Paint::Steel } else { Paint::Bone };
+        let g = plan.floor.unwrap_or_else(|| {
+            let mut g = f32::MIN;
+            for (x, z) in [(x0, z0), (x1, z0), (x0, z1), (x1, z1), (c.x, c.y)] {
+                g = g.max(self.height(x, z));
+            }
+            g + 0.12
+        });
+        let paint = plan.walls.unwrap_or_else(|| *rng.pick(&self.style.walls).unwrap_or(&Paint::Concrete));
+        let trim = plan.trim.unwrap_or(if matches!(paint, Paint::Bone | Paint::Sand | Paint::Concrete | Paint::White) { Paint::Steel } else { Paint::Bone });
+        let roof = match plan.roof {
+            Roof::Auto => self.style.roof(rng),
+            roof => roof,
+        };
+        let open = plan.open;
         let roof_y = g + floors as f32 * STOREY;
 
         // Foundation and floor.
-        self.solid(Aabb::span(Vec3::new(x0, g - 1.0, z0), Vec3::new(x1, g, z1)), Paint::Concrete);
-        self.decor(Aabb::span(Vec3::new(x0 + T, g, z0 + T), Vec3::new(x1 - T, g + 0.012, z1 - T)), Paint::Wood);
+        self.solid(Aabb::span(Vec3::new(x0, g - 2.5, z0), Vec3::new(x1, g, z1)), Paint::Concrete);
+        self.decor(Aabb::span(Vec3::new(x0 + T, g, z0 + T), Vec3::new(x1 - T, g + 0.012, z1 - T)), plan.floor_paint);
 
         // Doors go on up to two sides; buildings with stairs keep the stair walls (north, and south above two storeys) solid.
-        let mut doors = [false; 4];
-        doors[rng.below(if floors > 1 { 3 } else { 4 })] = true;
-        if rng.chance(0.6) {
-            doors[rng.below(if floors > 1 { 3 } else { 4 })] = true;
+        // Sides: 0 south (-z), 1 west (-x), 2 east (+x), 3 north (+z). A door is (centre along the wall, width).
+        let mut doors = plan.doors;
+        if plan.random_doors {
+            for roll in 0..2 {
+                if roll == 1 && !rng.chance(0.6) {
+                    break;
+                }
+                let side = rng.below(if floors > 1 { 3 } else { 4 });
+                if doors[side].is_none() && !open[side] {
+                    let center = if side == 0 || side == 3 { rng.range(x0 + 1.6, x1 - 1.6) } else { rng.range(z0 + T + 1.6, z1 - T - 1.6) };
+                    doors[side] = Some((center, DOOR_WIDTH));
+                }
+            }
         }
+        // Where each side's wall starts along its length.
+        let start = [x0, z0 + T, z0 + T, x0];
         for floor in 0..floors {
             let base = g + floor as f32 * STOREY;
             let ground = floor == 0;
+            let door_for = |side: usize| -> Option<(f32, f32)> {
+                if ground {
+                    doors[side].map(|(center, width)| (center - start[side], width))
+                } else if plan.balcony && floor == 1 && side == 0 {
+                    Some((c.x - x0, DOOR_WIDTH))
+                } else {
+                    None
+                }
+            };
             // South (-z) and north (+z) walls run along X and own the corners.
-            let south = Self::openings(rng, 2.0 * hx, ground && doors[0], true);
-            self.wall(true, (z0, z0 + T), x0, 2.0 * hx, base, STOREY, &south, paint);
-            let north = Self::openings(rng, 2.0 * hx, ground && doors[3], floor > 0 || floors == 1);
-            self.wall(true, (z1 - T, z1), x0, 2.0 * hx, base, STOREY, &north, paint);
-            let west = Self::openings(rng, 2.0 * hz - 2.0 * T, ground && doors[1], true);
-            self.wall(false, (x0, x0 + T), z0 + T, 2.0 * hz - 2.0 * T, base, STOREY, &west, paint);
-            let east = Self::openings(rng, 2.0 * hz - 2.0 * T, ground && doors[2], true);
-            self.wall(false, (x1 - T, x1), z0 + T, 2.0 * hz - 2.0 * T, base, STOREY, &east, paint);
+            if !open[0] {
+                let south = Self::openings_at(rng, 2.0 * hx, door_for(0), plan.windows);
+                self.wall(true, (z0, z0 + T), x0, 2.0 * hx, base, STOREY, &south, paint);
+            }
+            if !open[3] {
+                let north = Self::openings_at(rng, 2.0 * hx, door_for(3), plan.windows && (floor > 0 || floors == 1));
+                self.wall(true, (z1 - T, z1), x0, 2.0 * hx, base, STOREY, &north, paint);
+            }
+            if !open[1] {
+                let west = Self::openings_at(rng, 2.0 * hz - 2.0 * T, door_for(1), plan.windows);
+                self.wall(false, (x0, x0 + T), z0 + T, 2.0 * hz - 2.0 * T, base, STOREY, &west, paint);
+            }
+            if !open[2] {
+                let east = Self::openings_at(rng, 2.0 * hz - 2.0 * T, door_for(2), plan.windows);
+                self.wall(false, (x1 - T, x1), z0 + T, 2.0 * hz - 2.0 * T, base, STOREY, &east, paint);
+            }
             // A trim band at each floor line, on the outside of the walls only.
-            self.ring(x0, x1, z0, z1, base + STOREY - 0.14, base + STOREY, 0.05, Paint::Dark);
+            self.ring(x0, x1, z0, z1, base + STOREY - 0.14, base + STOREY, 0.05, Paint::Dark, open);
             // Ceiling lamp.
             self.decor(Aabb::new(Vec3::new(c.x, base + STOREY - 0.3, c.y - hz * 0.3), Vec3::new(0.35, 0.03, 0.35)), Paint::Glow);
+        }
+        // Steps up to any door that stands above the ground outside it.
+        for (side, door) in doors.iter().enumerate() {
+            let Some((center, width)) = *door else { continue };
+            let (p, out) = match side {
+                0 => (Vec2::new(center, z0), Vec2::NEG_Y),
+                1 => (Vec2::new(x0, center), Vec2::NEG_X),
+                2 => (Vec2::new(x1, center), Vec2::X),
+                _ => (Vec2::new(center, z1), Vec2::Y),
+            };
+            self.stoop(p, out, width + 0.4, g);
         }
 
         // Stairs: flight k climbs from floor k to k+1. Flights alternate between a lane along the
@@ -1007,7 +1125,7 @@ impl World {
             for (a0, a1, b0, b1) in pieces {
                 if a1 - a0 > 0.05 && b1 - b0 > 0.05 {
                     self.solid(Aabb::span(Vec3::new(a0, top - 0.25, b0), Vec3::new(a1, top, b1)), Paint::Concrete);
-                    self.decor(Aabb::span(Vec3::new(a0.max(x0 + T), top, b0.max(z0 + T)), Vec3::new(a1.min(x1 - T), top + 0.012, b1.min(z1 - T))), Paint::Wood);
+                    self.decor(Aabb::span(Vec3::new(a0.max(x0 + T), top, b0.max(z0 + T)), Vec3::new(a1.min(x1 - T), top + 0.012, b1.min(z1 - T))), plan.floor_paint);
                 }
             }
             // Railing along the open side of the hole; the high end is left open as the way in.
@@ -1016,40 +1134,59 @@ impl World {
             self.solid(Aabb::span(Vec3::new(r0, top, rail_z - 0.04), Vec3::new(r1, top + 0.95, rail_z + 0.04)), Paint::Dark);
             self.decor(Aabb::span(Vec3::new(r0, top + 0.92, rail_z - 0.06), Vec3::new(r1, top + 1.0, rail_z + 0.06)), Paint::Gold);
             // Something to hide behind up here.
-            let p = Vec2::new(rng.range(x0 + 1.5, x1 - 1.5), c.y + rng.range(-0.8, 0.8));
-            self.solid(Aabb::span(Vec3::new(p.x - 0.55, top, p.y - 0.55), Vec3::new(p.x + 0.55, top + 1.0, p.y + 0.55)), Paint::Teal);
+            if plan.furnish != Furnish::Bare {
+                let p = Vec2::new(rng.range(x0 + 1.5, x1 - 1.5), c.y + rng.range(-0.8, 0.8));
+                if plan.furnish == Furnish::Home && hz > 3.2 {
+                    // A bed (low cover) and a wardrobe against the wall.
+                    self.bed(Vec2::new(p.x, c.y), rng.chance(0.5), top);
+                } else {
+                    self.solid(Aabb::span(Vec3::new(p.x - 0.55, top, p.y - 0.55), Vec3::new(p.x + 0.55, top + 1.0, p.y + 0.55)), Paint::Teal);
+                }
+            }
         }
 
         // Ground-floor rooms: a partition with a doorway, clear of the stairs.
         let partition = x0 + T + 0.4 + span + 1.3;
-        if floors > 1 && x1 - partition > 2.6 {
+        if floors > 1 && x1 - partition > 2.6 && plan.furnish != Furnish::Bare {
             let length = 2.0 * hz - 2.0 * T - LANE - 0.1;
             let door = Self::openings(rng, length, true, false);
             self.wall(false, (partition, partition + 0.2), z0 + T, length, g, STOREY - 0.25, &door, trim);
         }
 
-        // Furniture on the ground floor: a counter or table, away from the doors and stairs.
-        for _ in 0..2 {
-            let p = Vec2::new(rng.range(x0 + 1.6, x1 - 1.6), rng.range(z0 + 1.6, z1 - 1.6 - if floors > 1 { 1.4 } else { 0.0 }));
-            if (p.x - partition).abs() < 1.2 {
-                continue;
+        // Furniture on the ground floor, away from the doors and stairs.
+        let room = (x0 + 1.6, x1 - 1.6, z0 + 1.6, z1 - 1.6 - if floors > 1 { 1.4 } else { 0.0 });
+        match plan.furnish {
+            Furnish::Bare => {}
+            Furnish::Home => self.furnish_home(rng, room, g, (partition, floors > 1)),
+            Furnish::Barn => self.furnish_barn(rng, room, g),
+            Furnish::Plain => {
+                for _ in 0..2 {
+                    let p = Vec2::new(rng.range(room.0, room.1), rng.range(room.2, room.3));
+                    if (p.x - partition).abs() < 1.2 && floors > 1 {
+                        continue;
+                    }
+                    let size = if rng.chance(0.5) { Vec2::new(rng.range(0.7, 1.4), 0.4) } else { Vec2::new(0.5, 0.5) };
+                    self.solid(Aabb::span(Vec3::new(p.x - size.x, g, p.y - size.y), Vec3::new(p.x + size.x, g + 0.95, p.y + size.y)), Paint::Wood);
+                }
             }
-            let size = if rng.chance(0.5) { Vec2::new(rng.range(0.7, 1.4), 0.4) } else { Vec2::new(0.5, 0.5) };
-            self.solid(Aabb::span(Vec3::new(p.x - size.x, g, p.y - size.y), Vec3::new(p.x + size.x, g + 0.95, p.y + size.y)), Paint::Wood);
         }
 
         // Detailing: a dark plinth, corner pilasters, a drainpipe, the odd air-conditioning unit.
         let o = 0.06;
-        self.ring(x0, x1, z0, z1, g, g + 0.4, o, Paint::Dark);
+        self.ring(x0, x1, z0, z1, g, g + 0.4, o, Paint::Dark, open);
         // Corner pilasters: solid, and set into the corner so they stand only a few centimetres
         // proud - a robot in cover slides along the wall right up to the corner and peeks round it.
-        for (x, z) in [(x0 + 0.14, z0 + 0.14), (x1 - 0.14, z0 + 0.14), (x0 + 0.14, z1 - 0.14), (x1 - 0.14, z1 - 0.14)] {
-            self.solid(Aabb::new(Vec3::new(x, g + (roof_y - g) * 0.5, z), Vec3::new(0.2, (roof_y - g) * 0.5, 0.2)), trim);
+        for (x, z, a, b) in [(x0 + 0.14, z0 + 0.14, 0, 1), (x1 - 0.14, z0 + 0.14, 0, 2), (x0 + 0.14, z1 - 0.14, 3, 1), (x1 - 0.14, z1 - 0.14, 3, 2)] {
+            if !open[a] && !open[b] {
+                self.solid(Aabb::new(Vec3::new(x, g + (roof_y - g) * 0.5, z), Vec3::new(0.2, (roof_y - g) * 0.5, 0.2)), trim);
+            }
         }
         // The drainpipe is too thin to hide behind: walk-through, like every pole and wire.
-        self.decor(Aabb::span(Vec3::new(x1 + 0.02, g, z1 - 0.6), Vec3::new(x1 + 0.14, roof_y, z1 - 0.48)), Paint::Steel);
+        if !open[2] {
+            self.decor(Aabb::span(Vec3::new(x1 + 0.02, g, z1 - 0.6), Vec3::new(x1 + 0.14, roof_y, z1 - 0.48)), Paint::Steel);
+        }
         for floor in 0..floors {
-            if rng.chance(0.35) {
+            if rng.chance(0.35) && !open[1] && plan.windows {
                 let y = g + floor as f32 * STOREY + 2.4;
                 let z = rng.range(z0 + 1.0, z1 - 1.0);
                 self.solid(Aabb::span(Vec3::new(x0 - 0.45, y, z - 0.35), Vec3::new(x0, y + 0.45, z + 0.35)), Paint::Metal);
@@ -1057,27 +1194,47 @@ impl World {
             }
         }
 
-        // Roof, parapet and rooftop clutter.
-        self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y, z0 - 0.15), Vec3::new(x1 + 0.15, roof_y + 0.3, z1 + 0.15)), Paint::Dark);
-        // Parapets along two sides: a ledge to crouch behind up there (the ladders come up the other sides).
-        self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y + 0.3, z0 - 0.15), Vec3::new(x1 + 0.15, roof_y + 0.3 + COVER_HEIGHT, z0 + 0.1)), paint);
-        self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y + 0.3, z1 - 0.1), Vec3::new(x1 + 0.15, roof_y + 0.3 + COVER_HEIGHT, z1 + 0.15)), paint);
-        let unit = Vec2::new(rng.range(x0 + 1.0, x1 - 1.0), rng.range(z0 + 1.0, z1 - 1.0));
-        // The rule for scenery: anything you could hide behind is solid (this air-conditioning
-        // unit is rooftop cover); anything too thin to hide behind - masts, poles, wires - you walk through.
-        self.solid(Aabb::new(Vec3::new(unit.x, roof_y + 0.7, unit.y), Vec3::new(0.6, 0.4, 0.45)), Paint::Metal);
-        if rng.chance(0.4) {
-            self.decor(Aabb::new(Vec3::new(c.x + hx * 0.5, roof_y + 1.6, c.y), Vec3::new(0.04, 1.3, 0.04)), Paint::Metal);
-            self.decor(Aabb::new(Vec3::new(c.x + hx * 0.5, roof_y + 2.95, c.y), Vec3::new(0.08, 0.08, 0.08)), Paint::Red);
-        } else if rng.chance(0.5) {
-            // A flag on a pole; it waves in the wind.
-            self.decor(Aabb::new(Vec3::new(c.x - hx * 0.5, roof_y + 2.0, c.y), Vec3::new(0.05, 1.7, 0.05)), Paint::Metal);
-            self.flags.push(Vec3::new(c.x - hx * 0.5, roof_y + 3.55, c.y));
+        // Roof.
+        self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y, z0 - 0.15), Vec3::new(x1 + 0.15, roof_y + 0.3, z1 + 0.15)), if plan.trim == Some(paint) { shapes::darker(paint) } else { Paint::Dark });
+        match roof {
+            Roof::Gable(tiles) | Roof::Hip(tiles) => {
+                let along_x = hx >= hz;
+                let ridge = self.stepped_roof((x0 - 0.15, x1 + 0.15, z0 - 0.15, z1 + 0.15), roof_y + 0.3, matches!(roof, Roof::Hip(_)), along_x, tiles);
+                // A chimney: solid, it is cover up there.
+                if plan.chimney && rng.chance(0.7) {
+                    let (x, z) = if along_x { (rng.range(x0 + 1.2, x1 - 1.2), c.y + hz * 0.35) } else { (c.x + hx * 0.35, rng.range(z0 + 1.2, z1 - 1.2)) };
+                    self.solid(Aabb::span(Vec3::new(x - 0.35, roof_y + 0.3, z - 0.35), Vec3::new(x + 0.35, ridge + 0.7, z + 0.35)), Paint::Rust);
+                    self.decor(Aabb::span(Vec3::new(x - 0.4, ridge + 0.7, z - 0.4), Vec3::new(x + 0.4, ridge + 0.78, z + 0.4)), Paint::Dark);
+                }
+            }
+            _ => {
+                // Parapets along two sides: a ledge to crouch behind up there (the ladders come up the other sides).
+                self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y + 0.3, z0 - 0.15), Vec3::new(x1 + 0.15, roof_y + 0.3 + COVER_HEIGHT, z0 + 0.1)), paint);
+                self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y + 0.3, z1 - 0.1), Vec3::new(x1 + 0.15, roof_y + 0.3 + COVER_HEIGHT, z1 + 0.15)), paint);
+                let unit = Vec2::new(rng.range(x0 + 1.0, x1 - 1.0), rng.range(z0 + 1.0, z1 - 1.0));
+                // The rule for scenery: anything you could hide behind is solid (this air-conditioning
+                // unit is rooftop cover); anything too thin to hide behind - masts, poles, wires - you walk through.
+                self.solid(Aabb::new(Vec3::new(unit.x, roof_y + 0.7, unit.y), Vec3::new(0.6, 0.4, 0.45)), Paint::Metal);
+                if rng.chance(0.4) {
+                    self.decor(Aabb::new(Vec3::new(c.x + hx * 0.5, roof_y + 1.6, c.y), Vec3::new(0.04, 1.3, 0.04)), Paint::Metal);
+                    self.decor(Aabb::new(Vec3::new(c.x + hx * 0.5, roof_y + 2.95, c.y), Vec3::new(0.08, 0.08, 0.08)), Paint::Red);
+                } else if rng.chance(0.5) {
+                    // A flag on a pole; it waves in the wind.
+                    self.decor(Aabb::new(Vec3::new(c.x - hx * 0.5, roof_y + 2.0, c.y), Vec3::new(0.05, 1.7, 0.05)), Paint::Metal);
+                    self.flags.push(Vec3::new(c.x - hx * 0.5, roof_y + 3.55, c.y));
+                }
+            }
+        }
+
+        // Balcony over the front door, reached through the upstairs door.
+        if plan.balcony && floors > 1 {
+            self.balcony(Vec2::new(c.x, z0), g + STOREY, trim);
         }
 
         // A ladder up a side wall without a door, onto the roof.
-        if rng.chance(0.55) && !(doors[1] && doors[2]) {
-            let east = !doors[2] && (doors[1] || rng.chance(0.5));
+        let free = |side: usize| doors[side].is_none() && !open[side];
+        if plan.ladder && rng.chance(0.55) && (free(1) || free(2)) {
+            let east = free(2) && (!free(1) || rng.chance(0.5));
             let (x, out) = if east { (x1 + 0.22, 1.0) } else { (x0 - 0.22, -1.0) };
             // Beside the south corner, where walls never have windows.
             let z = z0 + 0.75;
@@ -1092,27 +1249,34 @@ impl World {
             }
             self.ladders.push(Ladder { foot, top: roof_y + 0.3, out: Vec2::new(out, 0.0) });
         }
+        (g, roof_y)
     }
 
     /// The town square: a tiered fountain (good cover) ringed by benches' worth of lamps and trees.
     fn plaza(&mut self, rng: &mut Rng) {
-        let g = self.height(0.0, 0.0);
+        self.plaza_at(rng, Vec2::ZERO);
+    }
+
+    /// A fountain square centred on `at`.
+    pub(crate) fn plaza_at(&mut self, rng: &mut Rng, at: Vec2) {
+        let g = self.height(at.x, at.y);
+        let o = Vec3::new(at.x, 0.0, at.y);
         // Basin: four low walls with water inside, a pillar and a raised bowl.
         let (r, wall) = (3.2, 0.35);
         for (cx, cz, hx, hz) in [(0.0, r, r, wall), (0.0, -r, r, wall), (r, 0.0, wall, r - wall), (-r, 0.0, wall, r - wall)] {
-            self.solid(Aabb::new(Vec3::new(cx, g + 0.35, cz), Vec3::new(hx, 0.45, hz)), Paint::Concrete);
-            self.decor(Aabb::new(Vec3::new(cx, g + 0.83, cz), Vec3::new(hx + 0.05, 0.04, hz + 0.05)), Paint::Bone);
+            self.solid(Aabb::new(o + Vec3::new(cx, g + 0.35, cz), Vec3::new(hx, 0.45, hz)), Paint::Concrete);
+            self.decor(Aabb::new(o + Vec3::new(cx, g + 0.83, cz), Vec3::new(hx + 0.05, 0.04, hz + 0.05)), Paint::Bone);
         }
-        self.decor(Aabb::new(Vec3::new(0.0, g + 0.45, 0.0), Vec3::new(r - wall, 0.05, r - wall)), Paint::Blue);
-        self.solid(Aabb::new(Vec3::new(0.0, g + 1.0, 0.0), Vec3::new(0.45, 1.0, 0.45)), Paint::Bone);
-        self.solid(Aabb::new(Vec3::new(0.0, g + 2.05, 0.0), Vec3::new(1.2, 0.08, 1.2)), Paint::Concrete);
-        self.decor(Aabb::new(Vec3::new(0.0, g + 2.12, 0.0), Vec3::new(1.0, 0.03, 1.0)), Paint::Blue);
-        self.solid(Aabb::new(Vec3::new(0.0, g + 2.5, 0.0), Vec3::new(0.12, 0.4, 0.12)), Paint::Bone);
-        self.fountain = Some(Vec3::new(0.0, g + 2.95, 0.0));
+        self.decor(Aabb::new(o + Vec3::new(0.0, g + 0.45, 0.0), Vec3::new(r - wall, 0.05, r - wall)), Paint::Blue);
+        self.solid(Aabb::new(o + Vec3::new(0.0, g + 1.0, 0.0), Vec3::new(0.45, 1.0, 0.45)), Paint::Bone);
+        self.solid(Aabb::new(o + Vec3::new(0.0, g + 2.05, 0.0), Vec3::new(1.2, 0.08, 1.2)), Paint::Concrete);
+        self.decor(Aabb::new(o + Vec3::new(0.0, g + 2.12, 0.0), Vec3::new(1.0, 0.03, 1.0)), Paint::Blue);
+        self.solid(Aabb::new(o + Vec3::new(0.0, g + 2.5, 0.0), Vec3::new(0.12, 0.4, 0.12)), Paint::Bone);
+        self.fountain = Some(o + Vec3::new(0.0, g + 2.95, 0.0));
         // Lamps around the square.
         for i in 0..6 {
             let a = i as f32 * TAU / 6.0 + 0.3;
-            let p = Vec2::from_angle(a) * 8.0;
+            let p = at + Vec2::from_angle(a) * 8.0;
             self.props.push(Prop { kind: PropKind::Lamp, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: a, scale: 1.0 });
         }
         let _ = rng;
@@ -1219,7 +1383,9 @@ impl World {
 
     /// Flat-shaded, vertex-coloured triangles for one chunk of terrain.
     pub fn chunk(&self, cx: usize, cz: usize, chunk_cells: usize) -> TerrainChunk {
-        let look = self.recipe.biome.look();
+        let (sand, grass, high) = self.ground_colors();
+        // Where the bare rock starts: on the mountain the terraces stay green.
+        let (low, top) = if self.recipe.layout == Layout::Mountainside { (0.74, 34.0) } else { (0.74, 3.3) };
         let mut out = TerrainChunk::default();
         let mut rng = Rng::new(self.recipe.seed ^ ((cx as u64) << 20) ^ cz as u64);
         let (cell, half) = (self.recipe.cell, self.recipe.half_extent);
@@ -1230,12 +1396,12 @@ impl World {
                 for [a, b, c] in [[a, c, b], [b, c, d]] {
                     let normal = (b - a).cross(c - a).normalize();
                     let y = (a.y + b.y + c.y) / 3.0;
-                    let base = if y < 0.74 {
-                        look.sand
-                    } else if y > 3.3 || normal.y < 0.82 {
-                        look.high
+                    let base = if y < low {
+                        sand
+                    } else if y > top || normal.y < 0.82 {
+                        high
                     } else {
-                        look.grass
+                        grass
                     };
                     let shade = rng.range(0.88, 1.10) * if y < self.water { 0.72 } else { 1.0 };
                     let linear = base.map(|ch| srgb_to_linear((ch * shade).clamp(0.0, 1.0)));
@@ -1358,43 +1524,98 @@ mod tests {
         }
     }
 
-    #[test]
-    fn town_has_enterable_buildings_and_clear_team_bases() {
-        let w = World::generate(WorldRecipe::town(9, Biome::IronShoals));
+    /// Nothing solid in a robot's body standing at a spawn point (ceilings far overhead and
+    /// floors underfoot are fine).
+    fn spawns_are_clear(w: &World, what: &str) {
         let solids: Vec<Aabb> = w.solids().collect();
-        assert!(w.blocks.len() > 600, "only {} blocks", w.blocks.len());
-        // Two-storey houses have stair steps one rise apart.
-        let steps = w.blocks.iter().filter(|b| b.solid && (b.aabb.half.x - 0.21).abs() < 1e-3 && (b.aabb.half.z - 0.6).abs() < 1e-3).count();
-        assert!(steps >= 11, "no staircases found");
         for team in 0..2 {
-            assert_eq!(w.team_spawns[team].len(), 6);
+            assert_eq!(w.team_spawns[team].len(), 6, "{what}");
             for spawn in &w.team_spawns[team] {
-                assert!(w.walkable(spawn.x, spawn.y), "spawn {spawn:?} is not on land");
-                assert!(solids.iter().all(|b| !b.touches(spawn.x, spawn.y, 0.4)), "spawn {spawn:?} is inside something");
+                let terrain = w.height(spawn.x, spawn.y);
+                let ground = solids.iter().filter(|b| b.touches(spawn.x, spawn.y, 0.0) && b.top() < terrain + 0.5).map(|b| b.top()).fold(terrain, f32::max);
+                assert!(w.walkable(spawn.x, spawn.y), "{what}: spawn {spawn:?} is not on land");
+                let blocked = solids.iter().find(|b| b.touches(spawn.x, spawn.y, 0.4) && b.top() > ground + 0.05 && b.bottom() < ground + 1.8);
+                assert!(blocked.is_none(), "{what}: spawn {spawn:?} is inside {blocked:?}");
             }
         }
-        // The plaza is open around its fountain, which is cover.
-        assert!(w.fountain.is_some());
-        assert!(w.walkable(0.0, 6.0) && solids.iter().all(|b| !b.touches(0.0, 6.0, 1.0)), "the plaza must be open");
-        assert!(!w.doors.is_empty() && !w.windows.is_empty() && !w.grass.is_empty());
+    }
+
+    #[test]
+    fn themes_come_from_the_seed_and_every_one_turns_up() {
+        let rolled: std::collections::HashSet<Theme> = (0..60).map(Theme::from_seed).collect();
+        assert_eq!(rolled.len(), Theme::ALL.len());
+        for theme in Theme::ALL {
+            let w = World::generate(WorldRecipe::themed(5, Biome::IronShoals, theme));
+            assert_eq!(w.theme, Some(theme));
+        }
+    }
+
+    #[test]
+    fn every_town_theme_has_enterable_buildings_and_clear_team_bases() {
+        for theme in Theme::ALL {
+            let w = World::generate(WorldRecipe::themed(9, Biome::IronShoals, theme));
+            let what = format!("{theme:?}");
+            assert!(w.blocks.len() > 1000, "{what}: only {} blocks", w.blocks.len());
+            // Keep the renderer and the collision grid comfortable.
+            assert!(w.blocks.len() < 12_000, "{what}: {} blocks is too many", w.blocks.len());
+            // Two-storey buildings have stair steps one rise apart.
+            let steps = w.blocks.iter().filter(|b| b.solid && (b.aabb.half.x - 0.21).abs() < 1e-3 && (b.aabb.half.z - 0.6).abs() < 1e-3).count();
+            assert!(steps >= 11, "{what}: no staircases found");
+            spawns_are_clear(&w, &what);
+            // The bases are at the far ends of a big map.
+            assert!(w.team_spawns[0][0].x < -95.0 && w.team_spawns[1][0].x > 95.0, "{what}: bases too close");
+            assert!(!w.doors.is_empty() && !w.windows.is_empty() && !w.grass.is_empty(), "{what}");
+            // Every doorway is a doorway: wide enough, tall enough.
+            assert!(w.doors.iter().all(|d| d.width >= 1.6 && d.width <= DOOR_WIDTH + 0.05 && d.height >= 2.3), "{what}: odd doors");
+        }
     }
 
     #[test]
     fn fixed_maps_are_fixed_and_playable() {
-        for layout in [Layout::Crossroads, Layout::Dockyard] {
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town) {
             let a = World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear));
             let b = World::generate(WorldRecipe::preset(layout, Biome::EmberAtoll, Weather::Rain));
             // The same streets whatever the biome or weather.
             assert_eq!(a.blocks.len(), b.blocks.len(), "{layout:?} changed with the biome");
-            let solids: Vec<Aabb> = a.solids().collect();
             assert!(a.blocks.len() > 400, "{layout:?} is nearly empty");
-            for team in 0..2 {
-                for spawn in &a.team_spawns[team] {
-                    assert!(a.walkable(spawn.x, spawn.y), "{layout:?} spawn {spawn:?} is not on land");
-                    assert!(solids.iter().all(|s| !s.touches(spawn.x, spawn.y, 0.4)), "{layout:?} spawn {spawn:?} is inside something");
-                }
-            }
+            assert!(a.blocks.len() < 12_000, "{layout:?}: {} blocks is too many", a.blocks.len());
+            spawns_are_clear(&a, &format!("{layout:?}"));
+            assert!(a.team_spawns[0][0].distance(a.team_spawns[1][0]) > 100.0, "{layout:?}: bases too close");
         }
+    }
+
+    #[test]
+    fn indoor_maps_are_roofed_and_have_waypoints() {
+        for layout in [Layout::OfficeTower, Layout::SpaceStation] {
+            let w = World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear));
+            assert!(layout.is_indoor());
+            assert!(w.waypoints.len() > 40, "{layout:?}: {} waypoints", w.waypoints.len());
+            let solids: Vec<Aabb> = w.solids().collect();
+            let mut roofed = 0;
+            for p in &w.waypoints {
+                let inside = solids.iter().any(|b| b.touches(p.x, p.z, 0.3) && b.bottom() < p.y + 1.7 && b.top() > p.y + 0.1);
+                assert!(!inside, "{layout:?}: waypoint {p:?} is inside something");
+                roofed += solids.iter().any(|b| b.touches(p.x, p.z, 0.0) && b.bottom() > p.y + 1.8) as usize;
+            }
+            assert!(roofed * 2 > w.waypoints.len(), "{layout:?}: only {roofed} of {} waypoints are under a roof", w.waypoints.len());
+        }
+        // The station has more than one floor: the hub's balconies.
+        let w = World::generate(WorldRecipe::preset(Layout::SpaceStation, Biome::IronShoals, Weather::Clear));
+        let deck = w.waypoints.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        assert!(w.waypoints.iter().any(|p| p.y > deck + 3.0));
+    }
+
+    #[test]
+    fn the_mountain_climbs_in_terraces() {
+        let w = World::generate(WorldRecipe::preset(Layout::Mountainside, Biome::IronShoals, Weather::Clear));
+        let (valley, summit) = (w.height(30.0, -86.0), w.height(30.0, 75.0));
+        assert!(summit - valley > 18.0, "valley {valley}, summit {summit}");
+        // Terraces are flat, cliffs are steep, ramps are gentle.
+        assert!((w.height(-60.0, -5.0) - w.height(60.0, 5.0)).abs() < 0.4);
+        assert!(w.height(10.0, 15.6) - w.height(10.0, 12.4) > 3.5);
+        let ramp = w.height(48.0, 20.0) - w.height(48.0, 8.0);
+        assert!(ramp > 2.0 && ramp < 5.0, "ramp {ramp}");
+        assert!(!w.ladders.is_empty() && !w.doors.is_empty());
     }
 
     #[test]

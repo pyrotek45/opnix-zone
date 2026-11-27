@@ -252,15 +252,57 @@ full day/night cycle - and weather - the map's own, clear, overcast, rain, fog
 or random fronts that roll through mid-match. Robots carry flashlights at
 night.
 
-**Maps:** pick a **LAYOUT** in the main menu (or `--map crossroads` /
-`--map dockyard`). *Random Town* is freshly generated every match; the fixed
-maps are the same every time so you can learn them:
+**Maps:** pick a **LAYOUT** in the main menu (or `--map crossroads`,
+`--map dockyard`, `--map officetower`, `--map spacestation`,
+`--map mountainside`). *Random Town* is freshly generated every match; the
+fixed maps are the same every time so you can learn them.
+
+*Random Town* is a big map - about 220 m across, the bases at the far ends -
+with long sightlines for snipers and dense blocks for close fights. Every
+seed rolls a **theme** that decides the street pattern, the buildings, the
+paint, the cover and the greenery, so the whole map belongs together (the
+lobby shows it, e.g. *IRON SHOALS SUBURBS*):
+
+* **Suburbs** - an avenue from base to base, side streets ending in
+  cul-de-sacs, houses (some L-shaped, some two storeys with a balcony or a
+  porch) with garages, driveways and fenced back yards, a park with a
+  gazebo and playground, and two mansions with wings and fountains.
+* **Desert Outpost** - a walled fort with a wall-walk behind its parapets,
+  corner towers and a water tower; walled compounds of adobe huts; sandbag
+  nests, ruined walls, cacti and an oasis among the dunes. Sparse cover,
+  long sightlines.
+* **Farmland** - a farmstead (red barn with a hayloft, grain silos you can
+  climb, farmhouse, windmill, machine shed), two smaller farms, and fields
+  between stone walls and fences: corn to hide in, hay bales to hide behind.
+* **Industrial Town** - a street grid of warehouses, shack huddles, tank
+  farms, container stacks, water towers and four-to-eight-storey blocks round
+  a fountain square, with a rail yard of box cars running the length of it.
+* **Woods Park** - dense trees on rolling ground, a lake and a creek with
+  footbridges, a timber lodge, cabins, picnic shelters, rock outcrops and a
+  ranger's lookout tower.
+
+The fixed maps:
 
 * **Crossroads** - two main streets crossing at a fountain plaza, with
   three-lane flanks through back alleys and courtyards and a three-storey
   tower overlooking mid.
 * **Dockyard** - a big open-ended warehouse in the middle, stacked shipping
   container lanes either side and two-storey offices at each base.
+* **Office Tower** - indoors: a four-storey office block round an atrium.
+  A lobby with reception and security gates, a cafe, a print room, glass
+  offices, cubicle farms (desks, chairs, monitors), copiers, filing
+  cabinets, a meeting room and a server room; four stairwells up to a roof
+  of plant rooms and a helipad; a car park and fountain plaza outside, with
+  the bases at either end.
+* **Space Station** - indoors and fully enclosed: a hangar (with a shuttle)
+  and a cargo bay hold the bases; an airlock and two service passages lead
+  from each to a ring corridor round labs, crew quarters, hydroponics, a
+  med bay, the reactor and a two-level hub with balconies and a holo-table.
+* **Mountainside** - five terraces up a slope, held up by rock cliffs with
+  parapets to shoot down from, joined by a switchback road and stairways: a
+  village and chapel in the valley, vineyard walls, an inn and fuel stop on
+  the middle terrace where the bases are, chalets higher up, and a lodge,
+  radio mast and helipad on the summit.
 
 ## Modes (Iron Town)
 

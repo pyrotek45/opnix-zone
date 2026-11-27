@@ -7,7 +7,8 @@
 //! * [`rng`], [`noise`] - deterministic randomness.
 //! * [`collide`] - static collision boxes for walls, floors and props.
 //! * [`model`] - block models: every visual asset is a list of painted primitives.
-//! * [`worldgen`] - procedural maps (heightfield, props, ore, spawn points).
+//! * [`worldgen`] - procedural maps (heightfield, props, ore, spawn points): co-op
+//!   archipelagos, themed random towns, and fixed maps indoors and out.
 //! * [`arsenal`] - weapons, attachments, mods and the stat pipeline.
 //! * [`content`] - enemy / structure / upgrade definitions and the [`content::Catalog`].
 //! * [`kit`] - a ready-made arsenal games can reuse.

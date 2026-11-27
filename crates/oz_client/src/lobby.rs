@@ -200,10 +200,10 @@ pub fn build_lobby(
             let n = state.team_size;
             let place = match rules.recipe.layout {
                 oz_core::worldgen::Layout::Town => {
-                    format!("{} TOWN", rules.recipe.biome.look().title)
+                    format!("{} {}", rules.recipe.biome.look().title, oz_core::worldgen::Theme::from_seed(rules.recipe.seed).title())
                 }
-                layout @ (oz_core::worldgen::Layout::Crossroads | oz_core::worldgen::Layout::Dockyard) => layout.title().to_string(),
-                _ => rules.recipe.biome.look().title.to_string(),
+                oz_core::worldgen::Layout::Archipelago => rules.recipe.biome.look().title.to_string(),
+                layout => layout.title().to_string(),
             };
             let line = if rules.hunt {
                 format!("{place}   |   SQUAD OF {n}   |   {} HOSTILES   |   {} LIVES", oz_sim::versus::hunt_hostiles(&rules, n), oz_sim::versus::HUNT_LIVES)

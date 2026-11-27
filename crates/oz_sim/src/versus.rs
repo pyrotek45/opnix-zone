@@ -36,7 +36,13 @@ pub fn hunt_post(map: &crate::session::Map, statics: &oz_core::collide::StaticWo
     let base = map.team_spawns[0].first().copied().unwrap_or(map.spawn);
     let mut fallback = None;
     for _ in 0..80 {
-        let (x, z) = (rng.0.range(-54.0, 56.0), rng.0.range(-54.0, 54.0));
+        // Indoors, posts are near the map's waypoints (the rest of the ground is walled off).
+        let (x, z) = if let Some(p) = rng.0.pick(&map.waypoints).copied() {
+            (p.x + rng.0.range(-1.5, 1.5), p.z + rng.0.range(-1.5, 1.5))
+        } else {
+            let reach = map.arena * 0.95;
+            (rng.0.range(-reach, reach), rng.0.range(-reach, reach))
+        };
         if !map.in_bounds(x, z) {
             continue;
         }

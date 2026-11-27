@@ -204,13 +204,11 @@ fn melee_drops_an_enemy_in_arms_reach() {
 /// (poles, pipes, wires) and bushes are meant to be walked through.
 #[test]
 fn nothing_drawn_can_be_walked_into() {
-    use oz_core::worldgen::{Layout, Weather, WorldRecipe};
-    let recipes = [
-        deathmatch_rules(3).recipe,
-        deathmatch_rules(17).recipe,
-        WorldRecipe::preset(Layout::Crossroads, oz_core::worldgen::Biome::IronShoals, Weather::Clear),
-        WorldRecipe::preset(Layout::Dockyard, oz_core::worldgen::Biome::IronShoals, Weather::Clear),
-    ];
+    use oz_core::worldgen::{Biome, Layout, Theme, Weather, WorldRecipe};
+    // Every theme of the random town, and every fixed map.
+    let mut recipes: Vec<WorldRecipe> = Theme::ALL.iter().map(|theme| WorldRecipe::themed(3, Biome::IronShoals, *theme)).collect();
+    recipes.push(deathmatch_rules(17).recipe);
+    recipes.extend(Layout::VERSUS.iter().filter(|l| **l != Layout::Town).map(|l| WorldRecipe::preset(*l, Biome::IronShoals, Weather::Clear)));
     let mut problems = Vec::new();
     for recipe in recipes {
         let mut rules = deathmatch_rules(recipe.seed);

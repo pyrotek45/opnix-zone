@@ -330,10 +330,13 @@ mod tests {
     }
 
     #[test]
-    fn bots_can_cross_the_fixed_maps() {
-        use oz_core::worldgen::{Layout, Weather};
-        for layout in [Layout::Crossroads, Layout::Dockyard] {
-            let map = GameMap::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear));
+    fn bots_can_cross_every_map() {
+        use oz_core::worldgen::{Layout, Theme, Weather};
+        let mut recipes: Vec<WorldRecipe> = Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town).map(|l| WorldRecipe::preset(l, Biome::IronShoals, Weather::Clear)).collect();
+        recipes.extend(Theme::ALL.map(|t| WorldRecipe::themed(21, Biome::IronShoals, t)));
+        for recipe in recipes {
+            let what = format!("{:?} {:?}", recipe.layout, oz_core::worldgen::Theme::from_seed(recipe.seed));
+            let map = GameMap::generate(recipe);
             let mut statics = StaticWorld::new(map.recipe.half_extent);
             for aabb in map.solids() {
                 statics.add(aabb);
@@ -342,8 +345,19 @@ mod tests {
             let mut scratch = NavScratch::default();
             let ground = |p: Vec2| Vec3::new(p.x, map.height(p.x, p.y), p.y);
             let (a, b) = (ground(map.team_spawns[0][2]), ground(map.team_spawns[1][2]));
-            let path = nav.path(&mut scratch, a, b).unwrap_or_else(|| panic!("{layout:?}: the bases are not connected"));
-            assert!(path.last().unwrap().xz().distance(b.xz()) < 1.5);
+            let path = nav.path(&mut scratch, a, b).unwrap_or_else(|| panic!("{what}: the bases are not connected"));
+            assert!(path.last().unwrap().xz().distance(b.xz()) < 1.5, "{what}");
+            // Indoors, bots sweep the waypoints: nearly all of them must be reachable.
+            if !map.waypoints.is_empty() {
+                let mut reached = 0;
+                let sample: Vec<Vec3> = map.waypoints.iter().step_by((map.waypoints.len() / 24).max(1)).copied().collect();
+                for p in &sample {
+                    if nav.path(&mut scratch, a, *p).is_some_and(|path| path.last().unwrap().distance(*p) < 1.5) {
+                        reached += 1;
+                    }
+                }
+                assert!(reached * 10 >= sample.len() * 9, "{what}: only {reached} of {} waypoints reachable", sample.len());
+            }
         }
     }
 

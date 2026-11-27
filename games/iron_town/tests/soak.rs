@@ -8,7 +8,7 @@
 
 use bevy::{ecs::event::Events, prelude::*, state::app::StatesPlugin, time::TimeUpdateStrategy};
 use iron_town::{IronTownPlugin, deathmatch_rules};
-use oz_core::worldgen::{Layout, Weather, WorldRecipe};
+use oz_core::worldgen::{Biome, Layout, Theme, Weather, WorldRecipe};
 use oz_sim::prelude::*;
 use std::{collections::HashMap, time::Duration};
 
@@ -193,18 +193,67 @@ fn rules_for(recipe: WorldRecipe) -> Rules {
 
 #[test]
 fn soak_random_towns() {
-    let seeds: Vec<u64> = std::env::var("SOAK_SEEDS").ok().map_or(vec![3, 11], |s| s.split(',').filter_map(|n| n.trim().parse().ok()).collect());
+    // SOAK_SEEDS=3,11,... plays those seeds' towns, whatever theme each rolls.
+    let seeds: Vec<u64> = std::env::var("SOAK_SEEDS").ok().map_or(vec![3], |s| s.split(',').filter_map(|n| n.trim().parse().ok()).collect());
     for seed in seeds {
         check(&format!("town {seed}"), rules_for(deathmatch_rules(seed).recipe));
     }
 }
 
+fn soak_theme(theme: Theme) {
+    check(&format!("{theme:?}"), rules_for(WorldRecipe::themed(11, Biome::IronShoals, theme)));
+}
+
+#[test]
+fn soak_suburbs() {
+    soak_theme(Theme::Suburbs);
+}
+
+#[test]
+fn soak_desert_outpost() {
+    soak_theme(Theme::DesertOutpost);
+}
+
+#[test]
+fn soak_farmland() {
+    soak_theme(Theme::Farmland);
+}
+
+#[test]
+fn soak_industrial() {
+    soak_theme(Theme::Industrial);
+}
+
+#[test]
+fn soak_woods_park() {
+    soak_theme(Theme::WoodsPark);
+}
+
+fn soak_fixed(layout: Layout) {
+    check(layout.title(), rules_for(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear)));
+}
+
 #[test]
 fn soak_crossroads() {
-    check("crossroads", rules_for(WorldRecipe::preset(Layout::Crossroads, oz_core::worldgen::Biome::IronShoals, Weather::Clear)));
+    soak_fixed(Layout::Crossroads);
 }
 
 #[test]
 fn soak_dockyard() {
-    check("dockyard", rules_for(WorldRecipe::preset(Layout::Dockyard, oz_core::worldgen::Biome::IronShoals, Weather::Clear)));
+    soak_fixed(Layout::Dockyard);
+}
+
+#[test]
+fn soak_office_tower() {
+    soak_fixed(Layout::OfficeTower);
+}
+
+#[test]
+fn soak_space_station() {
+    soak_fixed(Layout::SpaceStation);
+}
+
+#[test]
+fn soak_mountainside() {
+    soak_fixed(Layout::Mountainside);
 }

@@ -145,6 +145,17 @@ pub fn spawn_bot(commands: &mut Commands, ids: &mut NetIds, content: &Content, r
     entity
 }
 
+/// Somewhere to sweep through: one of the map's waypoints on the indoor maps (their open
+/// ground is mostly walled-off void), anywhere in the arena elsewhere.
+fn sweep_point(map: &Map, rng: &mut SimRng) -> Vec3 {
+    if let Some(p) = rng.0.pick(&map.waypoints) {
+        return *p;
+    }
+    let reach = map.arena * 0.8;
+    let (x, z) = (rng.0.range(-reach, reach), rng.0.range(-reach, reach));
+    Vec3::new(x, map.height(x, z), z)
+}
+
 fn yaw_to(dir: Vec2) -> f32 {
     f32::atan2(-dir.x, -dir.y)
 }
@@ -348,8 +359,7 @@ pub fn drive_bots(
                         bot.path.clear();
                     }
                 } else if bot.path.is_empty() || bot.goal.distance(feet) < 4.0 {
-                    let (x, z) = (rng.0.range(-40.0, 40.0), rng.0.range(-40.0, 40.0));
-                    bot.goal = Vec3::new(x, map.height(x, z), z);
+                    bot.goal = sweep_point(&map, &mut rng);
                     bot.path.clear();
                 }
             } else if rules.loot
@@ -368,10 +378,7 @@ pub fn drive_bots(
                 let enemies: Vec<Vec3> = fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).collect();
                 bot.goal = match rng.0.pick(&enemies) {
                     Some(enemy) if rng.0.chance(0.65) => *enemy,
-                    _ => {
-                        let (x, z) = (rng.0.range(-40.0, 40.0), rng.0.range(-40.0, 40.0));
-                        Vec3::new(x, map.height(x, z), z)
-                    }
+                    _ => sweep_point(&map, &mut rng),
                 };
                 bot.path.clear();
                 bot.stuck = 0.0;

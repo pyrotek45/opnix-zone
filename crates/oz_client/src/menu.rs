@@ -344,7 +344,7 @@ fn build_menu(
                     ui::stepper(panel, order, format!("WEATHER  <  {weather}  >"), Act::Weather(-1), Act::Weather(1));
                     let versus = mode.playable && (mode.rules)(0).pvp;
                     if versus {
-                        let layout = oz_core::worldgen::Layout::VERSUS[menu.layout % 3];
+                        let layout = oz_core::worldgen::Layout::VERSUS[menu.layout % oz_core::worldgen::Layout::VERSUS.len()];
                         ui::stepper(panel, order, format!("LAYOUT   <  {}  >", layout.title()), Act::Layout(-1), Act::Layout(1));
                         let n = menu.team_size;
                         if (mode.rules)(0).hunt {
