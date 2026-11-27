@@ -260,6 +260,7 @@ impl Plugin for KillCamPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KillCam>()
             .add_systems(OnEnter(MatchPhase::Active), |mut cam: ResMut<KillCam>| *cam = KillCam::default())
+            .add_systems(Update, bait.run_if(in_state(MatchPhase::Active)))
             .add_systems(Update, (record, run).chain().in_set(ClientSet::Present).after(crate::spectate::Spectating).before(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
     }
 }
@@ -676,4 +677,19 @@ fn overlay(commands: &mut Commands, tag: &str, headline: &str, weapon: &str, ski
             .with_children(|bottom| ui::label(bottom, skip, 14.0, ui::DIM));
         })
         .id()
+}
+
+/// Developer aid: `OPNIX_BAIT=1` drops the local player halfway to the enemy base once the
+/// match is live, facing it, so a death (and its kill cam) comes quickly for screenshots.
+fn bait(map: Res<Map>, state: Res<MatchState>, mut players: Query<(&Player, &mut Transform, &mut PlayerInput), With<LocalPlayer>>, mut done: Local<bool>) {
+    if *done || state.phase != Phase::Live || std::env::var("OPNIX_BAIT").is_err() {
+        return;
+    }
+    let Ok((me, mut transform, mut input)) = players.single_mut() else { return };
+    let (Some(ours), Some(theirs)) = (oz_sim::player::base_centre(&map, me.team), oz_sim::player::base_centre(&map, 1 - me.team.min(1))) else { return };
+    *done = true;
+    let mid = ours.lerp(theirs, 0.6);
+    transform.translation = map.ground(mid.x, mid.y);
+    let to = theirs - mid;
+    input.yaw = f32::atan2(-to.x, -to.y);
 }
