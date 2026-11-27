@@ -122,6 +122,13 @@ fn make_rules(modes: &Modes, menu: &MenuState) -> Option<Rules> {
     if rules.recipe.layout.is_town() && layout != oz_core::worldgen::Layout::Town {
         rules.recipe = oz_core::worldgen::WorldRecipe::preset(layout, rules.recipe.biome, rules.recipe.weather);
     }
+    if rules.horde {
+        // Horde maps keep their own look; the layout stepper picks the map, the squad its size.
+        rules.recipe = oz_core::worldgen::WorldRecipe::horde(oz_core::worldgen::Layout::HORDE[menu.layout % oz_core::worldgen::Layout::HORDE.len()]);
+        rules.team_size = menu.team_size;
+        rules.difficulty *= THREATS[menu.threat % THREATS.len()].1;
+        return Some(rules);
+    }
     if menu.weather > 0 {
         rules.recipe.weather = oz_core::worldgen::Weather::ALL[(menu.weather - 1) % oz_core::worldgen::Weather::ALL.len()];
     }
@@ -361,6 +368,12 @@ fn build_menu(
                     let weather = if menu.weather == 0 { "RANDOM".to_string() } else { oz_core::worldgen::Weather::ALL[(menu.weather - 1) % 4].name().to_string() };
                     ui::stepper(panel, order, format!("WEATHER  <  {weather}  >"), Act::Weather(-1), Act::Weather(1));
                     let versus = mode.playable && (mode.rules)(0).pvp;
+                    if mode.playable && (mode.rules)(0).horde {
+                        let layout = oz_core::worldgen::Layout::HORDE[menu.layout % oz_core::worldgen::Layout::HORDE.len()];
+                        ui::stepper(panel, order, format!("LAYOUT   <  {}  >", layout.title()), Act::Layout(-1), Act::Layout(1));
+                        ui::stepper(panel, order, format!("SQUAD    <  {}  >", menu.team_size), Act::TeamSize(-1), Act::TeamSize(1));
+                        ui::label(panel, "BOTS JOIN YOUR SQUAD FOR EVERY SEAT A HUMAN DOES NOT TAKE", 14.0, ui::DIM);
+                    }
                     if versus {
                         let layout = oz_core::worldgen::Layout::VERSUS[menu.layout % oz_core::worldgen::Layout::VERSUS.len()];
                         ui::stepper(panel, order, format!("LAYOUT   <  {}  >", layout.title()), Act::Layout(-1), Act::Layout(1));
@@ -482,6 +495,10 @@ fn build_menu(
                 }
                 Some(state) if state.phase == Phase::Won && state.winner < 2 && !state.roster.is_empty() => {
                     (format!("TEAM {} WINS", if state.winner == 0 { "TEAL" } else { "CORAL" }), ui::GOOD, format!("TEAL {}   |   CORAL {}", state.scores[0], state.scores[1]))
+                }
+                Some(state) if rules.as_deref().is_some_and(|r| r.horde) => {
+                    let (headline, summary) = crate::zombies_hud::game_over(state);
+                    (headline, ui::WARN, summary)
                 }
                 // Time ran out on level scores.
                 Some(state) if state.phase == Phase::Won && !state.roster.is_empty() => ("DRAW".to_string(), ui::TEXT, format!("TEAL {}   |   CORAL {}", state.scores[0], state.scores[1])),

@@ -21,6 +21,7 @@
 //! * [`objective`] - domination points and search and destroy's bomb and rounds.
 //! * [`net`] - host/client replication on top of `oz_net`.
 //! * [`session`] - starting and tearing down a match.
+//! * [`zombies`] - the horde mode: rounds of husks, points, perks, doors, downs and revives.
 //!
 //! A game mode is "a catalog + rules + a director plugin" (see `games/ember_atoll`).
 
@@ -41,6 +42,7 @@ pub mod state;
 pub mod structures;
 pub mod versus;
 pub mod weapons;
+pub mod zombies;
 
 use bevy::prelude::*;
 

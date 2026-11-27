@@ -11,6 +11,9 @@
 use bevy::prelude::*;
 use oz_sim::prelude::*;
 
+pub mod zombies;
+pub use zombies::horde_rules;
+
 pub fn catalog(_: &Rules) -> Catalog {
     let mut weapons = oz_core::kit::standard_guns();
     for weapon in &mut weapons {
@@ -74,6 +77,7 @@ pub fn deathmatch_rules(seed: u64) -> Rules {
         map: 0,
         domination: false,
         bomb: false,
+        horde: false,
     }
 }
 
@@ -134,6 +138,14 @@ impl Plugin for IronTownPlugin {
                 rules: search_rules,
                 catalog,
             },
+            ModeDef {
+                name: "HORDE",
+                blurb: "Co-op survival: endless rounds of scrap husks. Earn points, buy guns off the walls, open doors, restore power for perks, reforge your gun. Hold Use to revive.",
+                playable: true,
+                rules: horde_rules,
+                catalog: zombies::catalog,
+            },
         ]));
+        app.add_plugins(oz_sim::zombies::HordePlugin);
     }
 }

@@ -62,6 +62,7 @@ pub mod typeface;
 pub mod ui;
 pub mod view;
 pub mod wreck;
+pub mod zombies_hud;
 
 use bevy::{prelude::*, window::PresentMode};
 

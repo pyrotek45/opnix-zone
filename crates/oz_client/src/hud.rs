@@ -491,7 +491,9 @@ fn update_text(
         if controls.gamepad { ("X".into(), "RT".into(), "B".into(), "X".into()) } else { (key(Action::Interact), key(Action::Fire), "ESC".into(), key(Action::Reload)) };
     let killer = death.killer.and_then(|id| state.roster.iter().find(|r| r.id == id)).map(|r| r.name.clone());
     let one_life = state.obj.kind == oz_sim::objective::kind::BOMB && state.phase == Phase::Live;
-    let prompt = if !health.alive() && one_life {
+    let prompt = if !health.alive() && rules.horde {
+        String::new()
+    } else if !health.alive() && one_life {
         if spectate.name.is_empty() { "ELIMINATED  -  OUT UNTIL THE NEXT ROUND".to_string() } else { format!("ELIMINATED  -  WATCHING {}", spectate.name) }
     } else if !health.alive() {
         match killer {
@@ -659,7 +661,7 @@ fn update_shapes(
     }
     for (zone, mut node) in &mut zones {
         let on = match zone {
-            Zone::Coop => !rules.pvp,
+            Zone::Coop => !rules.pvp && !rules.horde,
             Zone::Beacon => state.objective_max > 0.0,
             Zone::Versus => rules.pvp,
         };

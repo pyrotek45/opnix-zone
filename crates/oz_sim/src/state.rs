@@ -90,6 +90,9 @@ pub struct Rules {
     /// defenders stop them; `score_limit` is rounds to win (see [`crate::objective`]).
     #[serde(default)]
     pub bomb: bool,
+    /// Horde: round-based co-op survival against husks (see `zombies`).
+    #[serde(default)]
+    pub horde: bool,
 }
 
 /// The replicated heart of a match. Small enough to send with every snapshot.
@@ -153,6 +156,9 @@ pub struct MatchState {
     /// Domination points, or search and destroy's sites, bomb and rounds.
     #[serde(default)]
     pub obj: crate::objective::Objective,
+    /// Horde mode: rounds, points, perks, doors, barricades, the crate (see `zombies`).
+    #[serde(default)]
+    pub horde: crate::zombies::HordeState,
     /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
     #[serde(skip)]
     pub credits: Vec<u8>,

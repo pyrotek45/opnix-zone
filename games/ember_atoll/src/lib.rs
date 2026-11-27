@@ -41,6 +41,7 @@ pub fn frontier_rules(seed: u64) -> Rules {
         map: 0,
         domination: false,
         bomb: false,
+        horde: false,
     }
 }
 
@@ -67,6 +68,7 @@ pub fn horde_rules(seed: u64) -> Rules {
         map: 0,
         domination: false,
         bomb: false,
+        horde: false,
     }
 }
 

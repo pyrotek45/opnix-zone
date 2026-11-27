@@ -24,6 +24,11 @@ pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res
         let mode = modes.0.get(index).filter(|mode| mode.playable)?;
         let mut rules = (mode.rules)(seed);
         rules.mode = index as u8;
+        if let Some(layout) = value("--map").and_then(|m| oz_core::worldgen::Layout::HORDE.into_iter().find(|l| l.title().replace(' ', "").eq_ignore_ascii_case(&m.replace(' ', ""))))
+            && rules.horde
+        {
+            rules.recipe = oz_core::worldgen::WorldRecipe::horde(layout);
+        }
         if let Some(layout) = value("--map").and_then(|m| oz_core::worldgen::Layout::VERSUS.into_iter().find(|l| l.title().replace(' ', "").eq_ignore_ascii_case(&m.replace(' ', ""))))
             && rules.recipe.layout.is_town()
             && layout != oz_core::worldgen::Layout::Town
@@ -38,6 +43,9 @@ pub fn launch_from_args(mut commands: Commands, modes: Res<Modes>, settings: Res
         }
         if let Some(size) = value("--teams").and_then(|t| t.parse::<u8>().ok()) {
             rules.team_size = size.clamp(1, 6);
+        }
+        if let Some(size) = value("--squad").and_then(|t| t.parse::<u8>().ok()) {
+            rules.team_size = size.clamp(1, 4);
         }
         Some(rules)
     };

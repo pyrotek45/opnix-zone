@@ -1045,7 +1045,9 @@ pub fn spawn_point(map: &GameMap, id: u8, team: Option<u8>) -> Vec3 {
         let p = spawns[(id as usize / 2) % spawns.len()];
         return map.ground(p.x, p.y);
     }
-    let offset = Vec2::from_angle(id as f32 * 2.4) * (1.2 * (id as f32).sqrt());
+    // Horde maps start everyone close together in the first zone (bots have big ids).
+    let slot = if map.horde.is_none() { id as f32 } else if id >= 200 { (id - 200) as f32 + 5.0 } else { (id % 4) as f32 + 1.0 };
+    let offset = Vec2::from_angle(slot * 2.4) * (1.2 * slot.sqrt()).min(if map.horde.is_some() { 3.5 } else { f32::MAX });
     let p = map.spawn + offset;
     map.ground(p.x, p.y)
 }

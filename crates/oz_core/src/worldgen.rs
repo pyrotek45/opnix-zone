@@ -20,8 +20,10 @@ mod paving;
 mod shapes;
 mod station;
 mod themes;
+mod zombie_maps;
 
 pub use themes::Theme;
+pub use zombie_maps::{SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeVent, HordeWindow, HordeZone, WallBuy, perk_id};
 use shapes::{Furnish, Plan, Roof};
 
 use crate::{collide::Aabb, economy::Ore, model::{Hull, Paint}, noise, rng::Rng};
@@ -152,12 +154,25 @@ pub enum Layout {
     /// Fixed map on a slope: terraces joined by a switchback road and stairs, cliffs to hold,
     /// a village in the valley and a lodge and radio station on the summit.
     Mountainside,
+    /// Horde map: an abandoned foundry at night - a courtyard, a warehouse, offices with the
+    /// generator, a furnace hall and a loading dock (see `zombie_maps`).
+    CinderWorks,
+    /// Horde map: a swamp research station in thick fog - a landing pad, a boardwalk, a
+    /// greenhouse, a specimen lab, a pump house and a cold store.
+    Blackfen,
 }
 
 impl Layout {
     /// Built as a town (flat ground, streets, team bases).
     pub fn is_town(self) -> bool {
-        !matches!(self, Layout::Archipelago)
+        !matches!(self, Layout::Archipelago | Layout::CinderWorks | Layout::Blackfen)
+    }
+
+    /// Horde (round survival) maps.
+    pub const HORDE: [Layout; 2] = [Layout::CinderWorks, Layout::Blackfen];
+
+    pub fn is_horde(self) -> bool {
+        matches!(self, Layout::CinderWorks | Layout::Blackfen)
     }
 
     /// Versus map choices: the random town, then the fixed maps.
@@ -172,6 +187,8 @@ impl Layout {
             Layout::OfficeTower => "OFFICE TOWER",
             Layout::SpaceStation => "SPACE STATION",
             Layout::Mountainside => "MOUNTAINSIDE",
+            Layout::CinderWorks => "CINDER WORKS",
+            Layout::Blackfen => "BLACKFEN STATION",
         }
     }
 
@@ -240,6 +257,14 @@ impl WorldRecipe {
         Self::town(seed, biome)
     }
 
+    /// A horde map with its own look: the foundry under a low night sky, the fen in fog.
+    pub fn horde(layout: Layout) -> Self {
+        match layout {
+            Layout::Blackfen => Self::preset(layout, Biome::SunkenReach, Weather::Fog),
+            _ => Self::preset(Layout::CinderWorks, Biome::BlackwaterCaldera, Weather::Overcast),
+        }
+    }
+
     /// A fixed map: the same streets every time (its own seed), in any biome and weather.
     pub fn preset(layout: Layout, biome: Biome, weather: Weather) -> Self {
         let seed = match layout {
@@ -248,6 +273,8 @@ impl WorldRecipe {
             Layout::OfficeTower => 0x0FF1_CE00,
             Layout::SpaceStation => 0x57A7_1000,
             Layout::Mountainside => 0x3077_7A15,
+            Layout::CinderWorks => 0xC1D3_0005,
+            Layout::Blackfen => 0xB1AC_F3E0,
             _ => 7,
         };
         // The compact maps keep the original island; the others get a square of land.
@@ -255,6 +282,7 @@ impl WorldRecipe {
             Layout::Crossroads | Layout::Dockyard => (96.0, 68.0),
             Layout::OfficeTower => (100.0, 84.0),
             Layout::SpaceStation => (104.0, 96.0),
+            Layout::CinderWorks | Layout::Blackfen => (72.0, 60.0),
             _ => (150.0, 128.0),
         };
         Self { layout, weather, half_extent, main_radius, ..Self::town(seed, biome) }
@@ -485,6 +513,8 @@ pub struct World {
     pub doors: Vec<DoorSpec>,
     pub windows: Vec<WindowSpec>,
     pub ladders: Vec<Ladder>,
+    /// Horde maps: zones, buyable doors, barricaded windows, wall buys and machines.
+    pub horde: Option<Box<HordeLayout>>,
     /// Tufts of grass (render only).
     pub grass: Vec<Vec3>,
     /// The top of the fountain's spout, if the map has one.
@@ -564,6 +594,7 @@ impl World {
             doors: Vec::new(),
             windows: Vec::new(),
             ladders: Vec::new(),
+            horde: None,
             grass: Vec::new(),
             fountain: None,
             flags: Vec::new(),
@@ -575,6 +606,7 @@ impl World {
                 Layout::Crossroads | Layout::Dockyard => 58.0,
                 Layout::OfficeTower => 72.0,
                 Layout::SpaceStation => 86.0,
+                Layout::CinderWorks | Layout::Blackfen => 40.0,
                 _ => 112.0,
             },
             style: shapes::Style::default(),
@@ -616,6 +648,7 @@ impl World {
             Layout::Town => return self.themed_height(x, z),
             Layout::Mountainside => return self.mountain_height(x, z),
             Layout::OfficeTower | Layout::SpaceStation => return self.square_land(x, z),
+            Layout::CinderWorks | Layout::Blackfen => return self.horde_height(x, z),
             _ => {}
         }
         let mut best = SEABED + 0.25 * noise::fbm(seed ^ 0xbed, x * 0.03, z * 0.03, 2);
@@ -776,6 +809,8 @@ impl World {
             Layout::OfficeTower => return self.office_tower(rng),
             Layout::SpaceStation => return self.space_station(rng),
             Layout::Mountainside => return self.mountainside(rng),
+            Layout::CinderWorks => return self.cinder_works(rng),
+            Layout::Blackfen => return self.blackfen(rng),
             _ => return self.themed_town(rng),
         }
         self.finish_town(rng);
