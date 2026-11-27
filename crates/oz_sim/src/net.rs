@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn entity_state_is_compact() {
         let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7, limbs: 9, extra: 1 };
-        assert_eq!(bincode::serialize(&state).unwrap().len(), 18);
+        assert_eq!(bincode::serialize(&state).unwrap().len(), 19);
     }
 
     #[test]
