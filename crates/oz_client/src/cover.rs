@@ -82,7 +82,7 @@ fn demo(
     mut cover: ResMut<Cover>,
     mut players: Query<(&mut Transform, &mut PlayerInput, &Health), With<LocalPlayer>>,
     mut done: Local<bool>,
-    (time, mut controls, mut clock): (Res<Time>, ResMut<Controls>, Local<f32>),
+    (time, mut controls, mut clock, mut placed): (Res<Time>, ResMut<Controls>, Local<f32>, Local<Option<(Vec3, f32, Wall)>>),
 ) {
     let Ok(which) = std::env::var("OPNIX_COVER_DEMO") else { return };
     if state.phase != Phase::Live {
@@ -93,6 +93,17 @@ fn demo(
         return;
     }
     if *done {
+        // Hold the spot a moment: the match's own spawn can land after the first frame.
+        if let Some((feet, yaw, wall)) = *placed
+            && *clock < 1.5
+        {
+            transform.translation = feet;
+            input.yaw = yaw;
+            cover.wall = Some(wall);
+            if std::env::var("OPNIX_DEMO_FIRE").is_ok_and(|v| v != "seq") {
+                *clock += time.delta_secs();
+            }
+        }
         // `OPNIX_DEMO_FIRE=1` keeps the trigger held (blind fire from cover).
         if std::env::var("OPNIX_DEMO_FIRE").is_ok_and(|v| v == "1") {
             input.buttons |= buttons::FIRE;
@@ -193,6 +204,7 @@ fn demo(
     }
     let low = which == "window" || which == "low";
     cover.wall = Some(Wall { normal, low });
+    *placed = Some((feet, input.yaw, Wall { normal, low }));
 }
 
 /// `OPNIX_SHOTS=dir`: once the match is live, saves `OPNIX_SHOT_COUNT` screenshots (default 6)
