@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 /// Seconds of history kept.
 const KEEP: f32 = 9.0;
 /// How much of the run-up to the death is replayed, and how much after it.
-const BEFORE: f32 = 3.4;
+const BEFORE: f32 = 2.6;
 const AFTER: f32 = 0.5;
 /// Seconds after the death before the replay starts.
 const DELAY: f32 = 0.75;
@@ -481,6 +481,23 @@ fn run(
             if ids.iter().any(|(id, ..)| *id == killer) {
                 let frames: Vec<Frame> = cam.frames.iter().cloned().collect();
                 let ghosts = spawn_ghosts(&mut commands, &art, &parts, &content, &mut guns, &mut meshes, &frames, start, died + AFTER);
+                // How far off you the killer's recorded aim was when you went down (degrees).
+                if let (Some(k), Some(v)) = (cam.sample(killer, died - 0.05), cam.sample(me.id, died - 0.05)) {
+                    let eye = k.pos + Vec3::Y * stance::eye(k.flags & flags::STANCE);
+                    let look = Quat::from_euler(EulerRot::YXZ, k.yaw, k.pitch, 0.0) * Vec3::NEG_Z;
+                    let off = look.angle_between((v.pos + Vec3::Y - eye).normalize_or_zero()).to_degrees();
+                    info!("kill cam: killer {killer} aim {off:.1} deg off the victim at {:.1} m", eye.distance(v.pos));
+                }
+                // A bright marker over your own stand-in, so you can see yourself in their sights.
+                if let Some((_, you)) = ghosts.iter().find(|(id, _)| *id == me.id) {
+                    commands.spawn((
+                        Mesh3d(art.primitive(Shape::Shard)),
+                        MeshMaterial3d(art.paint(Paint::Red)),
+                        Transform::from_xyz(0.0, 2.35, 0.0).with_scale(Vec3::new(0.18, 0.26, 0.18)),
+                        NotShadowCaster,
+                        ChildOf(*you),
+                    ));
+                }
                 let name = state.roster.iter().find(|r| r.id == killer).map_or("?".to_string(), |r| r.name.clone());
                 let weapon = cam.sample(killer, died).and_then(|s| content.weapons.get(s.weapon as usize)).map_or("", |w| w.name);
                 let skip = if controls.gamepad { "(A)".to_string() } else { settings.bindings.label(crate::bindings::Action::Jump) };
@@ -552,11 +569,12 @@ fn run(
         if length < 0.05 {
             continue;
         }
-        let width = if shot.beam { 0.04 } else { 0.025 };
+        // Thick enough to read at range: this is what killed you.
+        let width = if shot.beam { 0.06 } else { 0.05 };
         commands.spawn((
             MatchEntity,
             Ghost,
-            ReplayTracer(if slow { 0.18 } else { 0.07 }),
+            ReplayTracer(if slow { 0.3 } else { 0.14 }),
             Mesh3d(art.primitive(Shape::Cube)),
             MeshMaterial3d(art.paint(if shot.beam { Paint::Aether } else { shot.tracer })),
             Transform::from_translation(shot.from + span * 0.5).with_rotation(Quat::from_rotation_arc(Vec3::Z, span / length)).with_scale(Vec3::new(width, width, length)),

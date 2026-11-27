@@ -22,6 +22,10 @@ pub struct Settings {
     pub volume: f32,
     /// Combat effects: full (hit-stop, big shakes, every particle) or reduced (calmer, cheaper).
     pub full_effects: bool,
+    /// Controller aim assist (slowdown over targets and a gentle pull while moving).
+    pub aim_assist: bool,
+    /// Right-stick response: dynamic (fine near the centre, quick at the edge) or standard.
+    pub dynamic_curve: bool,
     pub callsign: String,
     pub last_address: String,
     pub bindings: crate::bindings::Bindings,
@@ -46,6 +50,8 @@ impl Default for Settings {
             vsync: true,
             volume: 0.8,
             full_effects: true,
+            aim_assist: true,
+            dynamic_curve: true,
             callsign: "OPERATOR".into(),
             last_address: "127.0.0.1".into(),
             bindings: Default::default(),
@@ -94,6 +100,8 @@ impl Settings {
                 "vsync" => s.vsync = flag,
                 "volume" => s.volume = number.unwrap_or(0.8).clamp(0.0, 1.0),
                 "effects" => s.full_effects = value != "reduced",
+                "aim_assist" => s.aim_assist = value != "off",
+                "stick_curve" => s.dynamic_curve = value != "standard",
                 "callsign" => s.callsign = sanitize(value, 16),
                 "last_address" => s.last_address = sanitize(value, 64),
                 "token" => s.token = value.parse().unwrap_or(0),
@@ -138,6 +146,7 @@ impl Settings {
             self.last_address
         );
         let text = text + &format!("effects={}\n", if self.full_effects { "full" } else { "reduced" });
+        let text = text + &format!("aim_assist={}\nstick_curve={}\n", if self.aim_assist { "on" } else { "off" }, if self.dynamic_curve { "dynamic" } else { "standard" });
         let text = text + &format!("token={}\n", self.token) + &self.bindings.save_lines();
         let text = text + &self.classes.iter().map(|c| format!("class={c}\n")).collect::<String>();
         if let Some(dir) = path.parent() {

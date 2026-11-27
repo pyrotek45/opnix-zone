@@ -376,6 +376,9 @@ pub fn build_lobby(
                 rows.item(list, format!("{:<13}{my_name}", "NAME"), Act::EditName);
                 rows.value(list, "MODE", mode_name(state.next_mode).to_string(), LobbyAction::Mode);
                 rows.value(list, "MAP", map_title(state.next_map).to_string(), LobbyAction::Map);
+                // Team size up front too (it is also on the settings page).
+                let n = state.team_size;
+                rows.value(list, if rules.hunt { "SQUAD" } else { "TEAMS" }, if rules.hunt { format!("{n}") } else { format!("{n} V {n}") }, LobbyAction::TeamSize);
                 if host {
                     rows.item(list, "NEW MAP".to_string(), Act::Lobby(LobbyAction::NewMap));
                 }

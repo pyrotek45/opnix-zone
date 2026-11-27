@@ -296,6 +296,8 @@ fn menu_actions(
                     Setting::Vsync => settings.vsync = !settings.vsync,
                     Setting::Volume => settings.volume = (settings.volume + 0.1 * step).clamp(0.0, 1.0),
                     Setting::Effects => settings.full_effects = !settings.full_effects,
+                    Setting::AimAssist => settings.aim_assist = !settings.aim_assist,
+                    Setting::AimCurve => settings.dynamic_curve = !settings.dynamic_curve,
                 }
                 settings.save();
             }
@@ -457,6 +459,8 @@ fn build_menu(
                     value(format!("VSYNC              <  {}  >", on_off(settings.vsync)), Setting::Vsync);
                     value(format!("VOLUME             <  {:.0}%  >", settings.volume * 100.0), Setting::Volume);
                     value(format!("EFFECTS            <  {}  >", if settings.full_effects { "FULL" } else { "REDUCED" }), Setting::Effects);
+                    value(format!("AIM ASSIST (PAD)   <  {}  >", on_off(settings.aim_assist)), Setting::AimAssist);
+                    value(format!("STICK CURVE        <  {}  >", if settings.dynamic_curve { "DYNAMIC" } else { "STANDARD" }), Setting::AimCurve);
                     ui::label(panel, "A BIGGER PIXEL SIZE RENDERS FEWER PIXELS: THE FASTEST WAY TO GAIN FRAME RATE.", 13.0, ui::DIM);
                     ui::button(panel, order, "CONTROLS", Act::Go(Screen::Controls));
                     ui::button(panel, order, "BACK", Act::Back);

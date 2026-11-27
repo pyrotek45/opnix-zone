@@ -132,6 +132,10 @@ fn footstep(sfx: Sfx) -> bool {
     matches!(sfx, Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy | Sfx::StepWood | Sfx::Crawl | Sfx::Land | Sfx::Jump)
 }
 
+/// A one-shot sound from the game: stopped when a match ends so none leaks into the next.
+#[derive(Component)]
+struct MatchSound;
+
 /// Is there a roof over this point?
 fn indoors(statics: &Statics, at: Vec3) -> bool {
     statics.raycast(at + Vec3::Y * 0.3, Vec3::Y, 9.0).is_some()
@@ -149,8 +153,20 @@ fn play(
     listener: Query<&Transform, With<WorldCamera>>,
     mut waiting: Local<Vec<(f32, PlaySfx)>>,
     mut seed: Local<u32>,
+    (phase, playing, mut was_active): (Res<State<MatchPhase>>, Query<Entity, With<MatchSound>>, Local<bool>),
 ) {
     let now = time.elapsed_secs();
+    // Leaving a match (or starting a new one) is a clean break: nothing still ringing or
+    // waiting to go off carries over from the last game.
+    let active = *phase.get() == MatchPhase::Active;
+    if active != *was_active {
+        *was_active = active;
+        waiting.clear();
+        for entity in &playing {
+            commands.entity(entity).despawn();
+        }
+        events.clear();
+    }
     let ears = listener.single().ok().map(|t| t.translation);
     // Delayed sounds join the queue until they are due.
     for event in events.read() {
@@ -212,10 +228,10 @@ fn play(
         let playback = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain)).with_speed(speed);
         match event.at {
             Some(at) if distance > 0.5 => {
-                commands.spawn((AudioPlayer::new(clip), playback.with_spatial(true), Transform::from_translation(at)));
+                commands.spawn((MatchSound, AudioPlayer::new(clip), playback.with_spatial(true), Transform::from_translation(at)));
             }
             _ => {
-                commands.spawn((AudioPlayer::new(clip), playback));
+                commands.spawn((MatchSound, AudioPlayer::new(clip), playback));
             }
         }
     }

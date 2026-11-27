@@ -78,6 +78,8 @@ pub enum Setting {
     Vsync,
     Volume,
     Effects,
+    AimAssist,
+    AimCurve,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

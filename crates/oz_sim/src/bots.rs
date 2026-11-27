@@ -943,6 +943,12 @@ pub fn drive_bots(
         if held & (buttons::JUMP | buttons::SPRINT) != 0 {
             wanted_stance = stance::STAND;
         }
+        // Legs shot off: crawl (both) or stay low (one).
+        if me.lost & crate::player::limb::LEGS == crate::player::limb::LEGS {
+            wanted_stance = stance::PRONE;
+        } else if me.lost & crate::player::limb::LEGS != 0 && wanted_stance == stance::STAND {
+            wanted_stance = stance::CROUCH;
+        }
         input.stance = wanted_stance;
 
         // World-space wish -> stick input relative to where the bot is looking.

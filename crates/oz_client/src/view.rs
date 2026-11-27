@@ -510,7 +510,17 @@ fn follow_player(
             let toward = look.dot(along);
             // Looking along the wall picks the shoulder on that side of the screen; looking
             // square on keeps the shoulder we had.
-            let screen = if toward.abs() > 0.2 { (along * toward.signum()).dot(right).signum() } else { view.shoulder.signum() };
+            let looked = if toward.abs() > 0.2 { (along * toward.signum()).dot(right).signum() } else { view.shoulder.signum() };
+            // At a window or a corner the building decides: look out over the shoulder on the
+            // side that is open at head height, not the one with wall in front of it.
+            let head = player.translation + Vec3::Y * 1.55;
+            let open_at = |side: f32| statics.raycast(head + along * side * 0.55, -wall.normal, 1.2).is_none();
+            let (left_open, right_open) = (open_at(-1.0), open_at(1.0));
+            let screen = match (left_open, right_open) {
+                (true, false) => (along * -1.0).dot(right).signum(),
+                (false, true) => along.dot(right).signum(),
+                _ => looked,
+            };
             // Which end of the wall that is (along -1 or +1), and whether we are at it.
             let end = if along.dot(right) * screen >= 0.0 { 1 } else { 0 };
             let at_edge = cover.edges[end];

@@ -264,7 +264,7 @@ pub mod part {
     /// Damage multiplier for a hit on this part.
     pub fn multiplier(part: u8) -> f32 {
         match part {
-            HEAD => 2.0,
+            HEAD => 2.5,
             LEFT_ARM | RIGHT_ARM => 0.7,
             LEFT_LEG | RIGHT_LEG => 0.75,
             _ => 1.0,
@@ -572,9 +572,17 @@ pub const STANCE_HOLD: f32 = 0.3;
 
 /// Rate limits stance changes for everyone (on the authority this covers remote players
 /// too): a change inside [`STANCE_HOLD`] of the last one is held back until it is allowed.
-pub fn limit_stance(time: Res<Time>, mut players: Query<(&mut PlayerInput, &mut Mover, &Health)>) {
+pub fn limit_stance(time: Res<Time>, mut players: Query<(&mut PlayerInput, &mut Mover, &Health, &Player)>) {
     let dt = sim_dt(&time);
-    for (mut input, mut mover, health) in &mut players {
+    for (mut input, mut mover, health, player) in &mut players {
+        // No legs: crawl. One leg: no standing up.
+        if health.alive() {
+            if player.lost & limb::LEGS == limb::LEGS {
+                input.stance = stance::PRONE;
+            } else if player.lost & limb::LEGS != 0 && input.stance == stance::STAND {
+                input.stance = stance::CROUCH;
+            }
+        }
         mover.stance_age += dt;
         mover.jump_cd = (mover.jump_cd - dt).max(0.0);
         if !health.alive() {
@@ -710,9 +718,20 @@ pub fn move_players(
     content: Res<Content>,
     mut players: Query<(&mut Transform, &mut PlayerInput, &mut Mover, &Health, &Player, &Arsenal), Or<(With<LocalPlayer>, With<Bot>)>>,
     solids: Query<(&Transform, &Solid), Without<Player>>,
+    state: Res<MatchState>,
 ) {
     let dt = sim_dt(&time);
+    // Horde: a vault may only land in an area that is open (no hopping the fence out of the
+    // map, or past a door nobody has paid for).
+    let open = map.horde.as_ref().map(|layout| (layout, layout.open_zones(state.horde.doors)));
+    let allowed = |to: Vec3| open.is_none_or(|(layout, open)| layout.zone_at(to.xz()).is_some_and(|z| open & (1 << z) != 0));
     for (mut transform, mut input, mut mover, health, player, arsenal) in &mut players {
+        // Legless robots crawl; one leg short, they cannot stand.
+        if player.lost & limb::LEGS == limb::LEGS {
+            input.stance = stance::PRONE;
+        } else if player.lost & limb::LEGS != 0 && input.stance == stance::STAND {
+            input.stance = stance::CROUCH;
+        }
         if !health.alive() {
             mover.speed = 0.0;
             mover.vault = None;
@@ -748,7 +767,7 @@ pub fn move_players(
             let facing = Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z;
             let wish = Quat::from_rotation_y(input.yaw) * Vec3::new(input.movement.x, 0.0, -input.movement.y);
             let dir = if wish.length() > 0.2 { wish } else { facing };
-            if let Some((to, top)) = vault_target(&map, &statics, transform.translation, dir) {
+            if let Some((to, top)) = vault_target(&map, &statics, transform.translation, dir).filter(|(to, _)| allowed(*to)) {
                 let distance = to.xz().distance(transform.translation.xz());
                 mover.vault = Some(Vault { from: transform.translation, to, top, t: 0.0, duration: 0.38 + distance * 0.12 });
                 continue;

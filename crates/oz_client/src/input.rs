@@ -121,6 +121,12 @@ impl Plugin for InputPlugin {
     }
 }
 
+fn stick_with(value: Vec2, deadzone: f32) -> Vec2 {
+    let length = value.length();
+    if length < deadzone { Vec2::ZERO } else { value / length * ((length - deadzone) / (1.0 - deadzone)).min(1.0) }
+}
+
+#[allow(dead_code)]
 fn stick(value: Vec2) -> Vec2 {
     let length = value.length();
     if length < 0.18 { Vec2::ZERO } else { value / length * ((length - 0.18) / 0.82).min(1.0) }
@@ -203,8 +209,10 @@ fn read_devices(
 
     // Gamepads: every connected pad contributes.
     for pad in &gamepads {
-        let left = stick(pad.left_stick());
-        let right = stick(pad.right_stick());
+        // Movement starts at the lightest touch; the look stick keeps a small deadzone
+        // against drift.
+        let left = stick_with(pad.left_stick(), 0.06);
+        let right = stick_with(pad.right_stick(), 0.1);
         let held = |button| pad.pressed(button);
         let hit = |button| pad.just_pressed(button);
         if left != Vec2::ZERO || right != Vec2::ZERO || pad.get_just_pressed().next().is_some() {
@@ -214,8 +222,12 @@ fn read_devices(
             c.movement = left;
         }
         let aiming = held(GamepadButton::LeftTrigger2);
-        // Squared response for fine aim, slower while aiming down sights.
-        let turn = right * right.length() * 3.4 * settings.sensitivity * if aiming { 0.45 * settings.ads_sensitivity } else { 1.0 } * time.delta_secs();
+        // Response: dynamic (finer than squared near the centre, the same full speed at the
+        // edge, steeper on the way) or the plain squared ramp; slower aiming down sights.
+        let r = right.length();
+        // (The stick's own length already scales `right`, so standard ends up squared.)
+        let response = if settings.dynamic_curve { 0.6 * r + 0.4 * r * r * r } else { r };
+        let turn = right * response * 3.4 * settings.sensitivity * if aiming { 0.45 * settings.ads_sensitivity } else { 1.0 } * time.delta_secs();
         c.look += Vec2::new(turn.x, -turn.y);
         c.fire |= held(GamepadButton::RightTrigger2);
         c.fire_pressed |= hit(GamepadButton::RightTrigger2);

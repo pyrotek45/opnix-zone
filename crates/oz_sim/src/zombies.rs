@@ -1609,11 +1609,11 @@ fn score_hits(
             }
             None => (false, false, false),
         };
-        // Headshots hurt twice as much; the killswitch drops anything in one.
+        // Headshots hurt three times as much; the killswitch drops anything in one.
         let bonus = if state.horde.insta > 0.0 && hit.by.is_some() {
             hp * 10.0
         } else if head {
-            hit.amount
+            hit.amount * 2.0
         } else {
             0.0
         };
