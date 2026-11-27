@@ -66,6 +66,9 @@ pub struct Rules {
     /// do not respawn, see and hear like sentries, and react to noise.
     #[serde(default)]
     pub hunt: bool,
+    /// Ranked playlist: wins and losses move each player's rank (kept on their own machine).
+    #[serde(default)]
+    pub ranked: bool,
 }
 
 /// The replicated heart of a match. Small enough to send with every snapshot.

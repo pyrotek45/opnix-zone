@@ -248,7 +248,7 @@ pub fn build_lobby(
             let size = if rules.hunt { format!("SQUAD  <  {n}  >") } else { format!("TEAMS  <  {n} V {n}  >") };
             if host {
                 bottom.spawn(ui::row(8.0)).with_children(|row| {
-                    ui::sized_button(row, order, size, Act::Lobby(LobbyAction::TeamSize(1)), Some(Act::Lobby(LobbyAction::TeamSize(-1))), Val::Px(210.0));
+                    ui::sized_button(row, order, size, Act::Lobby(LobbyAction::TeamSize(1)), Some(Act::Lobby(LobbyAction::TeamSize(-1))), Val::Px(240.0));
                     ui::sized_button(row, order, format!("TIME  <  {time}  >"), Act::Lobby(LobbyAction::TimeOfDay(1)), Some(Act::Lobby(LobbyAction::TimeOfDay(-1))), Val::Px(300.0));
                     ui::sized_button(row, order, format!("WEATHER  <  {weather}  >"), Act::Lobby(LobbyAction::Weather(1)), Some(Act::Lobby(LobbyAction::Weather(-1))), Val::Px(300.0));
                 });

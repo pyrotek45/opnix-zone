@@ -257,7 +257,8 @@ fn rebuild(
         Stage::Armory { weapon, parts: equipped } => {
             let model = content.as_deref().and_then(|c| c.weapons.get(*weapon as usize)).map_or_else(BlockModel::new, |def| assemble(def, equipped));
             let (center, size) = bounds(&model);
-            let scale = 1.0 / size.z.max(size.y).max(0.3);
+            // Big guns fill the spot; small ones are enlarged only so far, so a pistol still reads as a pistol.
+            let scale = (1.0 / size.z.max(size.y).max(0.3)).min(1.5);
             let baked = art.bake(&model, &mut meshes);
             // Off to the upper right, clear of the panels on the left.
             let pivot = commands.spawn((Subject, Turntable, Transform::from_translation(STAGE + Vec3::new(0.95, 1.62, 0.0)), Visibility::Inherited)).id();

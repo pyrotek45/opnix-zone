@@ -66,6 +66,7 @@ pub fn deathmatch_rules(seed: u64) -> Rules {
         team_size: 2,
         score_limit: 25,
         hunt: false,
+        ranked: false,
     }
 }
 
@@ -76,6 +77,11 @@ pub fn hunt_rules(seed: u64) -> Rules {
     Rules { hunt: true, team_size: 1, score_limit: 0, ..deathmatch_rules(seed) }
 }
 
+/// Ranked team deathmatch: the same fight, for rank points.
+pub fn ranked_rules(seed: u64) -> Rules {
+    Rules { ranked: true, team_size: 4, ..deathmatch_rules(seed) }
+}
+
 pub struct IronTownPlugin;
 
 impl Plugin for IronTownPlugin {
@@ -83,6 +89,7 @@ impl Plugin for IronTownPlugin {
         let planned = |name, blurb| ModeDef { name, blurb, playable: false, rules: deathmatch_rules, catalog };
         app.insert_resource(Modes(vec![
             ModeDef { name: "TEAM DEATHMATCH", blurb: "Two squads, one town. Bots fill empty slots. First to the score limit wins.", playable: true, rules: deathmatch_rules, catalog },
+            ModeDef { name: "RANKED TEAM DEATHMATCH", blurb: "Team deathmatch for rank: wins climb from bronze to diamond, losses cost points.", playable: true, rules: ranked_rules, catalog },
             ModeDef {
                 name: "TERRORIST HUNT",
                 blurb: "Clear the town of hostiles. They hear gunfire and footsteps: suppressors and a light step keep you hidden.",

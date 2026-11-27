@@ -37,6 +37,19 @@ pub struct Hands {
     pub since_melee: f32,
 }
 
+/// The radar's map layer: north up, the map image inside it slides so you stay centred.
+#[derive(Component)]
+pub struct MinimapPivot;
+
+/// Your marker in the middle of the radar, turned to where you face.
+#[derive(Component)]
+pub struct RadarArrow;
+
+#[derive(Component)]
+struct MinimapImage {
+    extent: f32,
+}
+
 #[derive(Component)]
 struct StreakSlot(usize);
 
@@ -65,7 +78,7 @@ impl Plugin for TacticalPlugin {
         app.init_resource::<Hands>()
             .add_systems(OnEnter(MatchPhase::Active), (spawn, |mut hands: ResMut<Hands>| *hands = Hands { since_throw: 9.0, since_cancel: 9.0, since_melee: 9.0, ..default() }))
             .add_systems(Update, track_hands.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, update.in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (update, minimap).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -326,5 +339,110 @@ fn update(
     if let Ok(mut text) = hunt_text.single_mut() {
         let line = if rules.hunt && matches!(state.phase, Phase::Live) { format!("HOSTILES  {}      SQUAD LIVES  {}", state.hostiles, state.lives) } else { String::new() };
         set(&mut text, line);
+    }
+}
+
+/// Pixels per metre in the baked map image.
+const MAP_RES: f32 = 2.0;
+
+/// Draws the map from above once per match: building footprints, walls and tall solids,
+/// low cover, team bases and ladders.
+fn bake_minimap(map: &oz_core::worldgen::World) -> (Image, f32) {
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let extent = map.recipe.half_extent.min(110.0);
+    let size = (extent * 2.0 * MAP_RES) as usize;
+    let mut pixels = vec![0u8; size * size * 4];
+    let mut fill = |x0: f32, z0: f32, x1: f32, z1: f32, color: [u8; 4]| {
+        let to = |v: f32| (((v + extent) * MAP_RES).floor().max(0.0) as usize).min(size - 1);
+        for v in to(z0)..=to(z1) {
+            for u in to(x0)..=to(x1) {
+                let i = (v * size + u) * 4;
+                pixels[i..i + 4].copy_from_slice(&color);
+            }
+        }
+    };
+    // Floors first (foundations and slabs), then low cover, then anything tall on top.
+    let mut layers: [Vec<(f32, f32, f32, f32)>; 3] = Default::default();
+    for block in map.blocks.iter().filter(|b| b.solid) {
+        let b = block.aabb;
+        let ground = map.height(b.center.x, b.center.z);
+        let rise = b.top() - ground;
+        let rect = (b.center.x - b.half.x, b.center.z - b.half.z, b.center.x + b.half.x, b.center.z + b.half.z);
+        if b.half.x > 1.5 && b.half.z > 1.5 && rise < 0.5 {
+            layers[0].push(rect);
+        } else if rise > 1.6 {
+            layers[2].push(rect);
+        } else if rise > 0.5 {
+            layers[1].push(rect);
+        }
+    }
+    for prop in &map.props {
+        if let Some(half) = prop.solid_half() {
+            layers[if half.y * 2.0 > 1.6 { 2 } else { 1 }].push((prop.pos.x - half.x, prop.pos.z - half.z, prop.pos.x + half.x, prop.pos.z + half.z));
+        }
+    }
+    for clutter in &map.clutter {
+        let (c, h) = (clutter.pos, clutter.half());
+        layers[1].push((c.x - h.x, c.z - h.z, c.x + h.x, c.z + h.z));
+    }
+    for (layer, color) in layers.iter().zip([[40, 54, 60, 235], [92, 108, 98, 230], [150, 172, 172, 255]]) {
+        for &(x0, z0, x1, z1) in layer {
+            fill(x0, z0, x1, z1, color);
+        }
+    }
+    // Points of interest: team bases and the ladders up to the roofs.
+    for (team, color) in [(0usize, [64u8, 204, 209, 255]), (1, [242, 133, 107, 255])] {
+        for p in &map.team_spawns[team] {
+            fill(p.x - 1.2, p.y - 1.2, p.x + 1.2, p.y + 1.2, color);
+        }
+    }
+    for ladder in &map.ladders {
+        fill(ladder.foot.x - 0.6, ladder.foot.z - 0.6, ladder.foot.x + 0.6, ladder.foot.z + 0.6, [255, 204, 102, 255]);
+    }
+    let image = Image::new(
+        Extent3d { width: size as u32, height: size as u32, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        pixels,
+        TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+    (image, extent)
+}
+
+/// Keeps the radar's map under the blips (north up, centred on you) and turns your arrow.
+fn minimap(
+    mut commands: Commands,
+    map: Res<Map>,
+    mut images: ResMut<Assets<Image>>,
+    players: Query<(&Transform, &PlayerInput), (With<LocalPlayer>, Without<MinimapPivot>, Without<RadarArrow>)>,
+    pivots: Query<(Entity, Option<&Children>), With<MinimapPivot>>,
+    mut arrows: Query<&mut Transform, (With<RadarArrow>, Without<LocalPlayer>)>,
+    mut layers: Query<(&MinimapImage, &mut Node)>,
+) {
+    let Ok((pivot, children)) = pivots.single() else { return };
+    let Ok((me, input)) = players.single() else { return };
+    let scale = (crate::hud::RADAR / 2.0 - 4.0) / crate::hud::RADAR_RANGE;
+    if children.is_none_or(|c| c.is_empty()) {
+        let (image, extent) = bake_minimap(&map.0);
+        let handle = images.add(image);
+        let side = extent * 2.0 * scale;
+        commands.spawn((
+            MinimapImage { extent },
+            ImageNode::new(handle),
+            Node { position_type: PositionType::Absolute, width: Val::Px(side), height: Val::Px(side), ..default() },
+            ChildOf(pivot),
+        ));
+        return;
+    }
+    for mut arrow in &mut arrows {
+        arrow.rotation = Quat::from_rotation_z(-input.yaw);
+    }
+    for (layer, mut node) in &mut layers {
+        let left = Val::Px(-(me.translation.x + layer.extent) * scale);
+        let top = Val::Px(-(me.translation.z + layer.extent) * scale);
+        if node.left != left || node.top != top {
+            node.left = left;
+            node.top = top;
+        }
     }
 }

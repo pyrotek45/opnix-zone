@@ -179,7 +179,7 @@ impl Plugin for LoadoutPlugin {
 }
 
 /// Reads the saved classes once, and fits them to the match's catalog.
-fn load(mut class: ResMut<Class>, settings: Res<Settings>, content: Res<Content>) {
+fn load(mut class: ResMut<Class>, settings: Res<Settings>, content: Res<Content>, career: Res<crate::career::Career>) {
     if !class.loaded {
         class.loaded = true;
         for (slot, text) in class.slots.iter_mut().zip(&settings.classes) {
@@ -188,9 +188,11 @@ fn load(mut class: ResMut<Class>, settings: Res<Settings>, content: Res<Content>
             }
         }
     }
-    if content.is_changed() || class.slots.iter().any(|s| s.parts.is_none()) {
+    if content.is_changed() || career.is_changed() || class.slots.iter().any(|s| s.parts.is_none()) {
+        // Valid for this catalog, and only what this career has unlocked.
         for slot in class.slots.iter_mut() {
             normalize(slot, &content);
+            career.enforce(slot, &content);
         }
     }
 }
@@ -218,11 +220,12 @@ fn armory_actions(
     mut dirty: ResMut<UiDirty>,
     mut settings: ResMut<Settings>,
     mut request: ResMut<FocusRequest>,
-    content: Res<Content>,
+    (content, career): (Res<Content>, Res<crate::career::Career>),
     state: Res<MatchState>,
     mut players: Query<(&Player, &mut PlayerInput), With<LocalPlayer>>,
     mut orders: EventWriter<CommandEvent>,
     mut fx: EventWriter<FxEvent>,
+    mut sounds: EventWriter<crate::fx::PlaySfx>,
 ) {
     if *screen != Screen::Loadout {
         return;
@@ -234,7 +237,8 @@ fn armory_actions(
     let mut changed = false;
     let mut leave = |class: &mut Class, settings: &mut Settings, screen: &mut Screen, send: bool| {
         if send {
-            let loadout = class.current();
+            let mut loadout = class.current();
+            career.enforce(&mut loadout, &content);
             orders.write(CommandEvent { player: player.id, command: PlayerCommand::Loadout(loadout) });
             input.weapon = loadout.primary;
         }
@@ -275,6 +279,10 @@ fn armory_actions(
                 let slot = &mut class.slots[active];
                 let mut parts = slot.parts.unwrap_or_default();
                 match tab {
+                    0 | 1 if is_gun(&content, *item) && !career.gun_unlocked(*item) => {
+                        sounds.write(crate::fx::PlaySfx::ui(Sfx::UiDeny));
+                        continue;
+                    }
                     0 | 1 if is_gun(&content, *item) => {
                         let (mine, other) = if tab == 0 { (slot.primary, slot.secondary) } else { (slot.secondary, slot.primary) };
                         let side = tab as usize;
@@ -335,7 +343,8 @@ fn armory_actions(
                 let Some(def) = content.weapons.get(weapon as usize) else {
                     continue;
                 };
-                let choices = options(def, &content.attachments, *part as usize);
+                // Only what this gun's kills have unlocked.
+                let choices: Vec<_> = options(def, &content.attachments, *part as usize).into_iter().filter(|(i, ..)| career.part_unlocked(def, &content, weapon, *part as usize, *i as u8)).collect();
                 if choices.len() > 1 {
                     let at = choices.iter().position(|(i, ..)| *i == parts[*part as usize] as usize).unwrap_or(0) as i32;
                     parts[*part as usize] = choices[(at + step).rem_euclid(choices.len() as i32) as usize].0 as u8;
@@ -481,7 +490,8 @@ fn slot_value(content: &Content, loadout: &Loadout, tab: u8) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Screen>, class: Res<Class>, controls: Res<Controls>, content: Option<Res<Content>>, state: Option<Res<MatchState>>) {
+#[allow(clippy::too_many_arguments)]
+pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Screen>, class: Res<Class>, controls: Res<Controls>, content: Option<Res<Content>>, state: Option<Res<MatchState>>, career: Res<crate::career::Career>) {
     let (Screen::Loadout, true, Some(content), Some(state)) = (&*screen, dirty.0, content, state) else {
         return;
     };
@@ -507,6 +517,8 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                 trail.push("ATTACHMENTS".to_string());
             }
             ui::label(top, format!(">  {}", trail.join("  >  ")), 14.0, ui::ACCENT);
+            let (division, points) = career.division();
+            ui::label(top, format!("LEVEL {}  ({:.0}%)      RANK {division} {points}", career.level(), career.progress() * 100.0), 12.0, ui::DIM);
         });
 
         // One list at a time, on the left.
@@ -533,7 +545,13 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                         let held = if class.tab == 0 { c.primary } else { c.secondary };
                         let other = if class.tab == 0 { c.secondary } else { c.primary };
                         for (i, def) in content.weapons.iter().enumerate().filter(|(_, w)| w.frame.is_some()) {
-                            let tag = if i as u8 == other { "  (SWAP)" } else { "" };
+                            let tag = if !career.gun_unlocked(i as u8) {
+                                format!("  LOCKED - LV {}", crate::career::gun_level(i as u8))
+                            } else if i as u8 == other {
+                                "  (SWAP)".to_string()
+                            } else {
+                                String::new()
+                            };
                             ui::slim(panel, order, format!("{:<19}{:<8}{tag}", def.name, def.class.name()), Act::ArmoryItem(i as u8), None, i as u8 == held, Val::Percent(100.0));
                         }
                     }
@@ -558,12 +576,14 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
             Page::Parts => {
                 let (weapon, parts) = class.weapon(class.tab);
                 if let Some(def) = content.weapons.get(weapon as usize) {
-                    heading(panel, def.name);
+                    heading(panel, format!("{}   -   {} KILLS", def.name, career.kills_with(weapon)));
                     for (s, name) in SLOTS.iter().enumerate() {
                         let choices = options(def, &content.attachments, s);
                         let fitted = choices.iter().find(|(i, ..)| *i == parts[s] as usize).map_or("-", |(_, n, ..)| n);
+                        let open = choices.iter().filter(|(i, ..)| career.part_unlocked(def, &content, weapon, s, *i as u8)).count();
                         if choices.len() > 1 {
-                            ui::slim(panel, order, format!("{name:<12}<  {fitted}  >"), Act::ArmoryPart(s as u8, 1), Some(Act::ArmoryPart(s as u8, -1)), false, Val::Percent(100.0));
+                            let count = if open < choices.len() { format!("  {open}/{} UNLOCKED", choices.len()) } else { String::new() };
+                            ui::slim(panel, order, format!("{name:<12}<  {fitted}  >{count}"), Act::ArmoryPart(s as u8, 1), Some(Act::ArmoryPart(s as u8, -1)), false, Val::Percent(100.0));
                         } else {
                             ui::disabled(panel, format!("{name:<12}{fitted}"), Val::Percent(100.0));
                         }

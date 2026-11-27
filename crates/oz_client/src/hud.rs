@@ -28,8 +28,8 @@ const AMMO_PIPS: u8 = 30;
 const SLOTS: u8 = 8;
 const GEAR_PIPS: u8 = 4;
 const BLIPS: u8 = 40;
-const RADAR: f32 = 124.0;
-const RADAR_RANGE: f32 = 48.0;
+pub(crate) const RADAR: f32 = 124.0;
+pub(crate) const RADAR_RANGE: f32 = 48.0;
 const TRACK: f32 = 260.0;
 const SCORE_TRACK: f32 = 190.0;
 
@@ -320,14 +320,22 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
 
         // Top right: radar. Up is the way you are facing.
         hud.spawn((
-            at(Node { right: Val::Px(20.0), top: Val::Px(18.0), width: Val::Px(RADAR), height: Val::Px(RADAR), border: UiRect::all(Val::Px(2.0)), ..default() }),
+            at(Node { right: Val::Px(20.0), top: Val::Px(18.0), width: Val::Px(RADAR), height: Val::Px(RADAR), border: UiRect::all(Val::Px(2.0)), overflow: Overflow::clip(), ..default() }),
             BackgroundColor(FRAME),
             BorderColor(Color::srgba(0.30, 0.40, 0.42, 0.8)),
         ))
         .with_children(|radar| {
             let middle = RADAR / 2.0 - 2.0;
-            radar.spawn((at(Node { left: Val::Px(middle - 1.0), top: Val::Px(middle - 3.0), width: Val::Px(2.0), height: Val::Px(8.0), ..default() }), BackgroundColor(ui::TEXT)));
-            radar.spawn((at(Node { left: Val::Px(middle - 3.0), top: Val::Px(middle), width: Val::Px(6.0), height: Val::Px(3.0), ..default() }), BackgroundColor(ui::TEXT)));
+            // The map itself, under everything else (see `tactical::minimap`).
+            radar.spawn((crate::tactical::MinimapPivot, at(Node { left: Val::Px(middle), top: Val::Px(middle), width: Val::Px(0.0), height: Val::Px(0.0), ..default() })));
+            // You: an arrow at the centre that turns with your view.
+            radar
+                .spawn((crate::tactical::RadarArrow, at(Node { left: Val::Px(middle - 5.0), top: Val::Px(middle - 5.0), width: Val::Px(10.0), height: Val::Px(10.0), ..default() })))
+                .with_children(|arrow| {
+                    arrow.spawn((at(Node { left: Val::Px(4.0), top: Val::Px(0.0), width: Val::Px(2.0), height: Val::Px(9.0), ..default() }), BackgroundColor(ui::TEXT)));
+                    arrow.spawn((at(Node { left: Val::Px(2.0), top: Val::Px(2.0), width: Val::Px(6.0), height: Val::Px(2.0), ..default() }), BackgroundColor(ui::TEXT)));
+                    arrow.spawn((at(Node { left: Val::Px(1.0), top: Val::Px(7.0), width: Val::Px(8.0), height: Val::Px(3.0), ..default() }), BackgroundColor(ui::TEXT)));
+                });
             for i in 0..BLIPS {
                 radar.spawn((Seg::Blip(i), at(Node { width: Val::Px(5.0), height: Val::Px(5.0), ..default() }), BackgroundColor(Color::NONE)));
             }
@@ -574,8 +582,8 @@ fn update_shapes(
     }
 
     // Radar contacts, rotated so "up" is forward.
-    let forward = Vec2::new(-input.yaw.sin(), -input.yaw.cos());
-    let right = Vec2::new(input.yaw.cos(), -input.yaw.sin());
+    // North-up, like the map under it: your marker turns, the world does not.
+    let (forward, right) = (Vec2::NEG_Y, Vec2::X);
     let here = transform.translation.xz();
     let mut contacts: Vec<(Vec2, Color)> = Vec::with_capacity(BLIPS as usize);
     let mut contact = |at: Vec3, color: Color, range: f32| {

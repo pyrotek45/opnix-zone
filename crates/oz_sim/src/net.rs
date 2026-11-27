@@ -1024,7 +1024,8 @@ pub fn client_receive(
                                 splash: 0.0,
                                 look: ShotLook::from_index(e.sub),
                                 owner: e.aux.checked_sub(1),
-                                team: 255,
+                                // Killstreak aircraft carry their team in `flags` (for their paint).
+                                team: e.flags,
                                 life: 1.0,
                                 effect: crate::combat::Impact::Blast,
                             };

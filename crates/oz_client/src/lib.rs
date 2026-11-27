@@ -27,6 +27,7 @@ pub mod audio;
 pub mod avatar;
 pub mod bindings;
 pub mod bushes;
+pub mod career;
 pub mod chat;
 pub mod cover;
 pub mod fx;
@@ -123,7 +124,7 @@ impl Plugin for ClientPlugin {
             props::PropsPlugin,
             tactical::TacticalPlugin,
         ));
-        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin));
+        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin));
         #[cfg(feature = "audio")]
         app.add_plugins(audio::AudioFxPlugin);
     }

@@ -34,6 +34,7 @@ pub fn frontier_rules(seed: u64) -> Rules {
         team_size: 0,
         score_limit: 0,
         hunt: false,
+        ranked: false,
     }
 }
 
@@ -53,6 +54,7 @@ pub fn horde_rules(seed: u64) -> Rules {
         team_size: 0,
         score_limit: 0,
         hunt: false,
+        ranked: false,
     }
 }
 
