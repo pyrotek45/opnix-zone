@@ -107,7 +107,7 @@ pub fn catalog(_: &Rules) -> Catalog {
             PerkDef { name: "NONE", blurb: "", effect: PerkEffect::Speed(1.0) },
             PerkDef { name: "FLEETFOOT", blurb: "Run and walk faster", effect: PerkEffect::Speed(1.15) },
         ],
-        gear: vec![GearDef { name: "FRAG GRENADE", blurb: "Two a round", kind: GearKind::Frag { damage: 400.0, radius: 6.5 }, count: 2 }],
+        gear: vec![GearDef { name: "FRAG GRENADE", blurb: "Two a round", kind: GearKind::Frag { damage: 400.0, radius: 6.5 }, count: 2, weight: 0.4 }],
         ..Default::default()
     }
 }
@@ -115,7 +115,8 @@ pub fn catalog(_: &Rules) -> Catalog {
 /// Horde: you, friends and bots against endless rounds of husks.
 pub fn horde_rules(_seed: u64) -> Rules {
     Rules {
-        mode: 4,
+        // Its place in Iron Town's mode list (after domination and search and destroy).
+        mode: 6,
         recipe: WorldRecipe::horde(oz_core::worldgen::Layout::CinderWorks),
         day_seconds: 0.0,
         objective_hp: 0.0,
@@ -132,5 +133,10 @@ pub fn horde_rules(_seed: u64) -> Rules {
         ranked: false,
         loot: false,
         horde: true,
+        time_limit: 0.0,
+        no_bots: false,
+        map: 0,
+        domination: false,
+        bomb: false,
     }
 }
