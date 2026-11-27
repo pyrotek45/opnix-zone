@@ -76,6 +76,8 @@ pub struct TacticalPlugin;
 impl Plugin for TacticalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hands>()
+            .init_resource::<Lamp>()
+            .add_systems(Update, toggles.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
             .add_systems(OnEnter(MatchPhase::Active), (spawn, |mut hands: ResMut<Hands>| *hands = Hands { since_throw: 9.0, since_cancel: 9.0, since_melee: 9.0, ..default() }))
             .add_systems(Update, track_hands.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)))
             .add_systems(Update, ((update, loot_prompt).chain(), minimap, dress_loot, spin_loot).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
@@ -311,7 +313,7 @@ fn update(
         let dir = if wish.length() > 0.2 { wish } else { Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z };
         let ahead = oz_sim::player::vault_target(&map, &statics, transform.translation, dir).is_some()
             && statics.raycast(transform.translation + Vec3::Y * 0.35, Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero(), 0.9).is_some();
-        let jump = if controls.gamepad { "A".to_string() } else { key(Action::Jump) };
+        let jump = if controls.gamepad { "X".to_string() } else { key(Action::Jump) };
         (ahead, 0.0, ui::ACCENT, format!("[{jump}] VAULT"))
     } else {
         (false, 0.0, ui::TEXT, String::new())
@@ -529,4 +531,68 @@ fn loot_prompt(
     if let Ok(mut visibility) = meter.single_mut() {
         *visibility = Visibility::Inherited;
     }
+}
+
+/// The helmet flashlight: on by default (it only matters in the dark).
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct Lamp {
+    pub on: bool,
+}
+
+impl Default for Lamp {
+    fn default() -> Self {
+        Self { on: true }
+    }
+}
+
+/// D-pad down, Rainbow-style: tap to screw the suppressor on or off (if the gun came with
+/// one), hold to switch the flashlight. U and H on a keyboard.
+#[allow(clippy::too_many_arguments)]
+fn toggles(
+    controls: Res<Controls>,
+    screen: Res<Screen>,
+    content: Res<Content>,
+    players: Query<(&Player, &Arsenal, &PlayerInput, &Health), With<LocalPlayer>>,
+    mut lamp: ResMut<Lamp>,
+    mut orders: EventWriter<CommandEvent>,
+    mut notices: ResMut<crate::hud::Notices>,
+    mut sounds: EventWriter<crate::fx::PlaySfx>,
+    mut unscrewed: Local<std::collections::HashSet<u8>>,
+) {
+    use oz_core::arsenal::slot;
+    let Ok((me, arsenal, input, health)) = players.single() else { return };
+    if *screen != Screen::None || !health.alive() {
+        return;
+    }
+    if controls.flashlight {
+        lamp.on = !lamp.on;
+        notices.push(if lamp.on { "FLASHLIGHT ON".into() } else { "FLASHLIGHT OFF".into() });
+        sounds.write(crate::fx::PlaySfx::ui(Sfx::UiMove));
+    }
+    if !controls.suppressor {
+        return;
+    }
+    let weapon = crate::view::held_weapon(input, arsenal);
+    let (Some(def), Some(state)) = (content.weapons.get(weapon as usize), arsenal.weapons.get(weapon as usize)) else { return };
+    let choices = options(def, &content.attachments, slot::MUZZLE);
+    let Some(suppressor) = choices.iter().find(|(_, name, ..)| name.contains("SUPPRESS")).map(|(i, ..)| *i as u8) else {
+        notices.push("THIS GUN TAKES NO SUPPRESSOR".into());
+        return;
+    };
+    let fitted = state.equipped[slot::MUZZLE];
+    let variant = if fitted == suppressor {
+        // Off: back to the bare muzzle.
+        unscrewed.insert(weapon);
+        let bare = if def.defaults[slot::MUZZLE] != suppressor { def.defaults[slot::MUZZLE] } else { choices.iter().map(|(i, ..)| *i as u8).find(|i| *i != suppressor).unwrap_or(0) };
+        notices.push("SUPPRESSOR OFF".into());
+        bare
+    } else if unscrewed.remove(&weapon) {
+        notices.push("SUPPRESSOR ON".into());
+        suppressor
+    } else {
+        notices.push("NO SUPPRESSOR FOR THIS GUN - FIT ONE IN THE ARMORY".into());
+        return;
+    };
+    orders.write(CommandEvent { player: me.id, command: PlayerCommand::EquipPart { weapon, slot: slot::MUZZLE as u8, variant } });
+    sounds.write(crate::fx::PlaySfx::new(Sfx::Bolt, None).quiet(0.7));
 }

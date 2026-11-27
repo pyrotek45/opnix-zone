@@ -363,3 +363,44 @@ fn leaves_hide_what_is_behind_them() {
     let map = oz_core::worldgen::World::generate(deathmatch_rules(3).recipe);
     assert!(!map.foliage().is_empty());
 }
+
+#[test]
+fn vaulting_from_a_crouch_in_cover() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(3);
+    rules.team_size = 1;
+    start(&mut app, rules);
+    let map = app.world().resource::<Map>().0.clone();
+    let statics = app.world().resource::<Statics>().0.clone();
+    let mut tried = 0;
+    for barrier in map.blocks.iter().filter(|b| b.solid).map(|b| b.aabb).filter(|b| {
+        let ground = map.height(b.center.x, b.center.z);
+        (b.top() - ground - oz_core::worldgen::COVER_HEIGHT).abs() < 0.05 && b.half.x.min(b.half.z) < 0.35 && b.half.x.max(b.half.z) > 1.0
+    }) {
+        let across = if barrier.half.x < barrier.half.z { Vec3::X } else { Vec3::Z };
+        // Pressed against it the way cover leaves you: 0.38 m off the face, crouched, looking any way.
+        let at = barrier.center - across * (barrier.half.dot(across) + 0.38);
+        let at = Vec3::new(at.x, oz_sim::player::ground_under(&map, &statics, at.x, at.z, at.y + 0.5), at.z);
+        if statics.blocked(at.x, at.z, at.y, 1.25, 0.3) {
+            continue;
+        }
+        tried += 1;
+        place_me(&mut app, at, 1.0);
+        run(&mut app, 0.2);
+        {
+            let mut input = me(&mut app);
+            input.stance = stance::CROUCH;
+            // Movement into the wall, relative to a view turned away from it.
+            let yaw = input.yaw;
+            let forward = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+            let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+            input.movement = Vec2::new(across.dot(right), across.dot(forward));
+            input.buttons = buttons::JUMP;
+        }
+        run(&mut app, 1.2);
+        let feet = my_feet(&mut app);
+        assert!((feet - barrier.center).dot(across) > barrier.half.dot(across), "did not vault from cover: {feet} vs {}", barrier.center);
+        break;
+    }
+    assert!(tried > 0, "no barrier to try");
+}

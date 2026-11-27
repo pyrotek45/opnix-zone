@@ -445,7 +445,7 @@ fn update_text(
             _ => "AIM",
         };
         let fire_key = if controls.gamepad { "RT".to_string() } else { key(Action::Fire) };
-        let jump_key = if controls.gamepad { "A".to_string() } else { key(Action::Jump) };
+        let jump_key = if controls.gamepad { "X".to_string() } else { key(Action::Jump) };
         let vault = if cover.wall.is_some_and(|w| w.low) { format!("   [{jump_key}] VAULT") } else { String::new() };
         format!("[{aim_key}] {what}   [{fire_key}] BLIND FIRE{vault}   [{cover_key}] LEAVE COVER")
     } else if cover.available && cover.wall.is_none() {

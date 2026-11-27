@@ -167,8 +167,10 @@ fn take_cover(
         cover.entering = Some((spot, wall, 0.0));
     }
     // Jump: over low cover, or simply out from behind a tall wall.
-    if controls.jump_pressed && in_cover {
+    let x_vault = controls.vault && cover.wall.is_some_and(|w| w.low);
+    if (controls.jump_pressed || x_vault) && in_cover {
         if let Some(wall) = cover.wall.filter(|w| w.low) {
+            input.buttons &= !buttons::RELOAD;
             input.movement = to_input(input.yaw, -wall.normal);
             input.stance = stance::CROUCH;
             input.buttons |= buttons::JUMP;

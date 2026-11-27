@@ -184,10 +184,12 @@ pub enum Action {
     Killstreak,
     NightVision,
     Melee,
+    Suppressor,
+    Flashlight,
 }
 
 impl Action {
-    pub const ALL: [Action; 21] = [
+    pub const ALL: [Action; 23] = [
         Action::Forward,
         Action::Back,
         Action::Left,
@@ -209,6 +211,8 @@ impl Action {
         Action::Killstreak,
         Action::NightVision,
         Action::Melee,
+        Action::Suppressor,
+        Action::Flashlight,
     ];
 
     /// Shown on the controls screen.
@@ -227,6 +231,8 @@ impl Action {
             Action::Crouch => "CROUCH (HOLD: PRONE)",
             Action::Prone => "PRONE",
             Action::Melee => "MELEE",
+            Action::Suppressor => "SUPPRESSOR ON / OFF",
+            Action::Flashlight => "FLASHLIGHT",
             Action::Cover => "TAKE COVER",
             Action::Killstreak => "KILLSTREAK",
             Action::NightVision => "NIGHT VISION",
@@ -254,6 +260,8 @@ impl Action {
             Action::Crouch => "crouch",
             Action::Prone => "prone",
             Action::Melee => "melee",
+            Action::Suppressor => "suppressor",
+            Action::Flashlight => "flashlight",
             Action::Cover => "cover",
             Action::Killstreak => "killstreak",
             Action::NightVision => "night_vision",
@@ -289,6 +297,8 @@ impl Action {
             Action::Scoreboard => Bind::Key(K::Tab),
             Action::Chat => Bind::Key(K::KeyT),
             Action::Melee => Bind::Key(K::KeyE),
+            Action::Suppressor => Bind::Key(K::KeyU),
+            Action::Flashlight => Bind::Key(K::KeyH),
         }
     }
 }

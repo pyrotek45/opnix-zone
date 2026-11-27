@@ -7,7 +7,7 @@
 //! | Move / look     | WASD / mouse            | left / right stick          |
 //! | Fire / aim      | LMB / RMB               | RT / LT                     |
 //! | Reload / use    | R / F                   | X                           |
-//! | Jump / vault    | Space                   | A                           |
+//! | Jump / vault    | Space                   | A, or X at something low    |
 //! | Sprint          | Shift                   | click left stick            |
 //! | Crouch / prone  | C tap / C hold, Z       | B tap / B hold              |
 //! | Stabilize scope | Shift while scoped      | click left stick while scoped |
@@ -65,8 +65,14 @@ pub struct Controls {
     pub crouch_held: bool,
     /// Gun-butt strike this frame.
     pub melee: bool,
-    /// Take-cover button held (cover lasts while it is).
+    /// Take-cover button held.
     pub cover_held: bool,
+    /// Screw the suppressor on or off (tap D-pad down / U).
+    pub suppressor: bool,
+    /// Switch the flashlight (hold D-pad down / H).
+    pub flashlight: bool,
+    /// Pad X this frame: vaults when there is something to vault, else reload / use as usual.
+    pub vault: bool,
     pub interact: bool,
     /// Toggle crouch this frame.
     pub crouch: bool,
@@ -129,6 +135,7 @@ fn read_devices(
     gamepads: Query<&Gamepad>,
     mut controls: ResMut<Controls>,
     mut stick_nav: Local<[bool; 4]>,
+    mut dpad_down: Local<f32>,
 ) {
     let was_gamepad = controls.gamepad;
     let mut c = Controls { gamepad: was_gamepad, ..default() };
@@ -154,6 +161,8 @@ fn read_devices(
     c.crouch_held = down(Action::Crouch);
     c.melee = hit(Action::Melee);
     c.cover_held = down(Action::Cover);
+    c.suppressor = hit(Action::Suppressor);
+    c.flashlight = hit(Action::Flashlight);
     c.interact = hit(Action::Interact);
     c.crouch = hit(Action::Crouch);
     c.prone = hit(Action::Prone);
@@ -210,6 +219,7 @@ fn read_devices(
         c.aim |= aiming;
         c.aim_pressed |= hit(GamepadButton::LeftTrigger2);
         c.reload |= held(GamepadButton::West);
+        c.vault |= hit(GamepadButton::West);
         c.reload_pressed |= hit(GamepadButton::West);
         c.interact |= hit(GamepadButton::West);
         c.jump |= held(GamepadButton::South);
@@ -223,7 +233,20 @@ fn read_devices(
         c.melee |= hit(GamepadButton::RightThumb);
         c.killstreak |= hit(GamepadButton::DPadRight);
         c.night_vision |= hit(GamepadButton::DPadLeft);
-        c.loadout |= hit(GamepadButton::DPadDown);
+        // D-pad down, Rainbow-style: tap to screw the suppressor on or off, hold for the flashlight.
+        // (The class picker is on the pause menu.)
+        if held(GamepadButton::DPadDown) {
+            let was = *dpad_down;
+            *dpad_down += time.delta_secs();
+            if was < 0.4 && *dpad_down >= 0.4 {
+                c.flashlight = true;
+            }
+        } else {
+            if *dpad_down > 0.0 && *dpad_down < 0.4 {
+                c.suppressor = true;
+            }
+            *dpad_down = 0.0;
+        }
         c.scoreboard |= held(GamepadButton::Select);
         c.pause |= hit(GamepadButton::Start);
         c.weapon_step += hit(GamepadButton::North) as i32;
@@ -298,6 +321,8 @@ struct Body {
     crouch_done: bool,
     crouch_was: bool,
     crouch_from: u8,
+    /// X vaulted: no reload from that same press.
+    vault_press: bool,
 }
 
 /// Stance from the crouch button. Each press does exactly one thing however long it is held,
@@ -350,12 +375,23 @@ fn drive_player(
     placing: Res<crate::stations::Placement>,
     (map, statics): (Res<Map>, Res<Statics>),
     mut steady: ResMut<Steady>,
-    mut players: Query<(&Transform, &mut PlayerInput, &Arsenal, &Health, &Mover), With<LocalPlayer>>,
+    cover: Res<crate::cover::Cover>,
+    mut players: Query<(Entity, &Transform, &mut PlayerInput, &Arsenal, &Health, &Mover), With<LocalPlayer>>,
     mut body: Local<Body>,
+    mut whose: Local<Option<Entity>>,
 ) {
-    let Ok((transform, mut input, arsenal, health, mover)) = players.single_mut() else {
+    let Ok((entity, transform, mut input, arsenal, health, mover)) = players.single_mut() else {
         return;
     };
+    // A new match (or a rejoin) is a new body: nothing carries over - not a crouch, not a held trigger.
+    if *whose != Some(entity) {
+        *whose = Some(entity);
+        *body = Body { hold_fire: true, crouch_was: controls.crouch_held, ..default() };
+        *steady = Steady::default();
+        input.stance = stance::STAND;
+        input.lean = 0;
+        input.cover = 0;
+    }
     if *screen != Screen::None || !health.alive() {
         // A menu is open (or we are down): stand still, keep looking where we were.
         input.movement = Vec2::ZERO;
@@ -382,6 +418,22 @@ fn drive_player(
     }
     // Jump from low: vault whatever is in front if there is something, else stand up.
     let mut jump = controls.jump && body.stance == stance::STAND;
+    // X on a pad vaults too, when there is something low in front to go over.
+    if controls.vault && cover.wall.is_some_and(|w| w.low) {
+        // Behind low cover, X goes over it (`cover` steers the vault).
+        body.vault_press = true;
+    } else if controls.vault && mover.vault.is_none() && body.stance != stance::PRONE {
+        let wish = Quat::from_rotation_y(input.yaw) * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
+        let dir = if wish.length() > 0.2 { wish } else { Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z };
+        if oz_sim::player::vault_target(&map, &statics, transform.translation, dir).is_some() {
+            jump = true;
+            body.stance = stance::STAND;
+            body.vault_press = true;
+        }
+    }
+    if !controls.reload {
+        body.vault_press = false;
+    }
     if controls.jump_pressed && body.stance != stance::STAND && mover.vault.is_none() {
         let wish = Quat::from_rotation_y(input.yaw) * Vec3::new(controls.movement.x, 0.0, -controls.movement.y);
         let dir = if wish.length() > 0.2 { wish } else { Quat::from_rotation_y(input.yaw) * Vec3::NEG_Z };
@@ -445,7 +497,7 @@ fn drive_player(
     for (on, bit) in [
         (controls.fire && !building && !body.hold_fire, buttons::FIRE),
         (controls.aim && !building, buttons::AIM),
-        (controls.reload && !building, buttons::RELOAD),
+        (controls.reload && !building && !body.vault_press, buttons::RELOAD),
         (jump, buttons::JUMP),
         // Shift steadies the scope instead of sprinting while aiming.
         (controls.sprint && !holding, buttons::SPRINT),

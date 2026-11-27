@@ -248,6 +248,7 @@ fn day_night(
     mut lamps: Query<&mut SpotLight, With<Flashlight>>,
     mut last: Local<(f32, Option<oz_core::worldgen::Weather>, bool)>,
     night_vision: Res<crate::optics::NightVision>,
+    lamp: Res<crate::tactical::Lamp>,
 ) {
     let last = &mut *last;
     let nv_changed = last.2 != night_vision.on;
@@ -263,7 +264,7 @@ fn day_night(
         oz_core::worldgen::Weather::Rain => (0.12, 0.5),
         oz_core::worldgen::Weather::Fog => (0.35, 0.28),
     };
-    if (day - *last.0).abs() < 0.002 && *last.1 == Some(state.weather) && !nv_changed && !settings.is_changed() && !sky.is_added() {
+    if (day - *last.0).abs() < 0.002 && *last.1 == Some(state.weather) && !nv_changed && !settings.is_changed() && !sky.is_added() && !lamp.is_changed() {
         return;
     }
     *last.0 = day;
@@ -302,7 +303,9 @@ fn day_night(
         let water = mix(Vec3::new(0.02, 0.06, 0.10), sky.water);
         material.base_color = Color::srgb(water.x, water.y, water.z);
     }
+    let lamp_on = lamp.on;
     if let Ok(mut lamp) = lamps.single_mut() {
-        lamp.intensity = 1_800_000.0 * (1.0 - day);
+        // Switched with the d-pad (hold down) / H; when on it also lights dark rooms by day.
+        lamp.intensity = if lamp_on { (1_800_000.0 * (1.0 - day)).max(500_000.0) } else { 0.0 };
     }
 }

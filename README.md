@@ -123,7 +123,7 @@ no asset folder to ship.
 | Move / look | WASD / mouse | left / right stick |
 | Fire / aim | LMB / RMB | RT / LT |
 | Reload / use | R / F | X |
-| Jump / vault | Space | A |
+| Jump / vault | Space | A, or X in front of something low |
 | Sprint | Shift | click left stick |
 | Crouch / prone | C (tap crouch, hold prone), Z prone | B (tap / hold) |
 | Stabilize scope | Shift while scoped | click left stick while scoped |
@@ -134,7 +134,9 @@ no asset folder to ship.
 | Call in killstreak (newest first) | X | D-pad right |
 | Inspect weapon | I | D-pad up |
 | Night vision | N | D-pad left |
-| Armory / scoreboard (Iron Town) | L / hold Tab | D-pad down / hold Back |
+| Suppressor on / off | U | tap D-pad down |
+| Flashlight | H | hold D-pad down |
+| Armory / scoreboard (Iron Town) | L / hold Tab | pause menu / hold Back |
 | Chat / spectate | T / V | - |
 | Pause / back | Esc | Start / B |
 | Menus | mouse, or arrows + Enter | D-pad or stick + A, LB / RB for tabs |
