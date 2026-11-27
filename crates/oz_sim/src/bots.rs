@@ -230,9 +230,10 @@ pub fn drive_bots(
             bot.alert = (bot.alert - dt).max(0.0);
             bot.suppress -= dt;
             let feet = transform.translation;
+            let base = crate::versus::hunt_base(&map);
             for noise in &heard_now {
                 let ours = noise.team == me.team;
-                if noise.shout != ours || noise.at.distance(feet) > noise.radius {
+                if noise.shout != ours || noise.at.distance(feet) > noise.radius || noise.at.xz().distance(base) < crate::versus::HUNT_SAFE {
                     continue;
                 }
                 bot.heard = Some(noise.at);
@@ -306,9 +307,12 @@ pub fn drive_bots(
                 let (range, cone) = if torch { (range.max(40.0) * 1.8, -0.1) } else { (range, if alert { -0.3 } else { 0.4 }) };
                 distance < 2.5 || (distance < range && to.xz().normalize_or_zero().dot(facing_dir) > cone)
             };
+            // Hunt: the squad's base is off limits to hostiles.
+            let safe = |at: Vec3| sentry && rules.hunt && at.xz().distance(crate::versus::hunt_base(&map)) < crate::versus::HUNT_SAFE;
             let found = fighters
                 .iter()
                 .filter(|(_, team, ..)| *team != me.team)
+                .filter(|(_, _, at, _)| !safe(*at))
                 .filter(|(entity, _, at, enemy_stance)| noticed(*at, *enemy_stance, lit.contains(entity)))
                 .filter_map(|(entity, _, at, enemy_stance)| {
                     let chest = *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4);
@@ -333,7 +337,15 @@ pub fn drive_bots(
             bot.target = target;
             let miss = 0.07 / rules.difficulty.max(0.25);
             bot.aim_error = Vec2::new(rng.0.range(-miss, miss), rng.0.range(-miss, miss) * 0.6);
-            if bot.sentry && bot.target.is_none() {
+            if bot.sentry && rules.hunt && feet.xz().distance(crate::versus::hunt_base(&map)) < crate::versus::HUNT_SAFE + 2.0 {
+                // Strayed into the squad's base: back to the post.
+                bot.heard = None;
+                bot.target = None;
+                if bot.goal.distance(bot.post) > 1.0 {
+                    bot.goal = bot.post;
+                    bot.path.clear();
+                }
+            } else if bot.sentry && bot.target.is_none() {
                 bot.patrol -= 0.3;
                 if let Some(at) = bot.heard {
                     // Go and see what that was.

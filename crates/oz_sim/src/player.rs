@@ -876,7 +876,7 @@ pub fn vitals(
                 // Pick the base spot furthest from any enemy, and shield the player briefly.
                 let enemies: Vec<Vec3> = fighters.iter().filter(|(team, _)| *team != player.team).map(|(_, at)| *at).collect();
                 transform.translation = safest_spawn(&map, player.team, &enemies);
-                player.protect = 2.5;
+                player.protect = if rules.hunt { 5.0 } else { 2.5 };
             }
         }
     }

@@ -27,6 +27,16 @@ pub fn hunt_hostiles(rules: &Rules, squad: u8) -> usize {
     ((14.0 + 6.0 * squad as f32) * rules.difficulty).round().clamp(8.0, 50.0) as usize
 }
 
+/// Terrorist hunt: the squad's base is a safe zone this wide (metres from its first
+/// spawn). Hostiles never post, wander or chase into it and cannot target anyone in it,
+/// so they cannot camp the respawn.
+pub const HUNT_SAFE: f32 = 26.0;
+
+/// The middle of the squad's safe zone.
+pub fn hunt_base(map: &crate::session::Map) -> Vec2 {
+    map.team_spawns[0].first().copied().unwrap_or(map.spawn)
+}
+
 /// Respawns the squad shares in a terrorist hunt.
 pub const HUNT_LIVES: u16 = 5;
 
@@ -53,7 +63,7 @@ pub fn hunt_post(map: &crate::session::Map, statics: &oz_core::collide::StaticWo
             continue;
         }
         let at = Vec3::new(x, y, z);
-        if Vec2::new(x, z).distance(base) > 32.0 {
+        if Vec2::new(x, z).distance(base) > HUNT_SAFE + 8.0 {
             return at;
         }
         fallback.get_or_insert(at);
