@@ -712,7 +712,7 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         // Hips: standing bobs with the stride; crouch-walking stays low and level; kneeling is lowest.
         let swing = p.sin();
         let stand_hip = HIP - p.cos().abs() * 0.05 * k;
-        let crouch_hip = 0.5 + 0.06 * moving - p.cos().abs() * 0.02 * k - 0.1 * rig.hunker;
+        let crouch_hip = 0.5 + 0.06 * moving - p.cos().abs() * 0.02 * k - 0.18 * rig.hunker;
         let hip_target = st * stand_hip + c * crouch_hip + pr * HIP;
         let hip_y = rig.hip.update(hip_target, 260.0, 0.62, dt);
         set(&mut transforms, rig.hips, Vec3::Y * hip_y, Quat::IDENTITY, 1.0);
@@ -758,7 +758,7 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
 
         // Upper body: lean into the run, peek out of cover, aim where the player looks.
         let prone = pr > 0.5 && !pose.dead;
-        let torso_lean = st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.24 - 0.1 * moving) - 0.32 * hunker;
+        let torso_lean = st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.24 - 0.1 * moving) - 0.45 * hunker;
         // Leaning out to aim rolls the whole torso; blind fire (leaning without aiming) keeps
         // the body in and only pushes the gun round the corner.
         let roll = Quat::from_rotation_z(-pose.lean * if pose.aiming { 0.3 } else { 0.06 });
@@ -800,7 +800,7 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             set(&mut transforms, rig.arms[1], Vec3::ZERO, Quat::IDENTITY, blend);
         }
         // The head follows the aim, and glances down at the gun while reloading.
-        let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r - 0.35 * hunker };
+        let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r - 0.5 * hunker };
         set(&mut transforms, rig.head, Vec3::Y * NECK, rot(head_pitch), blend);
 
         // Face: dead > hurt > angry > blink > smile.
