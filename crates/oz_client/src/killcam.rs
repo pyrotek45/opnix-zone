@@ -171,6 +171,16 @@ impl KillCam {
         self.replay.is_some()
     }
 
+    /// Who the replay follows, and when the death was.
+    pub fn replay_subject(&self) -> Option<(u8, f32)> {
+        self.replay.as_ref().map(|r| (r.killer, r.death))
+    }
+
+    /// Recorded positions and aim of one robot (for checking the replay against the truth).
+    pub fn track(&self, id: u8) -> Vec<(f32, Vec3, f32, f32)> {
+        self.frames.iter().filter_map(|f| f.bodies.iter().find(|b| b.id == id).map(|b| (f.t, b.pos, b.yaw, b.pitch))).collect()
+    }
+
     /// The recorded time the replay is showing.
     pub fn replay_clock(&self) -> Option<f32> {
         self.replay.as_ref().map(|r| r.clock)

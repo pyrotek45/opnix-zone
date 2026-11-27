@@ -130,15 +130,24 @@ fn killcam_test(
     truth_cam.is_active = !playing && state.phase == Phase::Live && me.3.alive();
 
     if playing {
+        if !test.played
+            && let Some((killer, death)) = cam.replay_subject()
+        {
+            for (t, p, yaw, pitch) in cam.track(killer).into_iter().filter(|(t, ..)| (*t - death).abs() < 4.0) {
+                log(format!("recorded,{t:.3},{:.3},{:.3},{:.3},{yaw:.4},{pitch:.4},,,", p.x, p.y, p.z));
+            }
+            log(format!("death,{death:.3},,,,,,,,"));
+        }
         test.played = true;
         let Some(clock) = cam.replay_clock() else { return };
-        if clock - test.replay_last >= 0.2 {
+        if clock - test.replay_last >= 0.1 {
             test.replay_last = clock;
             commands.spawn(Screenshot::primary_window()).observe(save_ppm(format!("{dir}/replay_{clock:08.2}.png")));
             if let Ok(eye) = world.single() {
                 let (yaw, pitch, _) = eye.rotation().to_euler(EulerRot::YXZ);
                 let p = eye.translation();
-                log(format!("replay,{clock:.3},{:.3},{:.3},{:.3},{yaw:.4},{pitch:.4},,,", p.x, p.y, p.z));
+                let pov = cam.pov.map_or("none".to_string(), |v| format!("{:.3} {:.3} {:.3} yaw {:.4} pitch {:.4}", v.at.x, v.at.y, v.at.z, v.yaw, v.pitch));
+                log(format!("replay,{clock:.3},{:.3},{:.3},{:.3},{yaw:.4},{pitch:.4},pov {pov},,", p.x, p.y, p.z));
             }
         }
         return;

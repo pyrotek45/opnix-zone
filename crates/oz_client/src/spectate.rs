@@ -55,7 +55,7 @@ fn follow(
     mut last_shot: Local<HashMap<u8, f32>>,
     (local, mut death, state): (Query<(&Health, &Player), With<LocalPlayer>>, ResMut<crate::fx::DeathInfo>, Res<MatchState>),
     mut was_dead: Local<bool>,
-    (mut subject, mut robots): (ResMut<crate::view::ViewSubject>, Query<&mut Visibility, With<crate::avatar::PlayerRobot>>),
+    (mut subject, mut robots, killcam): (ResMut<crate::view::ViewSubject>, Query<&mut Visibility, With<crate::avatar::PlayerRobot>>, Res<crate::killcam::KillCam>),
 ) {
     let now = time.elapsed_secs();
     for event in events.read() {
@@ -72,6 +72,14 @@ fn follow(
         spectate.first_person = !spectate.first_person;
         spectate.position = None;
         spectate.rotation = None;
+    }
+    // A kill cam replay owns the camera (and hides the live robots) while it plays; the
+    // live shot of the killer picks up again from scratch afterwards.
+    if killcam.playing() {
+        subject.0 = None;
+        spectate.position = None;
+        spectate.rotation = None;
+        return;
     }
     // Whoever the camera is inside of stays hidden; everyone else shows.
     let mut show_robot = |entity: Option<Entity>, visible: bool| {
