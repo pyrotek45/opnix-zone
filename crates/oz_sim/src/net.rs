@@ -252,8 +252,10 @@ pub struct Private {
     pub rewards: [u8; crate::killstreak::STACK],
     pub streaks: [u8; 3],
     pub vision: u8,
-    /// Limbs shot off.
+    /// Limbs shot off, and how much each has left (0..255 of `LIMB_HP`).
     pub lost: u8,
+    #[serde(default)]
+    pub limbs: [u8; 4],
     /// The perk in effect (client effects like thermal need it).
     pub perk: u8,
     /// Set while dead so the client lands on the respawn point.
@@ -923,6 +925,7 @@ pub fn host_send(
                     rewards: player.rewards,
                     streaks: player.streaks, vision: player.vision,
                     lost: player.lost,
+                    limbs: player.limb_hp.map(|hp| (hp / crate::player::LIMB_HP * 255.0).clamp(0.0, 255.0) as u8),
                     perk: player.perk,
                     teleport,
                 }),
@@ -1086,6 +1089,7 @@ pub fn client_receive(
                     player.streaks = private.streaks;
                     player.vision = private.vision;
                     player.lost = private.lost;
+                    player.limb_hp = private.limbs.map(|v| v as f32 / 255.0 * crate::player::LIMB_HP);
                     player.perk = private.perk;
                     // While dead the host owns our position, so we wake up at the spawn point.
                     if let Some(at) = private.teleport {

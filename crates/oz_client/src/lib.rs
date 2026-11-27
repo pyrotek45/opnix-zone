@@ -44,6 +44,7 @@ pub mod lobby;
 pub mod menu;
 pub mod optics;
 pub mod predict;
+pub mod qol;
 pub mod props;
 pub mod reconnect;
 pub mod retro;
@@ -127,7 +128,7 @@ impl Plugin for ClientPlugin {
             props::PropsPlugin,
             tactical::TacticalPlugin,
         ));
-        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin));
+        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin, qol::QolPlugin));
         #[cfg(feature = "audio")]
         app.add_plugins((audio::AudioFxPlugin, announcer::AnnouncerPlugin));
     }

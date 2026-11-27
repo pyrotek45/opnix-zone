@@ -454,7 +454,7 @@ fn update_text(
         Res<crate::props::DoorPrompt>,
     ),
     (players, subject): (Query<(&Health, &Arsenal, &Player, Has<LocalPlayer>)>, Res<crate::view::ViewSubject>),
-    mut texts: Query<(&Num, &mut Text)>,
+    mut texts: Query<(&Num, &mut Text, &mut TextColor)>,
     mut root: Query<&mut Visibility, With<HudRoot>>,
     (hand_actions, mut strip): (Res<HandActions>, ResMut<StripActions>),
     mut shown_for: Local<f32>,
@@ -565,7 +565,25 @@ fn update_text(
         help.as_str()
     };
 
-    for (kind, mut text) in &mut texts {
+    for (kind, mut text, mut color) in &mut texts {
+        if matches!(kind, Num::Ammo) {
+            // Amber when the magazine runs low, red when it is empty.
+            let tint = weapon.map_or(ui::TEXT, |(def, owned)| {
+                let left = owned.ammo.saturating_sub(pending);
+                if def.mag == 0 {
+                    ui::TEXT
+                } else if left == 0 {
+                    ui::WARN
+                } else if (left as f32) <= (def.mag as f32 * 0.25).max(1.0) {
+                    Color::srgb(1.0, 0.75, 0.2)
+                } else {
+                    ui::TEXT
+                }
+            });
+            if color.0 != tint {
+                color.0 = tint;
+            }
+        }
         let wanted = match kind {
             Num::Health => format!("{:.0}", health.hp.max(0.0)),
             Num::Ammo => weapon.map_or(String::new(), |(def, owned)| if def.mag == 0 { String::new() } else { owned.ammo.saturating_sub(pending).to_string() }),
