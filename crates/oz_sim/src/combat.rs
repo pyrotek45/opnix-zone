@@ -213,15 +213,68 @@ pub enum Impact {
     Mine { damage: f32, radius: f32 },
 }
 
+/// Thrown grenades and canisters bounce and roll until their fuse runs out instead of
+/// going off where they first land.
+pub fn bounces(shot: &Projectile) -> bool {
+    matches!(shot.look, ShotLook::Grenade | ShotLook::Canister) && !matches!(shot.effect, Impact::Mine { .. })
+}
+
+/// One step of a bouncing throw: falls, glances off walls, skips along the ground and
+/// rolls to a stop. Returns the new position. Shared by the host and predicted copies.
+pub fn bounce_step(map: &oz_core::worldgen::GameMap, statics: &oz_core::collide::StaticWorld, at: Vec3, shot: &mut Projectile, dt: f32) -> Vec3 {
+    const RADIUS: f32 = 0.08;
+    shot.velocity.y -= shot.gravity * dt;
+    let step = shot.velocity * dt;
+    let length = step.length();
+    let mut to = at + step;
+    if length > 1e-5 {
+        let dir = step / length;
+        if let Some((d, index)) = statics.raycast(at, dir, length + RADIUS) {
+            // Off a wall (or the underside of something): reflect about the face it hit.
+            let hit = at + dir * d;
+            let normal = statics.aabb(index).map_or(-dir, |b| {
+                let rel = (hit - b.center) / b.half.max(Vec3::splat(1e-3));
+                let a = rel.abs();
+                if a.x >= a.y && a.x >= a.z { Vec3::X * rel.x.signum() } else if a.y >= a.z { Vec3::Y * rel.y.signum() } else { Vec3::Z * rel.z.signum() }
+            });
+            let into = shot.velocity.dot(normal);
+            if into < 0.0 {
+                shot.velocity -= normal * into * 1.45;
+                shot.velocity *= 0.6;
+            }
+            to = hit + normal * RADIUS;
+        }
+    }
+    // The ground (terrain, or a floor or roof under it).
+    let ground = map.height(to.x, to.z).max(statics.support(to.x, to.z, to.y + 0.3)) + RADIUS;
+    if to.y <= ground {
+        to.y = ground;
+        if shot.velocity.y < -1.2 {
+            // A skip: up again, slower, and scrubbing speed along the ground.
+            shot.velocity.y = -shot.velocity.y * 0.35;
+            shot.velocity.x *= 0.65;
+            shot.velocity.z *= 0.65;
+        } else {
+            // Rolling: friction brings it to rest.
+            shot.velocity.y = 0.0;
+            let keep = (1.0 - 3.5 * dt).max(0.0);
+            shot.velocity.x *= keep;
+            shot.velocity.z *= keep;
+        }
+    }
+    to
+}
+
 /// How a piece of thrown gear flies: its launch velocity along `dir` and a
 /// template projectile (owner and team still to fill in). Shared by the host
 /// and by clients predicting their own throws.
 pub fn throw(kind: &oz_core::content::GearKind, dir: Vec3) -> Option<(Vec3, Projectile)> {
     use oz_core::content::GearKind;
     let (effect, damage, splash, speed, gravity, life, look) = match *kind {
-        GearKind::Frag { damage, radius } => (Impact::Blast, damage, radius, 19.0, 13.0, 1.8, ShotLook::Grenade),
-        GearKind::Smoke { radius, seconds } => (Impact::Smoke { radius, seconds }, 0.0, 0.0, 17.0, 13.0, 1.6, ShotLook::Canister),
-        GearKind::Flash { radius, seconds } => (Impact::Flash { radius, seconds }, 0.0, 0.0, 18.0, 13.0, 1.4, ShotLook::Canister),
+        // A long fuse: throw it far, bank it off walls, let it roll in (cooking shortens it).
+        GearKind::Frag { damage, radius } => (Impact::Blast, damage, radius, 19.0, 13.0, 4.5, ShotLook::Grenade),
+        GearKind::Smoke { radius, seconds } => (Impact::Smoke { radius, seconds }, 0.0, 0.0, 17.0, 13.0, 2.5, ShotLook::Canister),
+        GearKind::Flash { radius, seconds } => (Impact::Flash { radius, seconds }, 0.0, 0.0, 18.0, 13.0, 2.2, ShotLook::Canister),
         GearKind::Mine { damage, radius } => (Impact::Mine { damage, radius }, 0.0, 0.0, 7.0, 13.0, 3.0, ShotLook::Grenade),
         GearKind::Knife { damage } => (Impact::Blast, damage, 0.0, 38.0, 2.0, 1.2, ShotLook::Knife),
         GearKind::Stim { .. } | GearKind::Ammo { .. } => return None,
@@ -350,6 +403,13 @@ pub fn fly_projectiles(
     let dt = sim_dt(&time);
     let core = map.ground(map.core.x, map.core.y) + Vec3::Y * 1.5;
     for (entity, mut transform, mut shot) in &mut shots {
+        // Grenades and canisters bounce about until the fuse is spent, then go off where they lie.
+        if bounces(&shot) && shot.life - dt > 0.0 {
+            shot.life -= dt;
+            let at = bounce_step(&map, &statics, transform.translation, &mut shot, dt);
+            transform.translation = at;
+            continue;
+        }
         shot.velocity.y -= shot.gravity * dt;
         let from = transform.translation;
         let step = shot.velocity * dt;

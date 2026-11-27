@@ -176,6 +176,16 @@ fn fly_ghosts(
 ) {
     let dt = time.delta_secs().min(0.05);
     for (entity, mut transform, mut shot) in &mut ghosts {
+        if oz_sim::combat::bounces(&shot) {
+            // Same bouncing as the host's copy; vanish when the fuse runs out (its blast arrives on its own).
+            shot.life -= dt;
+            if shot.life <= 0.0 {
+                commands.entity(entity).despawn();
+                continue;
+            }
+            transform.translation = oz_sim::combat::bounce_step(&map, &statics, transform.translation, &mut shot, dt);
+            continue;
+        }
         shot.velocity.y -= shot.gravity * dt;
         shot.life -= dt;
         let from = transform.translation;
