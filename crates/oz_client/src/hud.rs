@@ -121,9 +121,10 @@ struct ScopeGlass;
 struct StanceLimb(u8);
 
 #[derive(Resource)]
-struct ScopeImages([Handle<Image>; 2]);
+struct ScopeImages([Handle<Image>; 3]);
 
-/// A round scope mask: black outside the glass, a reticle inside. `kind` 1 = ACOG chevron, 2 = sniper crosshair.
+/// A round scope mask: black outside the glass, a reticle inside. `kind` 1 = ACOG chevron,
+/// 2 = sniper crosshair, 3 = thermal (a white cross with a ring, on a cold blue rim).
 fn scope_image(kind: u8) -> Image {
     let size = 256usize;
     let c = size as f32 / 2.0;
@@ -136,7 +137,7 @@ fn scope_image(kind: u8) -> Image {
             if d > 0.97 {
                 rgba = [0, 0, 0, 255];
             } else if d > 0.93 {
-                rgba = [18, 22, 26, 255];
+                rgba = if kind == 3 { [20, 40, 70, 255] } else { [18, 22, 26, 255] };
             } else if d > 0.86 {
                 // Vignette inside the rim.
                 rgba = [0, 0, 0, ((d - 0.86) / 0.07 * 170.0) as u8];
@@ -149,6 +150,13 @@ fn scope_image(kind: u8) -> Image {
                 let dot = (line(dx, 1.5) || line(dy, 1.5)) && ((dx.abs().max(dy.abs()) / (c * 0.09)).fract() < 0.12) && dx.abs().max(dy.abs()) > 4.0 && d < 0.45;
                 if (post && d < 0.93) || fine || dot {
                     rgba = [8, 8, 10, 255];
+                }
+            } else if kind == 3 {
+                // A thin white cross with a gap in the middle, a ring round it, and a centre dot.
+                let cross = (line(dx, 0.8) || line(dy, 0.8)) && dx.abs().max(dy.abs()) > c * 0.08 && d < 0.93;
+                let ring = (d - 0.3).abs() < 0.008;
+                if cross || ring || d < 0.02 {
+                    rgba = [235, 245, 255, 240];
                 }
             } else if kind == 1 {
                 // An amber chevron with a fine stadia line below it.
@@ -211,7 +219,7 @@ fn framed(node: Node) -> impl Bundle {
 
 fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: ResMut<Assets<Image>>) {
     notices.0.clear();
-    let scopes = [images.add(scope_image(1)), images.add(scope_image(2))];
+    let scopes = [images.add(scope_image(1)), images.add(scope_image(2)), images.add(scope_image(3))];
     commands
         .spawn((MatchEntity, ScopeOverlay, Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, GlobalZIndex(-45), Visibility::Hidden))
         .with_children(|overlay| {
@@ -889,7 +897,7 @@ fn scope_and_stance(
     }
     if let (Ok(mut glass), Some(images)) = (glass.single_mut(), images) {
         let kind = if replay { killcam.scope } else { view.scope_kind };
-        let handle = &images.0[if kind >= 2 { 1 } else { 0 }];
+        let handle = &images.0[(kind.clamp(1, 3) - 1) as usize];
         if glass.image != *handle {
             glass.image = handle.clone();
         }

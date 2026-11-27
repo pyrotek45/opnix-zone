@@ -43,6 +43,7 @@ pub fn blank_weapon() -> WeaponDef {
         defaults: [0; SLOT_COUNT],
         model: BlockModel::new(),
         length: 0.5,
+        weight: 3.0,
     }
 }
 
@@ -71,6 +72,13 @@ pub mod gun {
     pub const LEVER: usize = 18;
     pub const ANTI_MATERIEL: usize = 19;
     pub const ROTARY: usize = 20;
+    pub const SCOUT: usize = 21;
+    pub const MARKSMAN: usize = 22;
+    pub const DOUBLE: usize = 23;
+    pub const AUTO_SHOTGUN: usize = 24;
+    pub const HAND_CANNON: usize = 25;
+    pub const LIGHT_LMG: usize = 26;
+    pub const STINGER: usize = 27;
 }
 
 /// Every kit gun, in [`gun`] index order.
@@ -78,6 +86,8 @@ pub fn standard_guns() -> Vec<WeaponDef> {
     let base = blank_weapon();
     let mut scoped = [0; SLOT_COUNT];
     scoped[slot::OPTIC] = 4;
+    let mut six = [0; SLOT_COUNT];
+    six[slot::OPTIC] = 5;
     vec![
         WeaponDef {
             name: "PULSE PISTOL",
@@ -96,6 +106,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.6,
             ads_fov: 58.0,
             sound: 0,
+            weight: 0.9,
             frame: Some(GunFrame {
                 accent: Paint::Gold,
                 width: 0.065,
@@ -129,6 +140,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.34,
             ads_fov: 58.0,
             sound: 1,
+            weight: 2.6,
             frame: Some(GunFrame {
                 width: 0.075,
                 height: 0.12,
@@ -161,9 +173,10 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             spread: 0.1,
             ads_spread: 0.7,
             range: 9.0,
-            recoil: 1.4,
+            recoil: 1.5,
             ads_fov: 60.0,
             sound: 2,
+            weight: 3.4,
             frame: Some(GunFrame {
                 accent: Paint::Gold,
                 furniture: Paint::Wood,
@@ -199,6 +212,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.5,
             ads_fov: 50.0,
             sound: 3,
+            weight: 3.4,
             frame: Some(GunFrame { mag: MagShape::Curved, stock: StockShape::Tube, carry: true, ..FRAME }),
             ..base.clone()
         },
@@ -218,9 +232,10 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             spread: 0.05,
             ads_spread: 0.04,
             range: 100.0,
-            recoil: 0.9,
+            recoil: 1.2,
             ads_fov: 40.0,
             sound: 4,
+            weight: 5.4,
             frame: Some(GunFrame {
                 accent: Paint::Glow,
                 furniture: Paint::Dark,
@@ -241,24 +256,25 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "SUNBURST LAUNCHER",
-            blurb: "Six-shot revolving grenade launcher. Denies a whole street.",
+            blurb: "Four-shot revolving grenade launcher. A direct hit kills; the reload takes forever.",
             price: Cost::new(700, 0, 25, 10),
             class: GunClass::Launcher,
             caliber: Caliber::Rocket,
             action: Action::Semi,
-            mag: 6,
-            reserve: 12,
+            mag: 4,
+            reserve: 4,
             ammo_price: 90,
-            damage: 205.0,
-            interval: 0.9,
-            reload: 2.6,
-            spread: 0.006,
-            range: 75.0,
-            splash: 9.0,
-            recoil: 1.45,
-            mode: FireMode::Projectile { speed: 46.0, gravity: 7.0 },
+            damage: 125.0,
+            interval: 1.1,
+            reload: 4.5,
+            spread: 0.008,
+            range: 60.0,
+            splash: 4.5,
+            recoil: 1.9,
+            mode: FireMode::Projectile { speed: 40.0, gravity: 8.5 },
             ads_fov: 55.0,
             sound: 5,
+            weight: 8.2,
             frame: Some(GunFrame {
                 body: Paint::Teal,
                 accent: Paint::Gold,
@@ -293,9 +309,10 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             spread: 0.04,
             ads_spread: 0.4,
             range: 55.0,
-            recoil: 0.45,
+            recoil: 0.6,
             ads_fov: 55.0,
             sound: 1,
+            weight: 8.6,
             frame: Some(GunFrame {
                 body: Paint::Rust,
                 accent: Paint::Gold,
@@ -334,6 +351,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 1.8,
             ads_fov: 40.0,
             sound: 8,
+            weight: 5.9,
             defaults: scoped,
             frame: Some(GunFrame {
                 body: Paint::Dark,
@@ -371,6 +389,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.5,
             ads_fov: 48.0,
             sound: 3,
+            weight: 3.5,
             frame: Some(GunFrame {
                 body: Paint::Concrete,
                 accent: Paint::Red,
@@ -402,6 +421,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 1.3,
             ads_fov: 56.0,
             sound: 8,
+            weight: 1.4,
             frame: Some(GunFrame {
                 body: Paint::Metal,
                 accent: Paint::Wood,
@@ -439,6 +459,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.95,
             ads_fov: 42.0,
             sound: 3,
+            weight: 4.6,
             frame: Some(GunFrame {
                 body: Paint::Dark,
                 accent: Paint::Teal,
@@ -471,9 +492,10 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             spread: 0.12,
             ads_spread: 0.75,
             range: 7.0,
-            recoil: 1.1,
+            recoil: 1.25,
             ads_fov: 62.0,
             sound: 2,
+            weight: 5.2,
             frame: Some(GunFrame {
                 body: Paint::Steel,
                 accent: Paint::Red,
@@ -510,6 +532,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.24,
             ads_fov: 60.0,
             sound: 1,
+            weight: 2.2,
             frame: Some(GunFrame {
                 body: Paint::Gold,
                 accent: Paint::Dark,
@@ -544,9 +567,10 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             spread: 0.02,
             ads_spread: 0.3,
             range: 60.0,
-            recoil: 0.9,
+            recoil: 1.0,
             ads_fov: 48.0,
             sound: 3,
+            weight: 4.8,
             frame: Some(GunFrame {
                 body: Paint::Wood,
                 accent: Paint::Steel,
@@ -581,6 +605,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.44,
             ads_fov: 52.0,
             sound: 3,
+            weight: 3.7,
             frame: Some(GunFrame {
                 body: Paint::Leaf,
                 accent: Paint::Dark,
@@ -615,6 +640,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.38,
             ads_fov: 60.0,
             sound: 0,
+            weight: 1.3,
             frame: Some(GunFrame {
                 body: Paint::Dark,
                 accent: Paint::Coral,
@@ -652,6 +678,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.36,
             ads_fov: 58.0,
             sound: 1,
+            weight: 4.6,
             frame: Some(GunFrame {
                 body: Paint::Iron,
                 accent: Paint::Dark,
@@ -691,6 +718,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 0.4,
             ads_fov: 54.0,
             sound: 3,
+            weight: 3.0,
             frame: Some(GunFrame {
                 body: Paint::Sand,
                 accent: Paint::Dark,
@@ -725,6 +753,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             recoil: 1.1,
             ads_fov: 46.0,
             sound: 8,
+            weight: 3.6,
             frame: Some(GunFrame {
                 body: Paint::Copper,
                 accent: Paint::Gold,
@@ -758,9 +787,10 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             spread: 0.12,
             ads_spread: 0.01,
             range: 200.0,
-            recoil: 2.4,
+            recoil: 2.8,
             ads_fov: 40.0,
             sound: 8,
+            weight: 13.0,
             defaults: scoped,
             frame: Some(GunFrame {
                 body: Paint::Steel,
@@ -797,9 +827,10 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             spread: 0.05,
             ads_spread: 0.6,
             range: 30.0,
-            recoil: 0.3,
+            recoil: 0.42,
             ads_fov: 58.0,
             sound: 1,
+            weight: 14.5,
             frame: Some(GunFrame {
                 body: Paint::Iron,
                 accent: Paint::Gold,
@@ -818,6 +849,275 @@ pub fn standard_guns() -> Vec<WeaponDef> {
                 carry: true,
                 ..FRAME
             }),
+            ..base.clone()
+        },
+        // New guns go on the end, so saved classes keep their indices.
+        WeaponDef {
+            name: "KESTREL SCOUT",
+            blurb: "Light bolt-action with a 6x. Quick to shoulder, two to the body.",
+            price: Cost::new(520, 20, 5, 0),
+            class: GunClass::Sniper,
+            caliber: Caliber::Magnum,
+            action: Action::Bolt,
+            mag: 6,
+            reserve: 24,
+            ammo_price: 50,
+            damage: 80.0,
+            interval: 0.95,
+            reload: 1.9,
+            spread: 0.08,
+            ads_spread: 0.012,
+            range: 130.0,
+            recoil: 1.3,
+            ads_fov: 40.0,
+            sound: 8,
+            weight: 3.6,
+            defaults: six,
+            frame: Some(GunFrame {
+                body: Paint::Sand,
+                accent: Paint::Teal,
+                furniture: Paint::Dark,
+                width: 0.075,
+                height: 0.11,
+                receiver: 0.32,
+                barrel: 0.48,
+                bore: 0.034,
+                mag_len: 0.7,
+                stock: StockShape::Skeleton,
+                shape: ReceiverShape::Sleek,
+                barrel_shape: BarrelShape::Fluted,
+                ..FRAME
+            }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "HERON MARKSMAN",
+            blurb: "Semi-automatic sniper on a chassis stock. Ten rounds, fast follow-ups.",
+            price: Cost::new(640, 30, 10, 0),
+            class: GunClass::Sniper,
+            caliber: Caliber::Rifle,
+            action: Action::Semi,
+            mag: 10,
+            reserve: 30,
+            ammo_price: 55,
+            damage: 68.0,
+            interval: 0.36,
+            reload: 2.0,
+            spread: 0.06,
+            ads_spread: 0.02,
+            range: 110.0,
+            recoil: 1.15,
+            ads_fov: 40.0,
+            sound: 3,
+            weight: 5.3,
+            defaults: scoped,
+            frame: Some(GunFrame {
+                body: Paint::Leaf,
+                accent: Paint::Dark,
+                furniture: Paint::Dark,
+                width: 0.085,
+                height: 0.13,
+                receiver: 0.38,
+                barrel: 0.46,
+                bore: 0.04,
+                mag_len: 0.9,
+                stock: StockShape::Precision,
+                shape: ReceiverShape::Angular,
+                fore: Foregrip::Stop,
+                rails: true,
+                ..FRAME
+            }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "MAULER DOUBLE",
+            blurb: "Side-by-side double barrel. Two enormous blasts, then two shells in.",
+            price: Cost::credits(300),
+            class: GunClass::Shotgun,
+            caliber: Caliber::Shell,
+            action: Action::Semi,
+            reload_style: ReloadStyle::Single,
+            mag: 2,
+            reserve: 16,
+            ammo_price: 30,
+            damage: 19.0,
+            interval: 0.16,
+            reload: 0.8,
+            pellets: 10,
+            spread: 0.11,
+            ads_spread: 0.75,
+            range: 10.0,
+            recoil: 1.9,
+            ads_fov: 62.0,
+            sound: 2,
+            weight: 3.2,
+            frame: Some(GunFrame {
+                body: Paint::Iron,
+                accent: Paint::Gold,
+                furniture: Paint::Wood,
+                width: 0.07,
+                height: 0.11,
+                receiver: 0.24,
+                barrel: 0.5,
+                bore: 0.042,
+                mag: MagShape::Internal,
+                stock: StockShape::Sloped,
+                handguard: false,
+                barrel_shape: BarrelShape::Twin,
+                grip: GripShape::Wrist,
+                ..FRAME
+            }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "RIPTIDE AUTO-12",
+            blurb: "Magazine-fed semi-auto shotgun. Fast follow-ups, quick reloads.",
+            price: Cost::new(480, 20, 5, 0),
+            class: GunClass::Shotgun,
+            caliber: Caliber::Shell,
+            action: Action::Semi,
+            mag: 8,
+            reserve: 32,
+            ammo_price: 40,
+            damage: 15.0,
+            interval: 0.28,
+            reload: 2.0,
+            pellets: 8,
+            spread: 0.1,
+            ads_spread: 0.7,
+            range: 11.0,
+            recoil: 1.3,
+            ads_fov: 60.0,
+            sound: 2,
+            weight: 4.4,
+            frame: Some(GunFrame {
+                body: Paint::Dark,
+                accent: Paint::Coral,
+                furniture: Paint::Dark,
+                width: 0.085,
+                height: 0.14,
+                receiver: 0.36,
+                barrel: 0.34,
+                bore: 0.048,
+                mag_len: 0.9,
+                stock: StockShape::Tube,
+                shape: ReceiverShape::Angular,
+                fore: Foregrip::Vertical,
+                rails: true,
+                ..FRAME
+            }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "WARHORSE HAND CANNON",
+            blurb: "Gas-operated magnum pistol. Seven heavy rounds, a brutal kick.",
+            price: Cost::credits(280),
+            class: GunClass::Pistol,
+            caliber: Caliber::Magnum,
+            action: Action::Semi,
+            mag: 7,
+            reserve: 28,
+            ammo_price: 30,
+            damage: 52.0,
+            interval: 0.32,
+            reload: 1.6,
+            spread: 0.018,
+            ads_spread: 0.28,
+            range: 32.0,
+            recoil: 1.7,
+            ads_fov: 55.0,
+            sound: 8,
+            weight: 2.0,
+            frame: Some(GunFrame {
+                body: Paint::Steel,
+                accent: Paint::Gold,
+                furniture: Paint::Dark,
+                width: 0.075,
+                height: 0.14,
+                receiver: 0.3,
+                barrel: 0.08,
+                bore: 0.04,
+                stock: StockShape::None,
+                handguard: false,
+                barrel_shape: BarrelShape::Brake,
+                ..FRAME
+            }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "SKIRMISHER LMG",
+            blurb: "Light machine gun with a drum. Moves like a rifle, fires like an LMG.",
+            price: Cost::new(780, 35, 30, 8),
+            class: GunClass::Lmg,
+            caliber: Caliber::Rifle,
+            action: Action::Auto,
+            mag: 75,
+            reserve: 225,
+            ammo_price: 100,
+            damage: 24.0,
+            interval: 0.075,
+            reload: 2.6,
+            spread: 0.032,
+            ads_spread: 0.38,
+            range: 50.0,
+            recoil: 0.5,
+            ads_fov: 52.0,
+            sound: 1,
+            weight: 6.2,
+            frame: Some(GunFrame {
+                body: Paint::Concrete,
+                accent: Paint::Dark,
+                width: 0.1,
+                height: 0.14,
+                receiver: 0.38,
+                barrel: 0.34,
+                bore: 0.045,
+                mag: MagShape::Drum,
+                stock: StockShape::Tube,
+                shape: ReceiverShape::Angular,
+                barrel_shape: BarrelShape::Fluted,
+                fore: Foregrip::Angled,
+                bipod: true,
+                rails: true,
+                ..FRAME
+            }),
+            ..base.clone()
+        },
+        WeaponDef {
+            name: "STINGER PDW",
+            blurb: "Featherweight personal defence weapon. Forty rounds and quick hands.",
+            price: Cost::credits(230),
+            class: GunClass::Smg,
+            caliber: Caliber::Pistol,
+            action: Action::Auto,
+            mag: 40,
+            reserve: 160,
+            ammo_price: 30,
+            damage: 16.0,
+            interval: 0.058,
+            reload: 1.4,
+            spread: 0.019,
+            ads_spread: 0.42,
+            range: 17.0,
+            recoil: 0.26,
+            ads_fov: 58.0,
+            sound: 1,
+            weight: 1.9,
+            frame: Some(GunFrame {
+                body: Paint::Teal,
+                accent: Paint::Dark,
+                width: 0.07,
+                height: 0.115,
+                receiver: 0.24,
+                barrel: 0.08,
+                bore: 0.03,
+                mag_len: 1.5,
+                stock: StockShape::Tube,
+                handguard: false,
+                shape: ReceiverShape::Sleek,
+                fore: Foregrip::Vertical,
+                ..FRAME
+            }),
             ..base
         },
     ]
@@ -832,7 +1132,7 @@ mod tests {
     fn guns_are_sane_and_buildable() {
         let guns = standard_guns();
         let table = standard_attachments();
-        assert_eq!(guns.len(), 21);
+        assert_eq!(guns.len(), 28);
         for gun in &guns {
             let state = WeaponState::fresh(gun);
             let stats = resolve(gun, &state, &table);
@@ -845,5 +1145,72 @@ mod tests {
             assert!(kitted.parts.iter().all(|p| p.pos.is_finite() && p.rot.is_finite() && p.size.min_element() > 0.0), "{}", gun.name);
         }
         assert_eq!(resolve(&guns[gun::SNIPER], &WeaponState::fresh(&guns[gun::SNIPER]), &table).scope, 2, "snipers ship with a scope");
+    }
+
+    #[test]
+    fn every_part_fits_and_builds_on_every_gun() {
+        let guns = standard_guns();
+        let table = standard_attachments();
+        for gun in &guns {
+            let plain = assemble(gun, &gun.defaults);
+            for slot in 0..crate::arsenal::slot::AMMO {
+                for (variant, name, ..) in crate::arsenal::options(gun, &table, slot) {
+                    let mut parts = gun.defaults;
+                    parts[slot] = variant as u8;
+                    let model = assemble(gun, &parts);
+                    assert!(model.parts.len() <= 90, "{} with {name}: {} parts", gun.name, model.parts.len());
+                    assert!(model.parts.iter().all(|p| p.pos.is_finite() && p.size.min_element() > 0.0), "{} with {name}", gun.name);
+                    // Every part shows on the gun (magazines only where the feed can grow: not cylinders or drums).
+                    if variant != gun.defaults[slot] as usize && variant != 0 && slot != crate::arsenal::slot::MAGAZINE && !(slot == crate::arsenal::slot::STOCK && variant == 1) {
+                        assert!(format!("{:?}{:?}", model.parts, model.hulls) != format!("{:?}{:?}", plain.parts, plain.hulls), "{name} is invisible on {}", gun.name);
+                    }
+                    let stats = resolve(gun, &WeaponState { equipped: parts, ..WeaponState::fresh(gun) }, &table);
+                    assert!(stats.weight > 0.5 && stats.weight < 18.0, "{} with {name} weighs {}", gun.name, stats.weight);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stronger_optics_zoom_further_and_long_glass_stays_on_long_guns() {
+        let table = standard_attachments();
+        let optic = |name: &str| table[slot::OPTIC].iter().find(|a| a.name == name).unwrap();
+        let ladder = ["ACOG 3X", "HYBRID 4X", "THERMAL 4X", "MARKSMAN 6X", "SNIPER SCOPE 8X", "VARIABLE 12X"];
+        for pair in ladder.windows(2) {
+            assert!(optic(pair[1]).mods.fov < optic(pair[0]).mods.fov, "{} must zoom further than {}", pair[1], pair[0]);
+        }
+        for long in ["SNIPER SCOPE 8X", "VARIABLE 12X"] {
+            let classes = optic(long).classes;
+            assert!(classes & GunClass::Sniper.bit() != 0 && classes & GunClass::Rifle.bit() != 0);
+            assert!(classes & (GunClass::Pistol.bit() | GunClass::Smg.bit() | GunClass::Shotgun.bit() | GunClass::Launcher.bit()) == 0, "{long}");
+        }
+        assert_eq!(optic("THERMAL 4X").mods.scope, 3);
+        // Every slot fits a u16 purchase mask.
+        assert!(table.iter().all(|slot| slot.len() <= 16));
+    }
+
+    #[test]
+    fn weight_sets_the_pace() {
+        use crate::arsenal::{LOAD_FASTEST, LOAD_SLOWEST, carried_weight, load_speed};
+        let guns = standard_guns();
+        let table = standard_attachments();
+        let kg = |i: usize| carried_weight(&guns[i], &guns[i].defaults, &table);
+        let light = load_speed(kg(gun::PISTOL) + kg(gun::STINGER) + 0.75);
+        let rifle = load_speed(kg(gun::CARBINE) + kg(gun::PISTOL) + 0.8);
+        let lmg = load_speed(kg(gun::MINIGUN) + kg(gun::PISTOL) + 0.8);
+        let launcher = load_speed(kg(gun::LAUNCHER) + kg(gun::PISTOL) + 0.8);
+        let rotary = load_speed(kg(gun::ROTARY) + kg(gun::REVOLVER) + 0.8);
+        assert!(light > 1.0 && light <= LOAD_FASTEST, "light kit {light}");
+        assert!((0.97..=1.03).contains(&rifle), "rifle kit {rifle}");
+        assert!(lmg < 0.92 && launcher < 0.93, "heavy kits {lmg} {launcher}");
+        assert!(rotary >= LOAD_SLOWEST && rotary < lmg);
+    }
+
+    #[test]
+    fn the_launcher_is_slow_to_reload_and_small() {
+        let guns = standard_guns();
+        let launcher = &guns[gun::LAUNCHER];
+        assert!(launcher.reload >= 4.0 && launcher.mag <= 4 && launcher.reserve <= 4);
+        assert!(launcher.splash <= 5.0 && launcher.damage <= 130.0);
     }
 }

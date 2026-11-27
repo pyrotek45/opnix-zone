@@ -24,7 +24,7 @@ use crate::{
     ui::{self, Act, ActEvent, FocusRequest, Focused, Order, Screen, UiDirty},
 };
 use bevy::{ecs::hierarchy::ChildSpawnerCommands, prelude::*};
-use oz_core::arsenal::{SLOT_COUNT, SLOTS, WeaponDef, WeaponState, options, resolve};
+use oz_core::arsenal::{SLOT_COUNT, SLOTS, WeaponDef, WeaponState, load_speed, options, resolve};
 use oz_core::kit::gun;
 use oz_sim::prelude::*;
 
@@ -531,6 +531,26 @@ fn streak_names(loadout: &Loadout) -> String {
     loadout.streaks.iter().filter_map(|id| oz_sim::killstreak::def(*id)).map(|d| d.name).collect::<Vec<_>>().join(" / ")
 }
 
+/// What a class carries in kilograms, and the movement speed that leaves (perks included).
+pub fn class_load(content: &Content, loadout: &Loadout) -> (f32, f32) {
+    let parts = loadout.parts.unwrap_or_else(|| {
+        let defaults = |i: u8| content.weapons.get(i as usize).map_or([0; SLOT_COUNT], |w| w.defaults);
+        [defaults(loadout.primary), defaults(loadout.secondary)]
+    });
+    let count = content.gear.get(loadout.gear as usize).map_or(0, |g| g.count);
+    let kg = content.load(&[(loadout.primary as usize, parts[0]), (loadout.secondary as usize, parts[1])], loadout.perk, loadout.gear, count);
+    let perk = match content.perks.get(loadout.perk as usize).map(|p| p.effect) {
+        Some(oz_core::content::PerkEffect::Speed(scale)) => scale,
+        _ => 1.0,
+    };
+    (kg, load_speed(kg) * perk)
+}
+
+fn load_line(content: &Content, loadout: &Loadout) -> String {
+    let (kg, speed) = class_load(content, loadout);
+    format!("LOAD {kg:.1} KG   SPEED {:.0}%", speed * 100.0)
+}
+
 /// What a class slot holds, as one line.
 fn slot_value(content: &Content, loadout: &Loadout, tab: u8) -> String {
     let name = |i: u8| content.weapons.get(i as usize).map_or("-", |w| w.name).to_string();
@@ -639,7 +659,7 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                     }
                     3 => {
                         for (i, gear) in content.gear.iter().enumerate() {
-                            ui::slim(panel, order, format!("{}  x{}", gear.name, gear.count), Act::ArmoryItem(i as u8), None, i as u8 == c.gear, Val::Percent(100.0));
+                            ui::slim(panel, order, format!("{}  x{}   {:.1} KG", gear.name, gear.count, gear.weight * gear.count as f32), Act::ArmoryItem(i as u8), None, i as u8 == c.gear, Val::Percent(100.0));
                         }
                     }
                     5 => {
@@ -815,10 +835,11 @@ fn preview(
                     5 => oz_sim::player::vision::BLURBS.get(c.vision as usize).copied().unwrap_or("").to_string(),
                     _ => c.streaks.iter().filter_map(|id| oz_sim::killstreak::def(*id)).map(|d| format!("{:>2} KILLS  {}", d.kills, d.name)).collect::<Vec<_>>().join("\n"),
                 };
-                (format!("{}: {}", TABS[*t as usize], slot_value(&content, &c, *t)), text)
+                (format!("{}: {}", TABS[*t as usize], slot_value(&content, &c, *t)), format!("{text}\n{}", load_line(&content, &c)))
             }
             _ => {
-                let lines: Vec<String> = (0..6u8).map(|t| format!("{:<10} {}", TABS[t as usize], slot_value(&content, &c, t))).collect();
+                let mut lines: Vec<String> = (0..6u8).map(|t| format!("{:<10} {}", TABS[t as usize], slot_value(&content, &c, t))).collect();
+                lines.push(load_line(&content, &c));
                 (format!("{}  {}", index + 1, CLASS_NAMES[index]), lines.join("\n"))
             }
         };
@@ -839,8 +860,14 @@ fn preview(
             *stage = wanted;
         }
         let (head, body) = match (&focused.0, class.tab) {
-            (Some(Act::ArmoryItem(i)), 2) => content.perks.get(*i as usize).map_or((String::new(), String::new()), |p| (p.name.to_string(), p.blurb.to_string())),
-            (Some(Act::ArmoryItem(i)), 3) => content.gear.get(*i as usize).map_or((String::new(), String::new()), |g| (format!("{}  x{}", g.name, g.count), g.blurb.to_string())),
+            (Some(Act::ArmoryItem(i)), 3) => content.gear.get(*i as usize).map_or((String::new(), String::new()), |g| {
+                let with = Loadout { gear: *i, ..class.slots[class.active] };
+                (format!("{}  x{}   {:.1} KG", g.name, g.count, g.weight * g.count as f32), format!("{}\n{}", g.blurb, load_line(&content, &with)))
+            }),
+            (Some(Act::ArmoryItem(i)), 2) => content.perks.get(*i as usize).map_or((String::new(), String::new()), |p| {
+                let with = Loadout { perk: *i, ..class.slots[class.active] };
+                (p.name.to_string(), format!("{}\n{}", p.blurb, load_line(&content, &with)))
+            }),
             (Some(Act::ArmoryItem(i)), 5) => oz_sim::player::vision::NAMES.get(*i as usize).map_or((String::new(), String::new()), |n| (n.to_string(), oz_sim::player::vision::BLURBS[*i as usize].to_string())),
             (Some(Act::ArmoryItem(i)), _) => oz_sim::killstreak::def(*i).map_or((String::new(), String::new()), |d| (format!("{}  -  {} KILLS", d.name, d.kills), d.blurb.to_string())),
             _ => (String::new(), String::new()),
@@ -892,8 +919,19 @@ fn preview(
     };
     let stats = resolve(def, &WeaponState { equipped: parts, ..default() }, &content.attachments);
     let damage = if stats.pellets > 1 { format!("{:.0}x{}", stats.damage, stats.pellets) } else { format!("{:.0}", stats.damage) };
-    set_text(&mut title, format!("{}      DMG {damage}   {:.0} RPM   MAG {}", def.name, 60.0 / stats.interval.max(0.01), stats.mag));
-    set_text(&mut blurb, description);
+    set_text(&mut title, format!("{}      DMG {damage}   {:.0} RPM   MAG {}   {:.1} KG", def.name, 60.0 / stats.interval.max(0.01), stats.mag, stats.weight));
+    // The class as it would be with this gun in the slot: what it weighs and how fast it moves.
+    let mut with = class.slots[class.active];
+    let mut both = with.parts.unwrap_or_default();
+    if side == 0 {
+        with.primary = weapon;
+        both[0] = parts;
+    } else {
+        with.secondary = weapon;
+        both[1] = parts;
+    }
+    with.parts = Some(both);
+    set_text(&mut blurb, format!("{description}\nCLASS {}", load_line(&content, &with)));
     show_bars(&content, current, current_parts, weapon, parts, &mut fills, &mut deltas);
 }
 
@@ -923,7 +961,7 @@ fn show_bars(
         let (x, y) = (now[delta.0], then[delta.0]);
         node.left = Val::Percent(x.min(y) * 100.0);
         node.width = Val::Percent((y - x).abs() * 100.0);
-        color.0 = if y >= x { ui::GOOD } else { ui::WARN };
+        color.0 = if crate::gunsmith::better(delta.0, x, y) { ui::GOOD } else { ui::WARN };
     }
 }
 

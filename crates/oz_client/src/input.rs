@@ -471,6 +471,15 @@ fn drive_player(
 
     input.movement = controls.movement;
     let mut look = controls.look;
+    // Through magnified glass the view turns slower, so higher zoom stays steerable: past
+    // a 3x the look scales with the square root of how far the optic narrows the view.
+    if controls.aim {
+        let zoom = content.weapons.get(arsenal.current as usize).zip(arsenal.state()).map_or(1.0, |(def, state)| {
+            let fov = resolve(def, state, &content.attachments).ads_fov.clamp(1.0, 34.0);
+            ((fov * 0.5).to_radians().tan() / 17f32.to_radians().tan()).sqrt()
+        });
+        look *= zoom;
+    }
 
     // Recoil: every shot kicks the aim itself (this is where the next round goes), up and to
     // the side along the gun's own pattern. Heavier guns kick harder; crouching, going prone

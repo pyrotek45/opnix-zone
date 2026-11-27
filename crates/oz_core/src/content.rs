@@ -4,7 +4,7 @@
 //! builds a `Catalog` and both the simulation and the client read from it.
 
 use crate::{
-    arsenal::{AttachmentTable, ModKind, WeaponDef},
+    arsenal::{AttachmentTable, ModKind, SLOT_COUNT, WeaponDef, carried_weight},
     economy::Cost,
     model::{BlockModel, Paint},
 };
@@ -207,6 +207,16 @@ pub enum PerkEffect {
     NightVision,
 }
 
+impl PerkEffect {
+    /// Kilograms the perk adds to the load: armour plates are heavy.
+    pub fn weight(self) -> f32 {
+        match self {
+            PerkEffect::Health(hp) => hp * 0.1,
+            _ => 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PerkDef {
     pub name: &'static str,
@@ -247,6 +257,8 @@ pub struct GearDef {
     pub kind: GearKind,
     /// Uses per life.
     pub count: u8,
+    /// Kilograms per item carried.
+    pub weight: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -266,6 +278,15 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Kilograms carried: guns (catalog index and fitted parts), the perk's armour and
+    /// `gear_count` pieces of gear. Feeds [`crate::arsenal::load_speed`].
+    pub fn load(&self, guns: &[(usize, [u8; SLOT_COUNT])], perk: u8, gear: u8, gear_count: u8) -> f32 {
+        let guns: f32 = guns.iter().filter_map(|(index, parts)| self.weapons.get(*index).map(|def| carried_weight(def, parts, &self.attachments))).sum();
+        let perk = self.perks.get(perk as usize).map_or(0.0, |p| p.effect.weight());
+        let gear = self.gear.get(gear as usize).map_or(0.0, |g| g.weight * gear_count as f32);
+        guns + perk + gear
+    }
+
     /// Multiplier for an effect given the team's upgrade levels: `1 + sum(level * per_level)`.
     pub fn bonus(&self, levels: &[u8], effect: UpgradeEffect) -> f32 {
         1.0 + self.upgrades.iter().zip(levels).filter(|(u, _)| u.effect == effect).map(|(u, level)| u.per_level * *level as f32).sum::<f32>()

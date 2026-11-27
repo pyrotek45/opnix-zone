@@ -242,5 +242,8 @@ mod tests {
         assert_eq!(career.level(), 12);
         assert!(career.gun_unlocked(oz_core::kit::gun::SNIPER as u8));
         assert!(xp_for(3) > xp_for(2) && xp_for(2) > 0);
+        // The last gun in the catalog still unlocks below the level cap.
+        let last = oz_core::kit::standard_guns().len() as u8 - 1;
+        assert!(gun_level(last) <= 50 && gun_level(last) > gun_level(oz_core::kit::gun::ROTARY as u8));
     }
 }

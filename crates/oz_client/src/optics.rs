@@ -96,7 +96,12 @@ fn spawn_tint(mut commands: Commands) {
     ));
 }
 
-fn tint(nv: Res<NightVision>, mut green: Query<&mut Visibility, (With<NightVisionTint>, Without<ThermalTint>)>, mut blue: Query<&mut Visibility, (With<ThermalTint>, Without<NightVisionTint>)>) {
+/// Looking through a thermal scope counts as the thermal visor being down.
+fn thermal_scope(view: &crate::view::ViewState) -> bool {
+    view.scope_kind == 3 && view.scoped > 0.5
+}
+
+fn tint(nv: Res<NightVision>, view: Res<crate::view::ViewState>, mut green: Query<&mut Visibility, (With<NightVisionTint>, Without<ThermalTint>)>, mut blue: Query<&mut Visibility, (With<ThermalTint>, Without<NightVisionTint>)>) {
     let show = |visibility: &mut Visibility, on: bool| {
         let wanted = if on { Visibility::Inherited } else { Visibility::Hidden };
         if *visibility != wanted {
@@ -107,7 +112,7 @@ fn tint(nv: Res<NightVision>, mut green: Query<&mut Visibility, (With<NightVisio
         show(&mut visibility, nv.on);
     }
     if let Ok(mut visibility) = blue.single_mut() {
-        show(&mut visibility, nv.thermal);
+        show(&mut visibility, nv.thermal || thermal_scope(&view));
     }
 }
 
@@ -129,13 +134,14 @@ fn give_heat(mut commands: Commands, art: Res<Art>, robots: Query<&Rig, (Added<R
 /// Glow the enemy silhouettes while the thermal visor is down.
 fn show_heat(
     nv: Res<NightVision>,
+    view: Res<crate::view::ViewState>,
     rules: Res<Rules>,
     local: Query<&Player, With<LocalPlayer>>,
     robots: Query<(&Rig, &Player, &Health), With<PlayerRobot>>,
     mut glows: Query<(&ChildOf, &mut Visibility), With<ThermalGlow>>,
 ) {
     let me = local.single().ok();
-    let thermal = nv.thermal;
+    let thermal = nv.thermal || thermal_scope(&view);
     for (parent, mut visibility) in &mut glows {
         let hot = thermal
             && robots

@@ -15,8 +15,11 @@ pub fn catalog(_: &Rules) -> Catalog {
     let mut weapons = oz_core::kit::standard_guns();
     for weapon in &mut weapons {
         weapon.price = Cost::FREE;
-        // Versus balance: generous reserves, no shopping.
-        weapon.reserve = weapon.mag * 4;
+        // Versus balance: generous reserves, no shopping. Launchers keep their small
+        // reserve: one spare load, so the blast is a tool, not the whole fight.
+        if weapon.class != GunClass::Launcher {
+            weapon.reserve = weapon.mag * 4;
+        }
     }
     weapons[0].reserve = 0;
     Catalog {
@@ -24,7 +27,7 @@ pub fn catalog(_: &Rules) -> Catalog {
         attachments: standard_attachments(),
         perks: vec![
             PerkDef { name: "LIGHTWEIGHT", blurb: "Move 12% faster", effect: PerkEffect::Speed(1.12) },
-            PerkDef { name: "PLATE CARRIER", blurb: "+30 health", effect: PerkEffect::Health(30.0) },
+            PerkDef { name: "PLATE CARRIER", blurb: "+30 health, but the plates weigh 3 kg", effect: PerkEffect::Health(30.0) },
             PerkDef { name: "FAST HANDS", blurb: "Reload 35% faster", effect: PerkEffect::Reload(0.65) },
             PerkDef { name: "DEADEYE", blurb: "30% tighter spread", effect: PerkEffect::Spread(0.7) },
             PerkDef { name: "SCAVENGER", blurb: "Kills refill a magazine of reserve ammo", effect: PerkEffect::Scavenger },
@@ -34,13 +37,13 @@ pub fn catalog(_: &Rules) -> Catalog {
             PerkDef { name: "STEADY HANDS", blurb: "40% tighter hip fire", effect: PerkEffect::Hipfire(0.6) },
         ],
         gear: vec![
-            GearDef { name: "FRAG GRENADE", blurb: "Thrown explosive on a short fuse", kind: GearKind::Frag { damage: 170.0, radius: 10.0 }, count: 2 },
-            GearDef { name: "STIM", blurb: "Instantly restores 70 health and puts out fire", kind: GearKind::Stim { heal: 70.0 }, count: 2 },
-            GearDef { name: "SMOKE", blurb: "A thick cloud that blocks sight for 12 seconds", kind: GearKind::Smoke { radius: 5.5, seconds: 12.0 }, count: 2 },
-            GearDef { name: "FLASHBANG", blurb: "Blinds and deafens anyone facing the blast", kind: GearKind::Flash { radius: 12.0, seconds: 3.5 }, count: 2 },
-            GearDef { name: "PROXIMITY MINE", blurb: "Arms after a second, blows when an enemy comes close", kind: GearKind::Mine { damage: 170.0, radius: 5.5 }, count: 2 },
-            GearDef { name: "THROWING KNIFE", blurb: "Silent, fast, lethal on a direct hit", kind: GearKind::Knife { damage: 160.0 }, count: 3 },
-            GearDef { name: "AMMO PACK", blurb: "Refills reserves for you and teammates nearby", kind: GearKind::Ammo { radius: 6.0 }, count: 1 },
+            GearDef { name: "FRAG GRENADE", blurb: "Thrown explosive on a short fuse", kind: GearKind::Frag { damage: 170.0, radius: 10.0 }, count: 2, weight: 0.4 },
+            GearDef { name: "STIM", blurb: "Instantly restores 70 health and puts out fire", kind: GearKind::Stim { heal: 70.0 }, count: 2, weight: 0.15 },
+            GearDef { name: "SMOKE", blurb: "A thick cloud that blocks sight for 12 seconds", kind: GearKind::Smoke { radius: 5.5, seconds: 12.0 }, count: 2, weight: 0.35 },
+            GearDef { name: "FLASHBANG", blurb: "Blinds and deafens anyone facing the blast", kind: GearKind::Flash { radius: 12.0, seconds: 3.5 }, count: 2, weight: 0.3 },
+            GearDef { name: "PROXIMITY MINE", blurb: "Arms after a second, blows when an enemy comes close", kind: GearKind::Mine { damage: 170.0, radius: 5.5 }, count: 2, weight: 0.6 },
+            GearDef { name: "THROWING KNIFE", blurb: "Silent, fast, lethal on a direct hit", kind: GearKind::Knife { damage: 160.0 }, count: 3, weight: 0.25 },
+            GearDef { name: "AMMO PACK", blurb: "Refills reserves for you and teammates nearby", kind: GearKind::Ammo { radius: 6.0 }, count: 1, weight: 1.5 },
         ],
         ..default()
     }

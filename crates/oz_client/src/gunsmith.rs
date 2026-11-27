@@ -10,10 +10,19 @@ use crate::{
     ui::{self, Act, ActEvent, Back, Focused, Order, Screen, UiDirty},
 };
 use bevy::prelude::*;
-use oz_core::arsenal::{Resolved, SLOT_COUNT, SLOTS, options, resolve};
+use oz_core::arsenal::{Resolved, SLOT_COUNT, SLOTS, carried_weight, options, resolve};
 use oz_sim::prelude::*;
 
-pub const BARS: [&str; 8] = ["DAMAGE", "RANGE", "ACCURACY", "CONTROL", "HANDLING", "FIRE RATE", "MOBILITY", "MAGAZINE"];
+pub const BARS: [&str; 8] = ["DAMAGE", "RANGE", "ACCURACY", "CONTROL", "HANDLING", "FIRE RATE", "WEIGHT", "MAGAZINE"];
+/// The one bar where longer is worse: weight slows you down.
+pub const WEIGHT_BAR: usize = 6;
+/// The heaviest gun fills the weight bar.
+const HEAVIEST: f32 = 16.0;
+
+/// Is going from `now` to `then` on bar `index` an improvement (drawn green)?
+pub fn better(index: usize, now: f32, then: f32) -> bool {
+    if index == WEIGHT_BAR { then <= now } else { then >= now }
+}
 
 #[derive(Component, Clone, Copy)]
 struct StatFill(usize);
@@ -51,7 +60,7 @@ pub fn bars(stats: &Resolved) -> [f32; 8] {
         1.0 - (stats.recoil / 2.2).min(1.0),
         (stats.handling - 0.6) / 0.8,
         (1.0 / stats.interval.max(0.01)) / 15.0,
-        (stats.mobility - 0.85) / 0.3,
+        stats.weight / HEAVIEST,
         (stats.mag as f32 / 150.0).sqrt(),
     ]
     .map(|v| v.clamp(0.02, 1.0))
@@ -160,6 +169,7 @@ pub fn build_gunsmith(
             ui::label(top, "GUNSMITH", 30.0, ui::TEXT);
             ui::sized_button(top, order, format!("<  {}  >", def.name), Act::Weapon(1), Some(Act::Weapon(-1)), Val::Auto);
             ui::label(top, def.class.name(), 15.0, ui::ACCENT);
+            ui::label(top, format!("{:.1} KG", carried_weight(def, &owned.equipped, &content.attachments)), 15.0, ui::DIM);
             if !free {
                 ui::label(top, format!("${}", state.stock.credits), 18.0, ui::GOOD);
             }
@@ -268,7 +278,8 @@ fn preview(
     if let Some(Act::Part(s, v)) = &focused.0 {
         trial.equipped[*s as usize] = *v;
         if let Some((_, name, text, _)) = options(def, &content.attachments, *s as usize).into_iter().find(|(i, ..)| *i == *v as usize) {
-            description = format!("{name}: {text}");
+            let kg = content.attachments.get(*s as usize).and_then(|parts| parts.get(*v as usize)).map_or(0.0, |part| part.mods.weight);
+            description = if kg != 0.0 { format!("{name}: {text}  ({kg:+.2} KG)") } else { format!("{name}: {text}") };
         }
     }
     let wanted = Stage::Gun { weapon, parts: trial.equipped };
@@ -286,7 +297,7 @@ fn preview(
         let (a, b) = (now[delta.0], then[delta.0]);
         node.left = Val::Percent(a.min(b) * 100.0);
         node.width = Val::Percent((b - a).abs() * 100.0);
-        color.0 = if b >= a { ui::GOOD } else { ui::WARN };
+        color.0 = if better(delta.0, a, b) { ui::GOOD } else { ui::WARN };
     }
     if let Ok(mut text) = blurb.single_mut()
         && text.0 != description
@@ -301,7 +312,7 @@ fn refresh(
     state: Res<MatchState>,
     players: Query<&Arsenal, With<LocalPlayer>>,
     mut dirty: ResMut<UiDirty>,
-    mut last: Local<Option<(u8, [u8; SLOT_COUNT], [u8; SLOT_COUNT], u32)>>,
+    mut last: Local<Option<(u8, [u8; SLOT_COUNT], [u16; SLOT_COUNT], u32)>>,
 ) {
     let Screen::Gunsmith { weapon, .. } = *screen else {
         *last = None;

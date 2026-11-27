@@ -10,7 +10,7 @@ use crate::{
 };
 use bevy::prelude::*;
 use oz_core::{
-    arsenal::{WeaponState, resolve},
+    arsenal::{WeaponState, carried_weight, load_speed, resolve},
     collide::StaticWorld,
     content::{Catalog, PerkEffect, UpgradeEffect},
     synth::Sfx,
@@ -396,6 +396,24 @@ pub fn perk(catalog: &Catalog, player: &Player) -> Option<PerkEffect> {
     catalog.perks.get(player.perk as usize).map(|perk| perk.effect)
 }
 
+/// Kilograms a player carries right now: the gun in hand, one gun slung (the heaviest
+/// other one owned, so a shop game's whole armoury never counts), the gear still left and
+/// the perk's armour. Runs wherever movement does - on the host for bots, in prediction
+/// for the local player - from replicated state, so both agree.
+pub fn carried(catalog: &Catalog, player: &Player, arsenal: &Arsenal) -> f32 {
+    let weight = |index: usize| {
+        catalog.weapons.get(index).zip(arsenal.weapons.get(index)).filter(|(_, state)| state.owned).map_or(0.0, |(def, state)| carried_weight(def, &state.equipped, &catalog.attachments))
+    };
+    let held = arsenal.current as usize;
+    let slung = (0..arsenal.weapons.len()).filter(|i| *i != held).map(weight).fold(0.0, f32::max);
+    weight(held) + slung + catalog.load(&[], player.perk, player.gear, player.gear_left)
+}
+
+/// Movement speed multiplier for what a player carries (see [`oz_core::arsenal::load_speed`]).
+pub fn load_factor(catalog: &Catalog, player: &Player, arsenal: &Arsenal) -> f32 {
+    load_speed(carried(catalog, player, arsenal))
+}
+
 /// Equips a loadout: exactly the two chosen weapons, full ammo, fresh gear.
 pub fn apply_loadout(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsenal, loadout: Loadout) {
     let valid = |index: u8| (index as usize) < catalog.weapons.len();
@@ -709,15 +727,17 @@ pub fn move_players(
             Some(PerkEffect::Speed(multiplier)) => multiplier,
             _ => 1.0,
         };
-        let weapon_speed = content.weapons.get(arsenal.current as usize).zip(arsenal.state()).map_or(1.0, |(def, state)| resolve(def, state, &content.attachments).mobility);
+        // Weight slows every gait; aiming a heavy gun slows you a little more on top.
+        let load = load_factor(&content, player, arsenal);
         let gait = if sprinting {
             SPRINT_SPEED
         } else if input.held(buttons::AIM) {
-            WALK_SPEED * 0.6
+            let held = content.weapons.get(arsenal.current as usize).zip(arsenal.state()).map_or(0.0, |(def, state)| resolve(def, state, &content.attachments).weight);
+            WALK_SPEED * 0.6 * (1.0 - (held - 4.0).max(0.0) * 0.02).max(0.82)
         } else {
             WALK_SPEED
         };
-        let speed = gait * perk_speed * weapon_speed * stance::speed(input.stance) * if leaning { 0.5 } else { 1.0 } * limb::speed_penalty(player.lost);
+        let speed = gait * perk_speed * load * stance::speed(input.stance) * if leaning { 0.5 } else { 1.0 } * limb::speed_penalty(player.lost);
         let step = Quat::from_rotation_y(input.yaw) * Vec3::new(wish.x, 0.0, -wish.y) * speed * dt;
         let height = stance::height(input.stance);
 

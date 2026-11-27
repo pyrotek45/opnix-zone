@@ -358,7 +358,8 @@ fn follow_player(
     view.limb_hit = (view.limb_hit - dt).max(0.0);
     view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).clamp(0.0, 2.5);
     view.sway = (view.sway + controls.look * 0.6).clamp_length_max(0.06) * (-dt * 12.0).exp();
-    let sprinting = input.held(buttons::SPRINT) && mover.speed > 6.5;
+    // The slowest, heaviest kit still sprints past 6 m/s.
+    let sprinting = input.held(buttons::SPRINT) && mover.speed > 6.0;
     view.sprint += (sprinting as u8 as f32 - view.sprint) * (1.0 - (-dt * 8.0).exp());
     if let Ok(mut light) = lights.single_mut() {
         light.intensity = if view.flash > 0.0 { 90_000.0 } else { 0.0 };

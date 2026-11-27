@@ -154,6 +154,8 @@ pub enum StockShape {
     Sloped,
     /// Adjustable stock on a buffer tube.
     Tube,
+    /// A solid chassis stock: flat comb, cheek piece and a tall, square butt.
+    Precision,
 }
 
 /// Where the action sits relative to the trigger.
@@ -193,6 +195,8 @@ pub enum BarrelShape {
     Brake,
     /// Revolver barrel with a full underlug and top rib.
     Lug,
+    /// Two barrels side by side under a flat rib (double-barrel shotguns).
+    Twin,
     /// Vented rib along the top and a bead at the muzzle.
     Rib,
 }
@@ -300,6 +304,8 @@ pub struct WeaponDef {
     pub model: BlockModel,
     /// Muzzle distance for frameless weapons.
     pub length: f32,
+    /// Bare weight in kilograms; attachments add to it (see [`carried_weight`]).
+    pub weight: f32,
 }
 
 impl WeaponDef {
@@ -328,17 +334,17 @@ pub struct StatMods {
     pub fov: f32,
     /// Aim-down-sights and swap speed.
     pub handling: f32,
-    /// Movement speed.
-    pub mobility: f32,
+    /// Kilograms the part adds to the gun (negative when it replaces something heavier).
+    pub weight: f32,
     /// Hides the shooter from enemy radar and muffles the report.
     pub quiet: bool,
-    /// 1 = magnified sight overlay, 2 = full sniper scope.
+    /// 1 = magnified sight overlay, 2 = full sniper scope, 3 = thermal scope (enemies glow).
     pub scope: u8,
 }
 
 impl StatMods {
     pub const NONE: StatMods = StatMods {
-        damage: 1.0, capacity: 1.0, reload: 1.0, recoil: 1.0, spread: 1.0, hipfire: 1.0, range: 1.0, fov: 0.0, handling: 1.0, mobility: 1.0,
+        damage: 1.0, capacity: 1.0, reload: 1.0, recoil: 1.0, spread: 1.0, hipfire: 1.0, range: 1.0, fov: 0.0, handling: 1.0, weight: 0.0,
         quiet: false, scope: 0,
     };
 }
@@ -491,7 +497,7 @@ pub struct WeaponState {
     /// Fitted variant per slot.
     pub equipped: [u8; SLOT_COUNT],
     /// Bitmask of purchased variants per slot (the standard part is always owned).
-    pub purchased: [u8; SLOT_COUNT],
+    pub purchased: [u16; SLOT_COUNT],
     pub mods: [Option<(ModKind, u8)>; MOD_SLOTS],
 }
 
@@ -506,7 +512,7 @@ impl WeaponState {
     }
 
     pub fn has_part(&self, slot: usize, variant: usize) -> bool {
-        variant == 0 || self.purchased.get(slot).is_some_and(|mask| mask & (1 << variant.min(7)) != 0)
+        variant == 0 || self.purchased.get(slot).is_some_and(|mask| mask & (1 << variant.min(15)) != 0)
     }
 
     pub fn mod_level(&self, kind: ModKind) -> u8 {
@@ -557,7 +563,8 @@ pub struct Resolved {
     /// Height of the sight line above the grip, for lining up aim-down-sights.
     pub sight: f32,
     pub handling: f32,
-    pub mobility: f32,
+    /// Kilograms, with the fitted parts.
+    pub weight: f32,
     pub quiet: bool,
     pub scope: u8,
     pub pierce: bool,
@@ -588,7 +595,7 @@ pub fn resolve(def: &WeaponDef, state: &WeaponState, table: &AttachmentTable) ->
             m.hipfire *= part.mods.hipfire;
             m.range *= part.mods.range;
             m.handling *= part.mods.handling;
-            m.mobility *= part.mods.mobility;
+            m.weight += part.mods.weight;
             m.quiet |= part.mods.quiet;
             m.scope = m.scope.max(part.mods.scope);
             if part.mods.fov > 0.0 {
@@ -614,7 +621,7 @@ pub fn resolve(def: &WeaponDef, state: &WeaponState, table: &AttachmentTable) ->
         length: muzzle_distance(def, &state.equipped),
         sight: sight_height(def, &state.equipped),
         handling: m.handling,
-        mobility: m.mobility,
+        weight: (def.weight + m.weight).max(0.1),
         quiet: m.quiet,
         scope: m.scope,
         pierce: ammo.pierce,
@@ -628,50 +635,89 @@ pub fn resolve(def: &WeaponDef, state: &WeaponState, table: &AttachmentTable) ->
     }
 }
 
-/// The shared attachment catalogue. Works for every framed gun.
+/// Kilograms a soldier carries at the normal pace: a rifle, a sidearm and a couple of grenades.
+pub const LOAD_REFERENCE: f32 = 5.5;
+/// Pace lost (or gained) per kilogram away from [`LOAD_REFERENCE`].
+pub const LOAD_PER_KG: f32 = 0.025;
+/// The pace limits: a pistol and knives at the top, a rotary cannon at the bottom.
+pub const LOAD_FASTEST: f32 = 1.05;
+pub const LOAD_SLOWEST: f32 = 0.78;
+
+/// Movement speed multiplier for carrying `kg` (walk, sprint and aim alike).
+pub fn load_speed(kg: f32) -> f32 {
+    (1.0 - (kg - LOAD_REFERENCE) * LOAD_PER_KG).clamp(LOAD_SLOWEST, LOAD_FASTEST)
+}
+
+/// Kilograms of one gun with these parts fitted.
+pub fn carried_weight(def: &WeaponDef, equipped: &[u8; SLOT_COUNT], table: &AttachmentTable) -> f32 {
+    let mut kg = def.weight;
+    if def.frame.is_some() {
+        for (slot, variants) in table.iter().enumerate().take(slot::AMMO) {
+            kg += variants.get(equipped[slot] as usize).map_or(0.0, |part| part.mods.weight);
+        }
+    }
+    kg.max(0.1)
+}
+
+/// The shared attachment catalogue. Works for every framed gun. New parts go at the
+/// end of their slot so saved classes keep their picks.
 pub fn standard_attachments() -> AttachmentTable {
     use GunClass::*;
     const B: StatMods = StatMods::NONE;
     let part = |name, blurb, cost, mods, classes| Attachment { name, blurb, cost, mods, classes };
+    // Long glass belongs on rifles (marksman rifles included) and sniper rifles.
+    let long = only(&[Rifle, Sniper]);
     vec![
         vec![
             part("IRON SIGHTS", "Clean and quick", 0, B, GUNS),
-            part("REFLEX", "Red dot. Faster on target", 85, StatMods { fov: 60.0, handling: 1.06, spread: 0.94, ..B }, except(&[Launcher])),
-            part("HOLOGRAPHIC", "Wide window, slight zoom", 110, StatMods { fov: 54.0, spread: 0.9, ..B }, GUNS),
-            part("ACOG 3X", "Magnified mid-range sight", 160, StatMods { fov: 34.0, spread: 0.82, handling: 0.9, scope: 1, ..B }, except(&[Pistol, Launcher])),
-            part("SNIPER SCOPE 8X", "Long glass for long shots", 230, StatMods { fov: 13.0, spread: 0.6, handling: 0.78, scope: 2, ..B }, only(&[Rifle, Sniper, Lmg])),
+            part("REFLEX", "Red dot. Faster on target", 85, StatMods { fov: 60.0, handling: 1.06, spread: 0.94, weight: 0.15, ..B }, except(&[Launcher])),
+            part("HOLOGRAPHIC", "Wide window, slight zoom", 110, StatMods { fov: 54.0, spread: 0.9, weight: 0.3, ..B }, GUNS),
+            part("ACOG 3X", "Magnified mid-range sight", 160, StatMods { fov: 34.0, spread: 0.82, handling: 0.9, scope: 1, weight: 0.45, ..B }, except(&[Pistol, Launcher])),
+            part("SNIPER SCOPE 8X", "Long glass for long shots", 230, StatMods { fov: 13.0, spread: 0.6, handling: 0.78, scope: 2, weight: 0.8, ..B }, long),
+            part("MARKSMAN 6X", "Mid-long glass, quicker to settle than the 8x", 190, StatMods { fov: 19.0, spread: 0.68, handling: 0.84, scope: 2, weight: 0.6, ..B }, only(&[Rifle, Sniper, Lmg])),
+            part("VARIABLE 12X", "Huge zoom for the longest lanes; slow and heavy", 280, StatMods { fov: 8.0, spread: 0.52, handling: 0.7, scope: 2, weight: 1.15, ..B }, long),
+            part("THERMAL 4X", "Enemies glow hot through smoke and shadow", 260, StatMods { fov: 28.0, spread: 0.84, handling: 0.84, scope: 3, weight: 0.95, ..B }, only(&[Rifle, Sniper, Lmg])),
+            part("HYBRID 4X", "Magnified glass with a canted red dot for close work", 210, StatMods { fov: 30.0, spread: 0.84, hipfire: 0.9, handling: 0.88, scope: 1, weight: 0.65, ..B }, except(&[Pistol, Launcher])),
         ],
         vec![
             part("NONE", "Bare muzzle", 0, B, GUNS),
-            part("COMPENSATOR", "Tames vertical kick", 90, StatMods { recoil: 0.74, ..B }, except(&[Launcher])),
-            part("SUPPRESSOR", "Off the radar, quieter, less range", 140, StatMods { range: 0.88, quiet: true, ..B }, except(&[Launcher])),
-            part("MUZZLE BRAKE", "Less recoil, tighter groups", 110, StatMods { recoil: 0.84, spread: 0.92, ..B }, except(&[Launcher])),
-            part("FLASH HIDER", "Steadier follow-up shots", 70, StatMods { spread: 0.9, recoil: 0.94, ..B }, except(&[Launcher])),
+            part("COMPENSATOR", "Tames vertical kick", 90, StatMods { recoil: 0.74, weight: 0.12, ..B }, except(&[Launcher])),
+            part("SUPPRESSOR", "Off the radar, quieter, less range", 140, StatMods { range: 0.88, quiet: true, weight: 0.35, ..B }, except(&[Launcher])),
+            part("MUZZLE BRAKE", "Less recoil, tighter groups", 110, StatMods { recoil: 0.84, spread: 0.92, weight: 0.18, ..B }, except(&[Launcher])),
+            part("FLASH HIDER", "Steadier follow-up shots", 70, StatMods { spread: 0.9, recoil: 0.94, weight: 0.08, ..B }, except(&[Launcher])),
+            part("HEAVY SUPPRESSOR", "Silent with full range, but long and heavy", 200, StatMods { quiet: true, recoil: 0.88, handling: 0.88, weight: 0.7, ..B }, only(&[Rifle, Sniper, Lmg])),
+            part("CHOKE", "Squeezes the pellet spread for reach", 80, StatMods { spread: 0.7, range: 1.22, weight: 0.1, ..B }, only(&[Shotgun])),
         ],
         vec![
             part("STANDARD BARREL", "Factory length", 0, B, GUNS),
-            part("LONG BARREL", "Range and punch, slower to aim", 160, StatMods { damage: 1.1, range: 1.35, spread: 0.88, handling: 0.88, mobility: 0.96, ..B }, GUNS),
-            part("SHORT BARREL", "Snappy handling, less range", 90, StatMods { range: 0.78, damage: 0.95, handling: 1.15, mobility: 1.04, ..B }, GUNS),
-            part("HEAVY BARREL", "Stable and accurate, heavy", 150, StatMods { recoil: 0.8, range: 1.15, spread: 0.9, handling: 0.86, mobility: 0.95, ..B }, except(&[Pistol])),
+            part("LONG BARREL", "Range and punch, slower to aim", 160, StatMods { damage: 1.1, range: 1.35, spread: 0.88, handling: 0.88, weight: 0.5, ..B }, GUNS),
+            part("SHORT BARREL", "Snappy handling, less range", 90, StatMods { range: 0.78, damage: 0.95, handling: 1.15, weight: -0.3, ..B }, GUNS),
+            part("HEAVY BARREL", "Stable and accurate, heavy", 150, StatMods { recoil: 0.8, range: 1.15, spread: 0.9, handling: 0.86, weight: 0.9, ..B }, except(&[Pistol])),
+            part("MATCH BARREL", "Precision bore: tight groups, a little more kick", 190, StatMods { spread: 0.75, range: 1.2, recoil: 1.05, handling: 0.95, weight: 0.3, ..B }, only(&[Pistol, Rifle, Sniper])),
+            part("SAWN-OFF", "Brutal up close, wild spread", 60, StatMods { spread: 1.3, range: 0.7, handling: 1.25, weight: -0.6, ..B }, only(&[Shotgun])),
         ],
         vec![
             part("NONE", "Nothing under the barrel", 0, B, GUNS),
-            part("VERTICAL GRIP", "Strong recoil control", 80, StatMods { recoil: 0.76, handling: 0.96, ..B }, except(&[Pistol, Launcher])),
-            part("ANGLED GRIP", "Faster aim, some control", 95, StatMods { recoil: 0.9, handling: 1.12, ..B }, except(&[Pistol, Launcher])),
-            part("BIPOD", "Steady from cover and prone", 120, StatMods { recoil: 0.82, spread: 0.82, handling: 0.9, ..B }, only(&[Rifle, Sniper, Lmg])),
-            part("TACTICAL LASER", "Tight hip fire", 100, StatMods { hipfire: 0.65, ..B }, except(&[Launcher])),
+            part("VERTICAL GRIP", "Strong recoil control", 80, StatMods { recoil: 0.76, handling: 0.96, weight: 0.15, ..B }, except(&[Pistol, Launcher])),
+            part("ANGLED GRIP", "Faster aim, some control", 95, StatMods { recoil: 0.9, handling: 1.12, weight: 0.12, ..B }, except(&[Pistol, Launcher])),
+            part("BIPOD", "Steady from cover and prone", 120, StatMods { recoil: 0.82, spread: 0.82, handling: 0.9, weight: 0.45, ..B }, only(&[Rifle, Sniper, Lmg])),
+            part("TACTICAL LASER", "Tight hip fire", 100, StatMods { hipfire: 0.65, weight: 0.1, ..B }, except(&[Launcher])),
+            part("GRIP POD", "A grip that unfolds into short legs", 140, StatMods { recoil: 0.8, spread: 0.9, handling: 0.93, weight: 0.35, ..B }, only(&[Rifle, Sniper, Lmg])),
+            part("HAND STOP", "A light stop: a little control, quicker hands", 60, StatMods { recoil: 0.94, handling: 1.06, weight: 0.05, ..B }, except(&[Pistol, Launcher])),
         ],
         vec![
             part("STANDARD MAG", "Factory capacity", 0, B, GUNS),
-            part("EXTENDED MAG", "+50% rounds, slower reload", 95, StatMods { capacity: 1.5, reload: 1.15, mobility: 0.98, ..B }, GUNS),
-            part("DRUM MAG", "Double capacity, heavy", 180, StatMods { capacity: 2.0, reload: 1.35, recoil: 1.06, handling: 0.88, mobility: 0.95, ..B }, only(&[Pistol, Smg, Rifle, Lmg])),
-            part("FAST MAG", "Quick reloads, fewer rounds", 130, StatMods { capacity: 0.9, reload: 0.62, ..B }, GUNS),
+            part("EXTENDED MAG", "+50% rounds, slower reload", 95, StatMods { capacity: 1.5, reload: 1.15, weight: 0.3, ..B }, GUNS),
+            part("DRUM MAG", "Double capacity, heavy", 180, StatMods { capacity: 2.0, reload: 1.35, recoil: 1.06, handling: 0.88, weight: 1.0, ..B }, only(&[Pistol, Smg, Rifle, Lmg])),
+            part("FAST MAG", "Quick reloads, fewer rounds", 130, StatMods { capacity: 0.9, reload: 0.62, weight: 0.1, ..B }, GUNS),
+            part("QUAD STACK", "+75% rounds in a fat box, slow to seat", 150, StatMods { capacity: 1.75, reload: 1.25, handling: 0.95, weight: 0.6, ..B }, only(&[Smg, Rifle])),
         ],
         vec![
             part("STANDARD STOCK", "Balanced", 0, B, GUNS),
-            part("NO STOCK", "Light and fast, kicks hard", 60, StatMods { recoil: 1.25, handling: 1.2, mobility: 1.06, ..B }, except(&[Pistol, Launcher])),
-            part("PADDED STOCK", "Soaks up recoil", 80, StatMods { recoil: 0.85, ..B }, except(&[Pistol])),
-            part("TACTICAL STOCK", "Faster aim, light frame", 130, StatMods { handling: 1.1, recoil: 0.95, mobility: 1.02, ..B }, except(&[Pistol])),
+            part("NO STOCK", "Light and fast, kicks hard", 60, StatMods { recoil: 1.25, handling: 1.2, weight: -0.6, ..B }, except(&[Pistol, Launcher])),
+            part("PADDED STOCK", "Soaks up recoil", 80, StatMods { recoil: 0.85, weight: 0.2, ..B }, except(&[Pistol])),
+            part("TACTICAL STOCK", "Faster aim, light frame", 130, StatMods { handling: 1.1, recoil: 0.95, weight: -0.2, ..B }, except(&[Pistol])),
+            part("MARKSMAN STOCK", "Cheek riser and rear monopod: rock steady, slow", 170, StatMods { recoil: 0.78, spread: 0.86, handling: 0.86, weight: 0.7, ..B }, long),
         ],
     ]
 }
@@ -681,7 +727,7 @@ const BACK: f32 = 0.08;
 const BUTT: f32 = 0.26;
 
 fn barrel_length(frame: &GunFrame, equipped: &[u8; SLOT_COUNT]) -> f32 {
-    frame.barrel * [1.0, 1.6, 0.6, 1.1][(equipped[slot::BARREL] as usize).min(3)]
+    frame.barrel * [1.0, 1.6, 0.6, 1.1, 1.25, 0.45][(equipped[slot::BARREL] as usize).min(5)]
 }
 
 /// Height of the surface sights and optics mount on: the receiver top, a carry handle, or the rail over a top magazine.
@@ -692,7 +738,7 @@ fn deck_height(frame: &GunFrame) -> f32 {
 /// Grip to muzzle, including any muzzle device.
 pub fn muzzle_distance(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> f32 {
     let Some(frame) = def.frame else { return def.length };
-    let device = [0.0, 0.08, 0.26, 0.07, 0.1][(equipped[slot::MUZZLE] as usize).min(4)];
+    let device = [0.0, 0.08, 0.26, 0.07, 0.1, 0.36, 0.06][(equipped[slot::MUZZLE] as usize).min(6)];
     frame.receiver - BACK + barrel_length(&frame, equipped) + device
 }
 
@@ -705,7 +751,8 @@ pub fn sight_height(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> f32 {
         0 => deck + 0.055,
         1 => base + 0.045,
         2 => base + 0.037,
-        3 => base + 0.05,
+        3 | 8 => base + 0.05,
+        7 => base + 0.055,
         _ => base + 0.06,
     }
 }
@@ -858,6 +905,12 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             .cube(Paint::Dark, [0.0, bore_y, tip + 0.045], [bore * 2.4, bore * 1.7, 0.09])
             .cube(Paint::Metal, [0.0, bore_y, tip + 0.06], [bore * 2.6, bore * 0.5, 0.025])
             .cube(Paint::Metal, [0.0, bore_y, tip + 0.025], [bore * 2.6, bore * 0.5, 0.025]),
+        BarrelShape::Twin => {
+            for side in [-1.0, 1.0] {
+                m = m.cylinder(Paint::Metal, [side * bore * 0.52, bore_y, barrel_mid], [bore, barrel, bore]).rotated([90.0, 0.0, 0.0]);
+            }
+            m
+        }
         _ => m.cylinder(Paint::Metal, [0.0, bore_y, barrel_mid], [bore, barrel, bore]).rotated([90.0, 0.0, 0.0]),
     };
     m = match f.barrel_shape {
@@ -886,12 +939,34 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
         BarrelShape::Rib => m
             .cube(Paint::Dark, [0.0, bore_y + bore * 0.62, barrel_mid], [bore * 0.4, bore * 0.25, barrel])
             .cube(Paint::Gold, [0.0, bore_y + bore * 0.85, tip + 0.012], [0.012, 0.012, 0.012]),
+        // A flat rib over the pair, a web between them, a bead at the muzzle, and a splinter
+        // forend under the breech whose tapered nose is fused on so the two meet without a seam.
+        BarrelShape::Twin => m
+            .cube(Paint::Dark, [0.0, bore_y + bore * 0.5, barrel_mid], [bore * 0.5, bore * 0.2, barrel])
+            .cube(Paint::Dark, [0.0, bore_y - bore * 0.42, barrel_mid], [bore * 0.4, bore * 0.2, barrel * 0.9])
+            .cube(Paint::Gold, [0.0, bore_y + bore * 0.66, tip + 0.012], [0.012, 0.012, 0.012])
+            .cube(f.furniture, [0.0, bore_y - bore * 0.95, front - barrel * 0.2], [bore * 2.0, bore * 0.9, barrel * 0.36])
+            .plate(f.furniture, 0.0, [bore_y - bore * 1.3, front - barrel * 0.38], [bore_y - bore * 0.65, front - barrel * 0.46], bore * 1.6, 0.02)
+            .hull(2),
         _ => m,
     };
-    if v(slot::BARREL) == 3 && f.barrel_shape != BarrelShape::Rotary {
+    let single = !matches!(f.barrel_shape, BarrelShape::Rotary | BarrelShape::Twin);
+    if v(slot::BARREL) == 3 && single {
         for i in 0..3 {
             m = m.cylinder(Paint::Dark, [0.0, bore_y, front - barrel * (0.25 + 0.25 * i as f32)], [bore * 1.3, 0.02, bore * 1.3]).rotated([90.0, 0.0, 0.0]);
         }
+    }
+    // A match barrel: a gold thread ring at the crown and a dark band at the chamber.
+    if v(slot::BARREL) == 4 && single {
+        m = m
+            .cylinder(Paint::Gold, [0.0, bore_y, tip + 0.012], [bore * 1.15, 0.024, bore * 1.15])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Dark, [0.0, bore_y, front - 0.03], [bore * 1.25, 0.06, bore * 1.25])
+            .rotated([90.0, 0.0, 0.0]);
+    }
+    // Sawn off: a rough, flat cut at the muzzle.
+    if v(slot::BARREL) == 5 {
+        m = m.cube(Paint::Rust, [0.0, bore_y, tip + 0.006], [bore * if f.barrel_shape == BarrelShape::Twin { 2.2 } else { 1.15 }, bore * 1.15, 0.012]);
     }
 
     // Handguard, following the receiver's lines.
@@ -935,7 +1010,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             Foregrip::None => m,
         };
     }
-    if f.bipod && v(slot::UNDER) != 3 {
+    if f.bipod && !matches!(v(slot::UNDER), 3 | 5) {
         let zb = front - guard * 0.92;
         m = m
             .cube(Paint::Dark, [0.0, yu + 0.005, zb], [0.05, 0.025, 0.04])
@@ -1028,7 +1103,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             .rotated([90.0, 0.0, 0.0])
             .cylinder(Paint::Blue, [0.0, yb + 0.05, z0 - 0.101], [0.056, 0.004, 0.056])
             .rotated([90.0, 0.0, 0.0]),
-        _ => m
+        4 => m
             .cube(Paint::Metal, [0.0, yb + 0.02, z0 + 0.06], [0.03, 0.04, 0.02])
             .cube(Paint::Metal, [0.0, yb + 0.02, z0 - 0.1], [0.03, 0.04, 0.02])
             .cylinder(Paint::Dark, [0.0, yb + 0.06, z0 - 0.03], [0.068, 0.34, 0.068])
@@ -1042,6 +1117,66 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             .rotated([0.0, 0.0, 90.0])
             .cylinder(Paint::Blue, [0.0, yb + 0.06, z0 - 0.247], [0.08, 0.004, 0.08])
             .rotated([90.0, 0.0, 0.0]),
+        // Marksman 6x: a medium tube in two rings with a modest bell.
+        5 => m
+            .cube(Paint::Metal, [0.0, yb + 0.018, z0 + 0.04], [0.028, 0.036, 0.018])
+            .cube(Paint::Metal, [0.0, yb + 0.018, z0 - 0.08], [0.028, 0.036, 0.018])
+            .cylinder(Paint::Dark, [0.0, yb + 0.056, z0 - 0.02], [0.058, 0.26, 0.058])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Dark, [0.0, yb + 0.056, z0 - 0.16], [0.08, 0.05, 0.08])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Dark, [0.0, yb + 0.056, z0 + 0.12], [0.068, 0.04, 0.068])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Metal, [0.0, yb + 0.092, z0 - 0.02], [0.026, 0.03, 0.026])
+            .cylinder(Paint::Blue, [0.0, yb + 0.056, z0 - 0.187], [0.07, 0.004, 0.07])
+            .rotated([90.0, 0.0, 0.0]),
+        // Variable 12x: a long tube, a big objective with a sunshade, tall turrets and a gold zoom ring.
+        6 => m
+            .cube(Paint::Metal, [0.0, yb + 0.022, z0 + 0.07], [0.032, 0.044, 0.022])
+            .cube(Paint::Metal, [0.0, yb + 0.022, z0 - 0.12], [0.032, 0.044, 0.022])
+            .cylinder(Paint::Dark, [0.0, yb + 0.066, z0 - 0.04], [0.064, 0.42, 0.064])
+            .rotated([90.0, 0.0, 0.0])
+            .cone(Paint::Dark, [0.0, yb + 0.066, z0 - 0.27], [0.11, 0.06, 0.11])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Dark, [0.0, yb + 0.066, z0 - 0.33], [0.112, 0.08, 0.112])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Dark, [0.0, yb + 0.066, z0 + 0.2], [0.082, 0.07, 0.082])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Gold, [0.0, yb + 0.066, z0 + 0.155], [0.075, 0.016, 0.075])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Metal, [0.0, yb + 0.112, z0 - 0.03], [0.034, 0.05, 0.034])
+            .cylinder(Paint::Metal, [0.046, yb + 0.066, z0 - 0.03], [0.034, 0.04, 0.034])
+            .rotated([0.0, 0.0, 90.0])
+            .cylinder(Paint::Metal, [-0.044, yb + 0.066, z0 - 0.03], [0.044, 0.02, 0.044])
+            .rotated([0.0, 0.0, 90.0])
+            .cylinder(Paint::Blue, [0.0, yb + 0.066, z0 - 0.372], [0.1, 0.004, 0.1])
+            .rotated([90.0, 0.0, 0.0]),
+        // Thermal: a boxy housing with a big germanium lens, a battery pod and a glowing rear screen.
+        7 => m
+            .cube(Paint::Dark, [0.0, yb + 0.01, z0], [0.04, 0.02, 0.1])
+            .cube(Paint::Steel, [0.0, yb + 0.058, z0 - 0.01], [0.072, 0.078, 0.2])
+            .cylinder(Paint::Dark, [0.0, yb + 0.058, z0 - 0.125], [0.09, 0.05, 0.09])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Violet, [0.0, yb + 0.058, z0 - 0.151], [0.07, 0.004, 0.07])
+            .rotated([90.0, 0.0, 0.0])
+            .cube(Paint::Dark, [0.044, yb + 0.07, z0 + 0.02], [0.018, 0.05, 0.1])
+            .cube(Paint::Dark, [0.0, yb + 0.058, z0 + 0.1], [0.06, 0.06, 0.02])
+            .cube(Paint::Aether, [0.0, yb + 0.058, z0 + 0.111], [0.044, 0.036, 0.003]),
+        // Hybrid: a short magnified tube with a red dot canted forty-five degrees to the right.
+        8 => m
+            .cube(Paint::Dark, [0.0, yb + 0.008, z0], [0.04, 0.016, 0.1])
+            .cylinder(Paint::Dark, [0.0, yb + 0.05, z0], [0.058, 0.13, 0.058])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Steel, [0.0, yb + 0.05, z0 - 0.072], [0.07, 0.024, 0.07])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Blue, [0.0, yb + 0.05, z0 - 0.085], [0.054, 0.004, 0.054])
+            .rotated([90.0, 0.0, 0.0])
+            .cube(Paint::Dark, [0.045, yb + 0.07, z0 + 0.02], [0.04, 0.014, 0.05])
+            .rotated([0.0, 0.0, -45.0])
+            .cube(Paint::Dark, [0.06, yb + 0.087, z0 + 0.012], [0.034, 0.03, 0.008])
+            .rotated([0.0, 0.0, -45.0])
+            .cube(Paint::Red, [0.059, yb + 0.087, z0 + 0.008], [0.005, 0.005, 0.003]),
+        _ => m,
     };
 
     // Muzzle device.
@@ -1056,6 +1191,18 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             .rotated([90.0, 0.0, 0.0]),
         3 => m.cube(Paint::Metal, [0.0, bore_y, tip - 0.035], [bore * 2.6, bore * 1.4, 0.07]).cube(Paint::Dark, [0.0, bore_y, tip - 0.035], [bore * 2.7, bore * 0.4, 0.02]),
         4 => m.cone(Paint::Dark, [0.0, bore_y, tip - 0.05], [bore * 1.9, 0.1, bore * 1.9]).rotated([90.0, 0.0, 0.0]),
+        // A long, fat can with a vented collar.
+        5 => m
+            .cylinder(Paint::Dark, [0.0, bore_y, tip - 0.18], [bore * 2.6, 0.36, bore * 2.6])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Steel, [0.0, bore_y, tip - 0.03], [bore * 2.7, 0.04, bore * 2.7])
+            .rotated([90.0, 0.0, 0.0])
+            .cube(Paint::Metal, [0.0, bore_y, tip - 0.33], [bore * 2.75, bore * 0.5, 0.05]),
+        6 => m
+            .cylinder(Paint::Steel, [0.0, bore_y, tip - 0.03], [bore * 1.3, 0.06, bore * 1.3])
+            .rotated([90.0, 0.0, 0.0])
+            .cylinder(Paint::Gold, [0.0, bore_y, tip - 0.055], [bore * 1.4, 0.012, bore * 1.4])
+            .rotated([90.0, 0.0, 0.0]),
         _ => m,
     };
 
@@ -1068,6 +1215,13 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             .cube(Paint::Metal, [0.025, yu - 0.016, zu - 0.06], [0.014, 0.014, 0.2])
             .cube(Paint::Metal, [-0.025, yu - 0.016, zu - 0.06], [0.014, 0.014, 0.2]),
         4 => m.cube(Paint::Dark, [0.0, yu - 0.025, zu], [0.04, 0.045, 0.1]).cube(Paint::Red, [0.0, yu - 0.025, zu - 0.051], [0.02, 0.02, 0.004]),
+        // A fat grip with its two legs folded along it.
+        5 => m
+            .cube(Paint::Dark, [0.0, yu - 0.075, zu], [0.05, 0.15, 0.055])
+            .cube(Paint::Metal, [0.031, yu - 0.08, zu - 0.01], [0.01, 0.15, 0.014])
+            .cube(Paint::Metal, [-0.031, yu - 0.08, zu - 0.01], [0.01, 0.15, 0.014])
+            .cube(Paint::Rust, [0.0, yu - 0.158, zu], [0.08, 0.014, 0.06]),
+        6 => m.plate(Paint::Dark, 0.0, [yu, zu + 0.02], [yu - 0.03, zu - 0.005], 0.028, 0.02),
         _ => m,
     };
 
@@ -1084,8 +1238,11 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
         * match v(slot::MAGAZINE) {
             1 => 1.5,
             3 => 0.9,
+            4 => 1.3,
             _ => 1.0,
         };
+    // A quad stack is a wider box.
+    let fat = if v(slot::MAGAZINE) == 4 { 1.45 } else { 1.0 };
     let plate = if v(slot::MAGAZINE) == 3 { Paint::Gold } else { Paint::Dark };
     let shape = if v(slot::MAGAZINE) == 2 && matches!(f.mag, MagShape::Box | MagShape::Curved) { MagShape::Drum } else { f.mag };
     m = match shape {
@@ -1094,7 +1251,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             let (dy, dz) = (-(14f32.to_radians().cos()), 14f32.to_radians().sin());
             let (ty, tz) = (gy + 0.092, -0.003);
             let len = 0.19 * size + 0.008;
-            m.cube(Paint::Metal, [0.0, ty + dy * len * 0.5, tz + dz * len * 0.5], [w * 0.55, len, 0.07])
+            m.cube(Paint::Metal, [0.0, ty + dy * len * 0.5, tz + dz * len * 0.5], [w * 0.55 * fat, len, 0.07])
                 .rotated([-14.0, 0.0, 0.0])
                 .anim(Anim::Mag)
                 .cube(plate, [0.0, ty + dy * (len + 0.006), tz + dz * (len + 0.006)], [w * 0.8, 0.016, 0.1])
@@ -1103,12 +1260,12 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
         }
         MagShape::Box => {
             let len = 0.15 * size;
-            m.cube(Paint::Metal, [0.0, mag_top - len * 0.5 + 0.01, zm], [w * 0.55, len, 0.085])
+            m.cube(Paint::Metal, [0.0, mag_top - len * 0.5 + 0.01, zm], [w * 0.55 * fat, len, 0.085])
                 .rotated([3.0, 0.0, 0.0])
                 .anim(Anim::Mag)
-                .cube(Paint::Dark, [w * 0.28, mag_top - len * 0.5 + 0.01, zm], [0.004, len * 0.7, 0.05])
+                .cube(Paint::Dark, [w * 0.28 * fat, mag_top - len * 0.5 + 0.01, zm], [0.004, len * 0.7, 0.05])
                 .anim(Anim::Mag)
-                .cube(plate, [0.0, mag_top - len + 0.005, zm - len * 0.05], [w * 0.62, 0.018, 0.098])
+                .cube(plate, [0.0, mag_top - len + 0.005, zm - len * 0.05], [w * 0.62 * fat, 0.018, 0.098])
                 .rotated([3.0, 0.0, 0.0])
                 .anim(Anim::Mag)
         }
@@ -1119,11 +1276,11 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             for i in 0..3 {
                 let a = (8.0 + 11.0 * i as f32).to_radians();
                 let (dy, dz) = (-a.cos(), -a.sin());
-                m = m.cube(Paint::Metal, [0.0, y + dy * seg * 0.5, z + dz * seg * 0.5], [w * 0.55, seg + 0.008, 0.085]).rotated([a.to_degrees(), 0.0, 0.0]).anim(Anim::Mag);
+                m = m.cube(Paint::Metal, [0.0, y + dy * seg * 0.5, z + dz * seg * 0.5], [w * 0.55 * fat, seg + 0.008, 0.085]).rotated([a.to_degrees(), 0.0, 0.0]).anim(Anim::Mag);
                 y += dy * seg;
                 z += dz * seg;
             }
-            m.cube(plate, [0.0, y, z], [w * 0.6, 0.018, 0.095]).rotated([30.0, 0.0, 0.0]).anim(Anim::Mag)
+            m.cube(plate, [0.0, y, z], [w * 0.6 * fat, 0.018, 0.095]).rotated([30.0, 0.0, 0.0]).anim(Anim::Mag)
         }
         MagShape::Drum => {
             let (yd, zd) = if slide { (gy - 0.1, 0.04) } else { (mag_top - 0.12, zm) };
@@ -1187,7 +1344,7 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             }
             m.cylinder(Paint::Gold, [0.0, yc, zc + len * 0.5 + 0.006], [d * 0.8, 0.012, d * 0.8]).rotated([90.0, 0.0, 0.0]).anim(Anim::Mag)
         }
-        MagShape::Internal => m.cube(Paint::Dark, [0.0, mag_top - 0.012, zm], [w * 0.7, 0.024, r * 0.35]).anim(Anim::Mag),
+        MagShape::Internal => m.cube(Paint::Dark, [0.0, mag_top - 0.012, zm], [w * 0.7, 0.024 * size, r * 0.35 * size.min(1.4)]).anim(Anim::Mag),
     };
 
     // Stock (a bullpup's butt is its receiver).
@@ -1198,11 +1355,18 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
         if v(slot::STOCK) == 3 {
             m = m.plate(Paint::Dark, 0.0, [top + 0.02, BACK + 0.06], [top + 0.035, BACK + BUTT * 0.75], w * 0.6, 0.02);
         }
+        if v(slot::STOCK) == 4 {
+            m = marksman_stock(m, f.furniture, w, top + 0.03, BACK + BUTT * 0.55, -h * 0.66, BACK + BUTT * 0.85);
+        }
         return m;
     }
     let stock = match v(slot::STOCK) {
         1 => StockShape::None,
+        // A gun that already wears a skeleton stock gets a tube stock instead.
+        3 if f.stock == StockShape::Skeleton => StockShape::Tube,
         3 => StockShape::Skeleton,
+        // A padded or marksman stock on a stockless gun brings a stock to put the pad on.
+        2 | 4 if f.stock == StockShape::None => StockShape::Fixed,
         _ => f.stock,
     };
     // Where a padded recoil pad goes: (height of its centre, distance behind BACK, its height).
@@ -1270,12 +1434,34 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
                 .cube(Paint::Dark, [0.0, -h * 0.1, BACK + 0.28], [w * 0.85, h * 1.2, 0.025]);
             Some((-h * 0.1, 0.3, h * 1.2))
         }
+        StockShape::Precision => {
+            m = m
+                .cube(f.furniture, [0.0, h * 0.2, BACK + 0.15], [w * 0.75, h * 0.45, 0.3])
+                .plate(f.furniture, 0.0, [-h * 0.1, BACK + 0.01], [-h * 0.78, BACK + 0.2], w * 0.7, h * 0.3)
+                .cube(f.furniture, [0.0, -h * 0.25, BACK + 0.29], [w * 0.8, h * 1.4, 0.05])
+                .hull(3)
+                .cube(Paint::Dark, [0.0, h * 0.47, BACK + 0.17], [w * 0.55, 0.025, 0.14])
+                .plate(Paint::Dark, 0.0, [-h * 0.95, BACK + 0.29], [-h * 1.1, BACK + 0.24], w * 0.5, 0.02)
+                .cube(Paint::Dark, [0.0, -h * 0.25, BACK + 0.32], [w * 0.85, h * 1.45, 0.012]);
+            Some((-h * 0.25, 0.34, h * 1.45))
+        }
         StockShape::None => None,
     };
     if let (2, Some((y, z, tall))) = (v(slot::STOCK), pad) {
         m = m.cube(Paint::Rust, [0.0, y, BACK + z], [w * 0.88, tall, 0.035]);
     }
+    if let (4, Some((y, z, tall))) = (v(slot::STOCK), pad) {
+        m = marksman_stock(m, f.furniture, w, y + tall * 0.5 + 0.015, BACK + z - 0.13, y - tall * 0.5, BACK + z - 0.06);
+    }
     m
+}
+
+/// A cheek riser on the comb and a short rear monopod under the butt.
+fn marksman_stock(m: BlockModel, furniture: Paint, w: f32, comb_y: f32, comb_z: f32, foot_y: f32, foot_z: f32) -> BlockModel {
+    m.cube(furniture, [0.0, comb_y, comb_z], [w * 0.62, 0.03, 0.15])
+        .cube(Paint::Dark, [w * 0.33, comb_y - 0.012, comb_z], [0.008, 0.016, 0.1])
+        .segment(Paint::Dark, [0.0, foot_y, foot_z], [0.0, foot_y - 0.09, foot_z + 0.01], 0.018)
+        .cube(Paint::Rust, [0.0, foot_y - 0.095, foot_z + 0.01], [0.03, 0.012, 0.03])
 }
 
 #[cfg(test)]
@@ -1289,7 +1475,7 @@ mod tests {
             reload: 1.0, pellets: 1, spread: 0.01, ads_spread: 0.35, range: 50.0, splash: 0.0, recoil: 1.0, mode: FireMode::Hitscan,
             ads_fov: 55.0, mining: 0.0, sound: 0,
             frame: Some(GunFrame { mag: MagShape::Curved, ..GunFrame::RIFLE }),
-            defaults: [0; SLOT_COUNT], model: BlockModel::new(), length: 0.6,
+            defaults: [0; SLOT_COUNT], model: BlockModel::new(), length: 0.6, weight: 3.5,
         }
     }
 
