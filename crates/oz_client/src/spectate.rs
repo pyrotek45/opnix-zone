@@ -53,7 +53,7 @@ fn follow(
     players: Query<(Entity, &Player, &Transform, &PlayerInput, &Health), Without<LocalPlayer>>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Player>)>,
     mut last_shot: Local<HashMap<u8, f32>>,
-    (local, mut death): (Query<&Health, With<LocalPlayer>>, ResMut<crate::fx::DeathInfo>),
+    (local, mut death, state): (Query<(&Health, &Player), With<LocalPlayer>>, ResMut<crate::fx::DeathInfo>, Res<MatchState>),
     mut was_dead: Local<bool>,
     (mut subject, mut robots): (ResMut<crate::view::ViewSubject>, Query<&mut Visibility, With<crate::avatar::PlayerRobot>>),
 ) {
@@ -83,17 +83,21 @@ fn follow(
         }
     };
     // While dead, watch whoever got you until you are back in.
-    let dead = local.single().is_ok_and(|h| !h.alive());
+    let dead = local.single().is_ok_and(|(h, _)| !h.alive());
+    // Search and destroy: out for the round, so watch a teammate who is still in it.
+    let my_team = local.single().map_or(0, |(_, p)| p.team);
+    let team_watch = dead && state.obj.kind == oz_sim::objective::kind::BOMB && state.phase == Phase::Live && players.iter().any(|(_, p, .., h)| p.team == my_team && h.alive());
+    let watchable = |p: &Player| !team_watch || p.team == my_team;
     if !dead {
         death.killer = None;
     }
-    let killer = death.killer.filter(|_| dead).and_then(|id| players.iter().find(|(_, p, .., h)| p.id == id && h.alive()).map(|(e, ..)| e));
+    let killer = death.killer.filter(|_| dead && !team_watch).and_then(|id| players.iter().find(|(_, p, .., h)| p.id == id && h.alive()).map(|(e, ..)| e));
     if dead != *was_dead {
         *was_dead = dead;
         spectate.position = None;
         spectate.rotation = None;
     }
-    if !spectate.enabled && killer.is_none() {
+    if !spectate.enabled && killer.is_none() && !team_watch {
         show_robot(spectate.hidden.take(), true);
         subject.0 = None;
         return;
@@ -110,11 +114,11 @@ fn follow(
     }
 
     // Cut when the shot has run long or the subject went down; prefer whoever is shooting.
-    let current = spectate.target.and_then(|e| players.get(e).ok()).filter(|(.., health)| health.alive());
+    let current = spectate.target.and_then(|e| players.get(e).ok()).filter(|(_, p, .., health)| health.alive() && watchable(p));
     if current.is_none() || spectate.hold <= 0.0 {
         let busiest = players
             .iter()
-            .filter(|(.., health)| health.alive())
+            .filter(|(_, p, .., health)| health.alive() && watchable(p))
             .filter(|(entity, ..)| Some(*entity) != spectate.target || current.is_none())
             .max_by(|a, b| last_shot.get(&a.1.id).unwrap_or(&-99.0).total_cmp(last_shot.get(&b.1.id).unwrap_or(&-99.0)));
         if let Some((entity, player, ..)) = busiest {

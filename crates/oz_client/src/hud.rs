@@ -490,7 +490,10 @@ fn update_text(
     let (use_key, fire_key, cancel_key, rotate_key): (String, String, String, String) =
         if controls.gamepad { ("X".into(), "RT".into(), "B".into(), "X".into()) } else { (key(Action::Interact), key(Action::Fire), "ESC".into(), key(Action::Reload)) };
     let killer = death.killer.and_then(|id| state.roster.iter().find(|r| r.id == id)).map(|r| r.name.clone());
-    let prompt = if !health.alive() {
+    let one_life = state.obj.kind == oz_sim::objective::kind::BOMB && state.phase == Phase::Live;
+    let prompt = if !health.alive() && one_life {
+        if spectate.name.is_empty() { "ELIMINATED  -  OUT UNTIL THE NEXT ROUND".to_string() } else { format!("ELIMINATED  -  WATCHING {}", spectate.name) }
+    } else if !health.alive() {
         match killer {
             Some(name) => format!("KILLED BY {name}  -  BACK IN {:.0}", player.respawn.ceil()),
             None => format!("DOWN  -  BACK IN {:.0}", player.respawn.ceil()),

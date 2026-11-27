@@ -15,6 +15,7 @@
 //! * [`ui`] - a small widget kit with mouse, keyboard and gamepad focus.
 //! * [`avatar`] - the TV-headed robot operators and their animation rig.
 //! * [`showroom`] - an off-screen stage behind menus, lobby and gunsmith.
+//! * [`objectives`] - domination flags, search and destroy's bomb, rounds and markers.
 //! * [`menu`], [`lobby`], [`naming`], [`loadout`], [`gunsmith`], [`stations`], [`hud`] - the screens.
 //! * [`retro`] - the ordered-dither post-process.
 //! * [`audio`] - procedural sound playback.
@@ -43,6 +44,7 @@ pub mod loadout;
 pub mod lobby;
 pub mod menu;
 pub mod naming;
+pub mod objectives;
 pub mod optics;
 pub mod predict;
 pub mod qol;
@@ -129,7 +131,7 @@ impl Plugin for ClientPlugin {
             props::PropsPlugin,
             tactical::TacticalPlugin,
         ));
-        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin, qol::QolPlugin, naming::NamingPlugin));
+        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin, qol::QolPlugin, naming::NamingPlugin, objectives::ObjectivesPlugin));
         #[cfg(feature = "audio")]
         app.add_plugins((audio::AudioFxPlugin, announcer::AnnouncerPlugin));
     }

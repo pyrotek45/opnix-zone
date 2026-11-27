@@ -18,6 +18,7 @@
 //! * [`lagcomp`] - host-side rewind so remote players hit what they saw.
 //! * [`nav`] - walkability grid and A* pathfinding for AI.
 //! * [`versus`] - lobby, teams, bot backfill, scoring and rematches.
+//! * [`objective`] - domination points and search and destroy's bomb and rounds.
 //! * [`net`] - host/client replication on top of `oz_net`.
 //! * [`session`] - starting and tearing down a match.
 //!
@@ -32,6 +33,7 @@ pub mod lagcomp;
 pub mod loot;
 pub mod nav;
 pub mod net;
+pub mod objective;
 pub mod orders;
 pub mod player;
 pub mod session;
@@ -118,7 +120,7 @@ impl Plugin for SimPlugin {
             .add_systems(Update, (orders::process_commands, killstreak::use_streaks, breakables::work_doors).chain().in_set(SimSet::Orders))
             .add_systems(OnEnter(Active), breakables::spawn_breakables)
             .add_systems(Update, breakables::sync_breakables.run_if(in_state(Active)))
-            .add_systems(Update, (versus::run_versus, versus::fill_teams, session::relaunch).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
+            .add_systems(Update, (versus::run_versus, versus::fill_teams, session::relaunch, objective::run_objectives.run_if(objective::objective_mode)).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
             .add_systems(
                 Update,
                 (

@@ -72,6 +72,8 @@ pub fn deathmatch_rules(seed: u64) -> Rules {
         time_limit: 0.0,
         no_bots: false,
         map: 0,
+        domination: false,
+        bomb: false,
     }
 }
 
@@ -92,11 +94,21 @@ pub fn scavenge_rules(seed: u64) -> Rules {
     Rules { loot: true, team_size: 3, score_limit: 30, ..deathmatch_rules(seed) }
 }
 
+/// Domination: three points around town; every point a team holds scores over time.
+/// Kills score nothing - the points do.
+pub fn domination_rules(seed: u64) -> Rules {
+    Rules { domination: true, team_size: 4, score_limit: 200, ..deathmatch_rules(seed) }
+}
+
+/// Search and destroy: one life a round, attackers plant, defenders defuse. First to four rounds.
+pub fn search_rules(seed: u64) -> Rules {
+    Rules { bomb: true, team_size: 4, score_limit: 4, ..deathmatch_rules(seed) }
+}
+
 pub struct IronTownPlugin;
 
 impl Plugin for IronTownPlugin {
     fn build(&self, app: &mut App) {
-        let planned = |name, blurb| ModeDef { name, blurb, playable: false, rules: deathmatch_rules, catalog };
         app.insert_resource(Modes(vec![
             ModeDef { name: "TEAM DEATHMATCH", blurb: "Two squads, one town. Bots fill empty slots. First to the score limit wins.", playable: true, rules: deathmatch_rules, catalog },
             ModeDef { name: "SCAVENGE", blurb: "Spawn with a pistol. Guns, ammo, gear and armour lie around town; the fallen drop theirs. Keep fighting to stay armed.", playable: true, rules: scavenge_rules, catalog },
@@ -108,8 +120,20 @@ impl Plugin for IronTownPlugin {
                 rules: hunt_rules,
                 catalog,
             },
-            planned("DOMINATION", "PLANNED - hold three points around the town to score."),
-            planned("SEARCH AND DESTROY", "PLANNED - one life per round, plant or defuse."),
+            ModeDef {
+                name: "DOMINATION",
+                blurb: "Take and hold points A, B and C. Stand on a point to capture it - faster with friends. Every point you hold scores; first to 200 wins.",
+                playable: true,
+                rules: domination_rules,
+                catalog,
+            },
+            ModeDef {
+                name: "SEARCH AND DESTROY",
+                blurb: "One life per round. Attackers carry the bomb to site A or B and plant it; defenders hold the sites and defuse. Sides swap at half time; first to 4 rounds.",
+                playable: true,
+                rules: search_rules,
+                catalog,
+            },
         ]));
     }
 }

@@ -74,6 +74,8 @@ pub struct Controls {
     /// Pad X this frame: vaults when there is something to vault, else reload / use as usual.
     pub vault: bool,
     pub interact: bool,
+    /// Use held down (planting or defusing a bomb).
+    pub interact_held: bool,
     /// Toggle crouch this frame.
     pub crouch: bool,
     /// Toggle prone this frame.
@@ -164,6 +166,7 @@ fn read_devices(
     c.suppressor = hit(Action::Suppressor);
     c.flashlight = hit(Action::Flashlight);
     c.interact = hit(Action::Interact);
+    c.interact_held = down(Action::Interact);
     c.crouch = hit(Action::Crouch);
     c.prone = hit(Action::Prone);
     c.gear = down(Action::Gear);
@@ -221,6 +224,7 @@ fn read_devices(
         c.reload |= held(GamepadButton::West);
         c.reload_pressed |= hit(GamepadButton::West);
         c.interact |= hit(GamepadButton::West);
+        c.interact_held |= held(GamepadButton::West);
         c.jump |= held(GamepadButton::South);
         c.jump_pressed |= hit(GamepadButton::South);
         c.sprint |= held(GamepadButton::LeftThumb);
@@ -414,6 +418,7 @@ fn drive_player(
         // A menu is open (or we are down): stand still, keep looking where we were.
         input.movement = Vec2::ZERO;
         input.buttons = 0;
+        input.interact = false;
         // The click that closes a menu must not also fire the gun.
         body.hold_fire = true;
         body.crouch_was = controls.crouch_held;
@@ -573,6 +578,7 @@ fn drive_player(
         }
     }
     input.buttons = held;
+    input.interact = controls.interact_held;
 
     // Weapon selection only ever lands on owned weapons.
     let owned: Vec<u8> = (0..arsenal.weapons.len() as u8).filter(|i| arsenal.owns(*i as usize)).collect();

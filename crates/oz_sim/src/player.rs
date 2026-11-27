@@ -475,7 +475,10 @@ pub fn damage_player(health: &mut Health, victim: &mut Player, amount: f32, atta
     if let Some((name, team, id)) = attacker {
         fx.write(FxEvent::HitMarker { player: id, kill: killed, head: victim.last_hit == part::HEAD });
         if killed && id != victim.id {
-            state.scores[(team as usize).min(1)] += 1;
+            // Objective modes score points and rounds, not kills.
+            if state.obj.kind == crate::objective::kind::NONE {
+                state.scores[(team as usize).min(1)] += 1;
+            }
             state.credits.push(id);
             fx.write(FxEvent::notice(format!("{name}  >  {}", victim.name)));
             fx.write(FxEvent::Killed { victim: victim.id, by: id, head: victim.last_hit == part::HEAD, blast: victim.last_hit == part::BLAST });
@@ -508,6 +511,9 @@ pub struct PlayerInput {
     pub cover: u8,
     /// Flashlight on: everyone sees the beam (and hostiles see you further off in the dark).
     pub light: bool,
+    /// Use held down (planting or defusing a bomb).
+    #[serde(default)]
+    pub interact: bool,
 }
 
 /// The facing (yaw) of a body with its back to the wall, from [`PlayerInput::cover`].
@@ -851,6 +857,7 @@ pub fn vitals(
     mut players: Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput)>,
     mut fx: EventWriter<FxEvent>,
     mut noises: ResMut<crate::bots::Noises>,
+    statics: Res<crate::session::Statics>,
 ) {
     let dt = sim_dt(&time);
     // Where every living fighter is, so respawns can pick the safest spot.
@@ -858,7 +865,7 @@ pub fn vitals(
     for (mut player, mut health, mut transform, mut arsenal, mut input) in &mut players {
         if health.alive() {
             // The other team's base is off limits: no camping where people spawn.
-            if rules.pvp && !rules.hunt && state.phase == Phase::Live && in_enemy_base(&map, player.team, transform.translation) {
+            if rules.pvp && !rules.hunt && !rules.bomb && state.phase == Phase::Live && in_enemy_base(&map, player.team, transform.translation) {
                 if player.trespass == 0.0 {
                     fx.write(FxEvent::tell(player.id, "RESTRICTED AREA - LEAVE THE ENEMY BASE"));
                 }
@@ -904,13 +911,22 @@ pub fn vitals(
             player.respawn = player.respawn.max(0.5);
             continue;
         }
+        // Search and destroy: one life per round; the next round brings everyone back.
+        if rules.bomb && state.phase == Phase::Live {
+            player.respawn = player.respawn.max(0.5);
+            continue;
+        }
         player.respawn -= dt;
         if player.respawn <= 0.0 && !state.over() {
             respawn(&content, &map, &rules, &state, &mut player, &mut health, &mut transform, &mut arsenal, &mut input);
             if rules.pvp {
                 // Pick the base spot furthest from any enemy, and shield the player briefly.
                 let enemies: Vec<Vec3> = fighters.iter().filter(|(team, _)| *team != player.team).map(|(_, at)| *at).collect();
-                transform.translation = safest_spawn(&map, player.team, &enemies);
+                transform.translation = if rules.domination {
+                    crate::objective::domination_spawn(&map, &statics, player.team, player.id, &state.obj.points, &enemies)
+                } else {
+                    safest_spawn(&map, player.team, &enemies)
+                };
                 player.protect = if rules.hunt { 5.0 } else { 2.5 };
             }
         }

@@ -13,6 +13,7 @@ use crate::{
     player::{Arsenal, Health, Loadout, Player, PlayerInput, apply_loadout, buttons, stance},
     session::{Content, Map, Statics, player_bundle},
     sim_dt,
+    objective::Objective,
     state::{MatchState, Phase, Rules, SimRng},
     structures::Structure,
     weapons::obstruction,
@@ -86,6 +87,11 @@ pub struct Bot {
     suppress_at: Vec3,
     patrol: f32,
     last_hp: f32,
+    /// Objective modes: the point it is going for, and whether to hold it (defend)
+    /// rather than take it.
+    pub objective: Option<(u8, bool)>,
+    /// Holding Use (planting or defusing).
+    pub hold_use: bool,
 }
 
 impl Bot {
@@ -387,6 +393,153 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
     }
 }
 
+/// Objective modes: plays the points or the bomb instead of hunting for kills (fights
+/// still come first: this only runs with no one in sight). Returns false when there is
+/// no objective, and the usual plans take over.
+#[allow(clippy::too_many_arguments)]
+fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, rng: &mut SimRng, bodies: &[Body], intel: Option<(Vec3, f32)>, now: f32) -> bool {
+    use crate::objective::{DEFUSE_REACH, NEUTRAL, POINT_RADIUS, bomb, kind};
+    bot.hold_use = false;
+    if obj.kind == kind::NONE || obj.points.is_empty() || bot.sentry {
+        return false;
+    }
+    let go = |bot: &mut Bot, at: Vec3, slack: f32| {
+        if bot.goal.distance(at) > slack || (bot.path.is_empty() && bot.goal.xz().distance(feet.xz()) > 1.0) {
+            bot.goal = at;
+            bot.path.clear();
+            bot.stuck = 0.0;
+        }
+    };
+    // Spread round a spot so a squad does not stand in one heap.
+    let around = |at: Vec3, radius: f32| {
+        let angle = me.id as f32 * 2.4;
+        Vec3::new(at.x + angle.cos() * radius, at.y, at.z + angle.sin() * radius)
+    };
+    let watch = |from: Vec3, at: Vec3| yaw_to((at - from).xz());
+    let team = me.team.min(1);
+    let distance = |at: Vec3| at.xz().distance(feet.xz());
+    let middle = obj.points.iter().map(|p| p.at).fold(Vec3::ZERO, |a, b| a + b) / obj.points.len() as f32;
+    let enemies: Vec<Vec3> = bodies.iter().filter(|b| b.team != team).map(|b| b.at).collect();
+    let closest_enemy = |to: Vec3| enemies.iter().copied().min_by(|a, b| a.distance(to).total_cmp(&b.distance(to)));
+
+    if obj.kind == kind::DOMINATION {
+        let points = &obj.points;
+        let ours: Vec<usize> = (0..points.len()).filter(|i| points[*i].owner == team).collect();
+        let mut theirs: Vec<usize> = (0..points.len()).filter(|i| points[*i].owner != team).collect();
+        theirs.sort_by(|a, b| distance(points[*a].at).total_cmp(&distance(points[*b].at)));
+        let threatened = ours.iter().copied().find(|i| points[*i].contested || (points[*i].taking != team && points[*i].taking != NEUTRAL));
+        let still_good = |(index, defend): (u8, bool)| points.get(index as usize).is_some_and(|p| (p.owner == team) == defend);
+        let keep = bot.objective.filter(|o| now < bot.plan_until && still_good(*o));
+        let (index, defend) = match keep {
+            Some(o) => (o.0 as usize, o.1),
+            None => {
+                let nearest_ours = ours.iter().copied().min_by(|a, b| distance(points[*a].at).total_cmp(&distance(points[*b].at)));
+                let choice = match (bot.role, threatened, nearest_ours) {
+                    (_, Some(i), _) if rng.0.chance(0.6) => (i, true),
+                    // Anchors hold what the team has.
+                    (Role::Anchor, _, Some(i)) if rng.0.chance(0.7) => (i, true),
+                    // Flankers go for the second-closest point the team does not hold.
+                    (Role::Flanker, ..) if theirs.len() > 1 => (theirs[1], false),
+                    _ if !theirs.is_empty() => (theirs[0], false),
+                    _ => (ours[me.id as usize % ours.len().max(1)], true),
+                };
+                bot.objective = Some((choice.0 as u8, choice.1));
+                bot.plan_until = now + rng.0.range(9.0, 16.0);
+                choice
+            }
+        };
+        let point = points[index].at;
+        // Look out from the point toward trouble: the closest enemy, else the middle.
+        let threat = closest_enemy(point).unwrap_or(middle);
+        if points[index].holds(feet) && distance(point) < POINT_RADIUS * 0.8 {
+            let face = if threat.xz().distance(feet.xz()) > 1.0 { watch(feet, threat) } else { watch(point, feet) };
+            bot.plan = Plan::Camp { face };
+            go(bot, feet, 1.5);
+        } else {
+            bot.plan = Plan::Hunt;
+            go(bot, around(point, if defend { POINT_RADIUS * 0.45 } else { 1.5 }), 2.0);
+        }
+        return true;
+    }
+
+    // Search and destroy.
+    let attacking = team == obj.attackers;
+    let site_at = |i: u8| obj.points[(i as usize).min(obj.points.len() - 1)].at;
+    let mates: Vec<&Body> = bodies.iter().filter(|b| b.team == team).collect();
+    let nearest_mate_to = |at: Vec3| mates.iter().min_by(|a, b| a.at.distance(at).total_cmp(&b.at.distance(at))).map(|b| b.id);
+    match (attacking, obj.bomb) {
+        (true, bomb::CARRIED) if obj.carrier == me.id => {
+            let site = site_at(obj.site);
+            if crate::objective::in_site(site, feet) && distance(site) < 1.5 {
+                bot.plan = Plan::Camp { face: watch(site, middle) };
+                bot.hold_use = true;
+                go(bot, feet, 1.5);
+            } else {
+                bot.plan = Plan::Hunt;
+                go(bot, site, 1.0);
+            }
+        }
+        (true, bomb::HOME | bomb::DROPPED) => {
+            // The closest goes for the bomb; the rest cover it.
+            bot.plan = Plan::Hunt;
+            if nearest_mate_to(obj.bomb_at) == Some(me.id) || distance(obj.bomb_at) < 6.0 {
+                go(bot, obj.bomb_at, 0.8);
+            } else {
+                go(bot, around(obj.bomb_at, 5.0), 4.0);
+            }
+        }
+        (true, bomb::CARRIED) => {
+            // Escort: a few steps ahead of the carrier, toward the site.
+            let carrier = bodies.iter().find(|b| b.id == obj.carrier).map_or(obj.bomb_at, |b| b.at);
+            let ahead = carrier + (site_at(obj.site) - carrier).normalize_or_zero() * 5.0;
+            bot.plan = Plan::Follow;
+            go(bot, around(ahead, 3.0), 4.0);
+        }
+        (true, _) => {
+            // Planted: guard it, watching the way the defenders will come.
+            let spot = around(obj.bomb_at, 6.0);
+            let face = closest_enemy(obj.bomb_at).map_or_else(|| watch(obj.bomb_at, spot), |e| watch(spot, e));
+            bot.plan = Plan::Camp { face };
+            go(bot, spot, 2.0);
+        }
+        (false, bomb::PLANTED) => {
+            bot.plan = Plan::Hunt;
+            if nearest_mate_to(obj.bomb_at) == Some(me.id) || distance(obj.bomb_at) < DEFUSE_REACH {
+                if distance(obj.bomb_at) < DEFUSE_REACH * 0.6 {
+                    bot.plan = Plan::Camp { face: watch(obj.bomb_at, feet) };
+                    bot.hold_use = true;
+                    go(bot, feet, 1.5);
+                } else {
+                    go(bot, obj.bomb_at, 0.6);
+                }
+            } else {
+                go(bot, around(obj.bomb_at, 5.0), 2.0);
+            }
+        }
+        (false, _) => {
+            // Hold a site, split between them by id. Rushers go for fresh contacts close by.
+            let mut ids: Vec<u8> = mates.iter().map(|b| b.id).collect();
+            ids.sort();
+            let slot = ids.iter().position(|id| *id == me.id).unwrap_or(me.id as usize);
+            let site = site_at((slot % obj.points.len()) as u8);
+            let fresh = intel.filter(|(_, t)| now - t < 6.0).map(|(p, _)| p);
+            match fresh.filter(|p| bot.role == Role::Rusher && p.distance(site) < 35.0) {
+                Some(contact) => {
+                    bot.plan = Plan::Hunt;
+                    go(bot, contact, 3.0);
+                }
+                None => {
+                    let spot = around(site, 4.0);
+                    let face = closest_enemy(site).map_or_else(|| watch(site, spot), |e| watch(spot, e));
+                    bot.plan = Plan::Camp { face };
+                    go(bot, spot, 2.0);
+                }
+            }
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn drive_bots(
     time: Res<Time>,
@@ -497,6 +650,8 @@ pub fn drive_bots(
         if !health.alive() || state.phase == Phase::Lobby || state.over() {
             input.buttons = 0;
             input.movement = Vec2::ZERO;
+            input.interact = false;
+            bot.hold_use = false;
             bot.target = None;
             bot.path.clear();
             continue;
@@ -618,7 +773,10 @@ pub fn drive_bots(
                     bot.stuck = 0.0;
                 }
                 let hurt = health.hp < health.max * 0.35;
-                plan_versus(&mut bot, me, feet, hurt, &map, &mut rng, &bodies, intel.0[(me.team as usize).min(1)], now);
+                let known = intel.0[(me.team as usize).min(1)];
+                if !plan_objective(&mut bot, me, feet, &state.obj, &mut rng, &bodies, known, now) {
+                    plan_versus(&mut bot, me, feet, hurt, &map, &mut rng, &bodies, known, now);
+                }
             }
         }
         bot.strafe_time -= dt;
@@ -723,6 +881,12 @@ pub fn drive_bots(
             input.yaw = turn(input.yaw, face + scan, 2.0 * dt);
             input.pitch *= 1.0 - (3.0 * dt).min(1.0);
         }
+        // Planting or defusing: stay put, low.
+        if bot.hold_use && bot.target.is_none() {
+            wish = Vec2::ZERO;
+            held &= !buttons::SPRINT;
+            wanted_stance = stance::CROUCH;
+        }
         // Retreating or hunting a known spot: no sprinting into the open when hurt.
         if bot.plan == Plan::Retreat && bot.target.is_some() {
             // Backing off while still shooting: away from the target (it is in front).
@@ -752,6 +916,11 @@ pub fn drive_bots(
         let right = Vec2::new(input.yaw.cos(), -input.yaw.sin());
         input.movement = Vec2::new(wish.dot(right), wish.dot(forward)).clamp_length_max(1.0);
         input.buttons = held;
+        // Planting or defusing: only with nobody to shoot at.
+        let using = bot.hold_use && bot.target.is_none();
+        if input.interact != using {
+            input.interact = using;
+        }
         // Bots light up at night (it gives them away, as it does anyone).
         if input.light != dark {
             input.light = dark;

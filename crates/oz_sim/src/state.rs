@@ -82,6 +82,14 @@ pub struct Rules {
     /// Fixed layouts are known from the recipe.
     #[serde(default)]
     pub map: u8,
+    /// Domination: three points (A, B, C) to take and hold; held points score over time.
+    /// Kills score nothing (see [`crate::objective`]).
+    #[serde(default)]
+    pub domination: bool,
+    /// Search and destroy: rounds, one life each, attackers plant a bomb at site A or B and
+    /// defenders stop them; `score_limit` is rounds to win (see [`crate::objective`]).
+    #[serde(default)]
+    pub bomb: bool,
 }
 
 /// The replicated heart of a match. Small enough to send with every snapshot.
@@ -142,6 +150,9 @@ pub struct MatchState {
     pub reroll: bool,
     #[serde(default)]
     pub change_in: f32,
+    /// Domination points, or search and destroy's sites, bomb and rounds.
+    #[serde(default)]
+    pub obj: crate::objective::Objective,
     /// Player ids owed a kill this frame. Authority bookkeeping, never sent.
     #[serde(skip)]
     pub credits: Vec<u8>,
