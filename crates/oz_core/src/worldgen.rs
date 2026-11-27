@@ -27,7 +27,7 @@ pub use themes::Theme;
 pub use zombie_maps::{SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeVent, HordeWindow, HordeZone, WallBuy, perk_id};
 use shapes::{Furnish, Plan, Roof};
 
-use crate::{collide::Aabb, economy::Ore, model::{Hull, Paint}, noise, rng::Rng};
+use crate::{collide::{Aabb, Ramp, StaticWorld}, economy::Ore, model::{Hull, Paint}, noise, rng::Rng};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::TAU;
@@ -566,6 +566,8 @@ pub struct World {
     /// Sloped roofs and round caps, drawn smooth over the hidden stair steps that carry
     /// their collision (render only; each just covers its steps' outer corners).
     pub roofs: Vec<Hull>,
+    /// The same roofs as walked: smooth slopes over their steps (see [`Ramp`]).
+    pub ramps: Vec<Ramp>,
     /// Roads, pavements and painted ground: triangles laid on the terrain (render only).
     pub paving: Vec<(Paint, [Vec3; 3])>,
     pub deposits: Vec<Deposit>,
@@ -655,6 +657,7 @@ impl World {
             props: Vec::new(),
             blocks: Vec::new(),
             roofs: Vec::new(),
+            ramps: Vec::new(),
             deposits: Vec::new(),
             landings: Vec::new(),
             core: Vec2::ZERO,
@@ -766,6 +769,18 @@ impl World {
         let architecture = self.blocks.iter().filter(|b| b.solid).map(|b| b.aabb);
         let props = self.props.iter().filter_map(|p| p.solid_half().map(|half| Aabb::new(p.pos + Vec3::Y * half.y, half)));
         architecture.chain(props)
+    }
+
+    /// Static collision for the whole map: [`Self::solids`] and the roof [`Self::ramps`].
+    pub fn statics(&self) -> StaticWorld {
+        let mut statics = StaticWorld::new(self.recipe.half_extent);
+        for aabb in self.solids() {
+            statics.add(aabb);
+        }
+        for ramp in &self.ramps {
+            statics.add_ramp(ramp.clone());
+        }
+        statics
     }
 
     /// Leaves that hide what is behind them (but stop no bullets): tree crowns and bushes,

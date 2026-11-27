@@ -971,3 +971,78 @@ fn host_and_guest_change_maps_modes_and_names_together() {
     lobby(&mut host, LobbyAction::Start);
     pump(&mut host, &mut client, "the match starts for the guest", |_, client| client.world().resource::<MatchState>().phase == Phase::Live);
 }
+
+#[test]
+fn the_fallen_sometimes_drop_ammo_and_always_for_a_killer_running_dry() {
+    use oz_sim::loot::{Loot, Pickup};
+    let mut app = app();
+    let mut rules = deathmatch_rules(8);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(phase(&app), Phase::Live);
+    let boxes = |app: &mut App| -> Vec<Entity> {
+        let world = app.world_mut();
+        world.query::<(Entity, &Pickup)>().iter(world).filter(|(_, p)| p.loot == Loot::Ammo).map(|(e, _)| e).collect()
+    };
+    let clear = |app: &mut App| {
+        for e in boxes(app) {
+            app.world_mut().despawn(e);
+        }
+    };
+    // The victim: a bot, down (so it does not pick its own box up).
+    let victim = {
+        let world = app.world_mut();
+        let (player, mut health) = world.query_filtered::<(&Player, &mut Health), With<Bot>>().iter_mut(world).next().unwrap();
+        health.hp = 0.0;
+        player.id
+    };
+    let set_reserve = |app: &mut App, reserve: u16| {
+        let world = app.world_mut();
+        let mut arsenal = world.query_filtered::<&mut Arsenal, With<LocalPlayer>>().single_mut(world).unwrap();
+        for weapon in arsenal.weapons.iter_mut().filter(|w| w.owned) {
+            weapon.reserve = reserve;
+        }
+    };
+    let reserve = |app: &mut App| -> u16 {
+        let world = app.world_mut();
+        world.query_filtered::<&Arsenal, With<LocalPlayer>>().single(world).unwrap().weapons.iter().filter(|w| w.owned).map(|w| w.reserve).sum()
+    };
+    let world = app.world_mut();
+    let me = world.query_filtered::<&Player, With<LocalPlayer>>().single(world).unwrap().id;
+    let kill = |app: &mut App| {
+        app.world_mut().send_event(FxEvent::Killed { victim, by: me, head: false, blast: false });
+        app.update();
+    };
+    assert!(boxes(&mut app).is_empty(), "team deathmatch has no loot lying about");
+
+    // A killer with plenty of ammo: only sometimes.
+    set_reserve(&mut app, 200);
+    let mut dropped = 0;
+    for _ in 0..40 {
+        clear(&mut app);
+        kill(&mut app);
+        dropped += boxes(&mut app).len();
+    }
+    assert!((3..=20).contains(&dropped), "{dropped} of 40 kills dropped ammo");
+
+    // A killer running dry: every time, but never a carpet of boxes.
+    clear(&mut app);
+    set_reserve(&mut app, 0);
+    for i in 0..10 {
+        kill(&mut app);
+        assert_eq!(boxes(&mut app).len(), (i + 1).min(6), "a kill by someone out of ammo drops a box, up to six at once");
+    }
+    // Walking over one takes it.
+    let first = boxes(&mut app)[0];
+    let at = app.world().get::<Transform>(first).unwrap().translation;
+    let empty = reserve(&mut app);
+    let world = app.world_mut();
+    world.query_filtered::<&mut Transform, With<LocalPlayer>>().single_mut(world).unwrap().translation = at;
+    app.update();
+    assert!(reserve(&mut app) > empty, "walking over the box should have refilled the guns");
+    assert!(boxes(&mut app).len() < 6, "the box should be gone once taken");
+}

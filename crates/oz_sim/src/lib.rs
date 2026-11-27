@@ -152,6 +152,7 @@ impl Plugin for SimPlugin {
                     .in_set(SimSet::Logic),
             )
             .add_systems(Update, (loot::place_spots, loot::run_loot).chain().in_set(SimSet::Logic).after(weapons::fire_weapons).run_if(loot::scavenge))
+            .add_systems(Update, (loot::take_dropped_ammo.in_set(SimSet::Logic).after(weapons::fire_weapons), loot::drop_ammo.in_set(SimSet::Resolve).after(combat::resolve_hits)).run_if(loot::ammo_drops))
             .add_systems(Update, (breakables::collect_blasts, breakables::break_things, combat::resolve_hits, player::presentation_flags, versus::update_roster).chain().in_set(SimSet::Resolve))
             .add_systems(Update, (player::move_players, net::smooth_remote).after(SimSet::Receive).before(SimSet::Orders).run_if(in_state(Active)))
             .add_systems(Update, (net::host_send, net::client_send).in_set(SimSet::Send).run_if(in_state(Active)))
