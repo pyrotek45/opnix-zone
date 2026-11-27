@@ -470,7 +470,7 @@ fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, rng: 
     match (attacking, obj.bomb) {
         (true, bomb::CARRIED) if obj.carrier == me.id => {
             let site = site_at(obj.site);
-            if crate::objective::in_site(site, feet) && distance(site) < 1.5 {
+            if crate::objective::in_site(site, feet) {
                 bot.plan = Plan::Camp { face: watch(site, middle) };
                 bot.hold_use = true;
                 go(bot, feet, 1.5);
@@ -691,10 +691,17 @@ pub fn drive_bots(
             };
             // Hunt: the squad's base is off limits to hostiles.
             let safe = |at: Vec3| sentry && rules.hunt && at.xz().distance(crate::versus::hunt_base(&map)) < crate::versus::HUNT_SAFE;
+            // Search and destroy: the bomb carrier, and a defender going for a planted bomb,
+            // play the objective - they only take on someone right on top of them.
+            let obj = &state.obj;
+            let on_bomb_duty = obj.kind == crate::objective::kind::BOMB
+                && ((obj.bomb == crate::objective::bomb::CARRIED && obj.carrier == me.id)
+                    || (obj.bomb == crate::objective::bomb::PLANTED && me.team.min(1) != obj.attackers && obj.bomb_at.distance(feet) < 9.0));
             let found = fighters
                 .iter()
                 .filter(|(_, team, ..)| *team != me.team)
                 .filter(|(_, _, at, _)| !safe(*at))
+                .filter(|(_, _, at, _)| !on_bomb_duty || at.distance(feet) < 10.0)
                 .filter(|(entity, _, at, enemy_stance)| noticed(*at, *enemy_stance, lit.contains(entity)))
                 .filter_map(|(entity, _, at, enemy_stance)| {
                     let chest = *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4);

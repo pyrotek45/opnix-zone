@@ -127,6 +127,7 @@ impl Plugin for SimPlugin {
                     combat::rebuild_grid,
                     lagcomp::record_history,
                     nav::refill_budget,
+                    player::limit_stance,
                     player::vitals,
                     player::measure_remote_speed,
                     bots::drive_bots,

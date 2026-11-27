@@ -559,6 +559,37 @@ pub struct Mover {
     pub last: Vec3,
     /// On a ladder right now (for the climbing animation).
     pub climbing: bool,
+    /// The stance in force and how long it has held: changes are rate limited so a body
+    /// cannot flicker up and down to dodge shots (see [`limit_stance`]).
+    pub stance_was: u8,
+    pub stance_age: f32,
+    /// Seconds before the next jump is allowed (no bunny hopping).
+    pub jump_cd: f32,
+}
+
+/// Seconds a stance must hold before it can change again.
+pub const STANCE_HOLD: f32 = 0.3;
+
+/// Rate limits stance changes for everyone (on the authority this covers remote players
+/// too): a change inside [`STANCE_HOLD`] of the last one is held back until it is allowed.
+pub fn limit_stance(time: Res<Time>, mut players: Query<(&mut PlayerInput, &mut Mover, &Health)>) {
+    let dt = sim_dt(&time);
+    for (mut input, mut mover, health) in &mut players {
+        mover.stance_age += dt;
+        mover.jump_cd = (mover.jump_cd - dt).max(0.0);
+        if !health.alive() {
+            mover.stance_was = stance::STAND;
+            continue;
+        }
+        if input.stance != mover.stance_was {
+            if mover.stance_age >= STANCE_HOLD {
+                mover.stance_was = input.stance;
+                mover.stance_age = 0.0;
+            } else {
+                input.stance = mover.stance_was;
+            }
+        }
+    }
 }
 
 /// Authority: remote players move on their own machines, so measure how fast they are going
@@ -780,9 +811,11 @@ pub fn move_players(
         }
         mover.climbing = false;
         let ground = ground_under(&map, &statics, pos.x, pos.z, pos.y);
-        if mover.grounded && standing && input.held(buttons::JUMP) {
+        // Only from standing, and not again straight after landing.
+        if mover.grounded && standing && mover.jump_cd <= 0.0 && mover.stance_age > 0.15 && input.held(buttons::JUMP) {
             mover.vertical = JUMP_SPEED;
             mover.grounded = false;
+            mover.jump_cd = 0.9;
         }
         // Standing on the lip of a ledge counts as standing on it.
         let ground = if mover.grounded { ground.max(statics.support_within(pos.x, pos.z, pos.y, BODY_RADIUS * 0.9)) } else { ground };
