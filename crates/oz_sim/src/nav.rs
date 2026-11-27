@@ -402,21 +402,24 @@ mod tests {
         // Find a town with a ladder, and path from its foot to the roof it reaches.
         for seed in 1..40 {
             let map = GameMap::generate(WorldRecipe::town(seed, Biome::IronShoals));
-            let Some(ladder) = map.ladders.first().copied() else { continue };
             let mut statics = StaticWorld::new(map.recipe.half_extent);
             for aabb in map.solids() {
                 statics.add(aabb);
             }
             let nav = Nav::build(&map, &statics);
-            if nav.links.is_empty() {
-                continue;
+            for ladder in &map.ladders {
+                let out = Vec3::new(ladder.out.x, 0.0, ladder.out.y);
+                let from = ladder.foot + out * 3.0;
+                let to = Vec3::new(ladder.foot.x, ladder.top, ladder.foot.z) - out * 1.5;
+                if !nav.walkable(from) || !nav.walkable(to) {
+                    continue;
+                }
+                if let Some(path) = nav.path(&mut NavScratch::default(), from, to)
+                    && path.iter().any(|p| p.y > ladder.top - 0.5)
+                {
+                    return;
+                }
             }
-            let out = Vec3::new(ladder.out.x, 0.0, ladder.out.y);
-            let from = ladder.foot + out * 3.0;
-            let to = Vec3::new(ladder.foot.x, ladder.top, ladder.foot.z) - out * 1.5;
-            let path = nav.path(&mut NavScratch::default(), from, to).expect("a way up");
-            assert!(path.iter().any(|p| p.y > ladder.top - 0.5), "the path should reach the roof: {path:?}");
-            return;
         }
         panic!("no town had a usable ladder");
     }

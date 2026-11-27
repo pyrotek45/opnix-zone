@@ -307,7 +307,8 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
                 bot.plan_until = now + 8.0;
                 go(bot, p);
             }
-            Some(p) if rng.0.chance(0.5) => flank(bot, p),
+            Some(p) if rng.0.chance(0.5) || fresh.is_none() => flank(bot, p),
+            // A real sighting: wait for them to come round, gun on the angle.
             Some(p) => camp(bot, feet, watch(feet, p), rng.0.range(5.0, 9.0)),
             None if matches!(bot.plan, Plan::Camp { .. }) => {
                 bot.plan = Plan::Search;
