@@ -637,6 +637,7 @@ impl World {
         }
         world.pave();
         world.tidy_clutter();
+        world.check_access();
         world
     }
 
@@ -978,6 +979,50 @@ impl World {
         self.clutter.retain(|item| {
             let (centre, half) = (item.center(), item.half());
             !solids.iter().any(|b| b.top() > item.pos.y + 0.45 && (0..3).all(|a| (b.center[a] - centre[a]).abs() < b.half[a] + half[a] - 0.05))
+        });
+    }
+
+    /// Every ladder must be climbable and every door usable: a ladder whose climbing line
+    /// runs through something solid, whose foot is boxed in, or that has no roof at the top
+    /// is taken away (rails and rungs too); a door with something solid right behind it on
+    /// either side is dropped.
+    fn check_access(&mut self) {
+        let solids: Vec<Aabb> = self.solids().collect();
+        let inside = |p: Vec3, r: f32| solids.iter().any(|b| b.touches(p.x, p.z, r) && p.y > b.bottom() + 0.02 && p.y < b.top() - 0.02);
+        let mut gone: Vec<Ladder> = Vec::new();
+        self.ladders.retain(|l| {
+            let out = Vec3::new(l.out.x, 0.0, l.out.y);
+            // Where the climber hangs (the sim's standoff), all the way up.
+            let line = l.foot + out * 0.45;
+            let mut y = l.foot.y + 0.25;
+            let mut clear = true;
+            while y < l.top - 0.3 {
+                if inside(Vec3::new(line.x, y, line.z), 0.2) {
+                    clear = false;
+                    break;
+                }
+                y += 0.3;
+            }
+            // Room to stand at the foot, and a roof to step onto at the top.
+            let stand = l.foot + out * 0.9 + Vec3::Y * 0.9;
+            let landing = Vec3::new(l.foot.x, l.top, l.foot.z) - out * 0.9;
+            let roof = solids.iter().any(|b| b.touches(landing.x, landing.z, 0.05) && (b.top() - (l.top - 0.3)).abs() < 0.45);
+            let keep = clear && !inside(stand, 0.25) && roof;
+            if !keep {
+                gone.push(*l);
+            }
+            keep
+        });
+        for l in &gone {
+            self.blocks.retain(|b| {
+                let rail_or_rung = !b.solid && b.paint == Paint::Iron && Vec2::new(b.aabb.center.x - l.foot.x, b.aabb.center.z - l.foot.z).length() < 0.55 && b.aabb.center.y > l.foot.y - 0.2 && b.aabb.center.y < l.top + 1.2;
+                !rail_or_rung
+            });
+        }
+        self.doors.retain(|d| {
+            let across = if d.along_x { Vec3::Z } else { Vec3::X };
+            let mid = d.center + Vec3::Y * 1.0;
+            !inside(mid + across * 0.75, 0.2) && !inside(mid - across * 0.75, 0.2)
         });
     }
 

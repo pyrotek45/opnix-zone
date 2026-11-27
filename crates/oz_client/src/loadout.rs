@@ -610,7 +610,7 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
         });
 
         // One list at a time, on the left.
-        root.spawn(panel_at(Some(24.0), None, 96.0, 440.0)).with_children(|panel| match page {
+        root.spawn(panel_at(Some(24.0), None, 96.0, 440.0)).with_children(|panel| { match page {
             Page::Classes => {
                 heading(panel, "CLASSES");
                 for (i, name) in CLASS_NAMES.iter().enumerate() {
@@ -700,6 +700,11 @@ pub fn build_loadout(mut commands: Commands, dirty: Res<UiDirty>, screen: Res<Sc
                     }
                 }
             }
+        }
+        // Mouse players need a way back up the drill-down (pads and keys have B / Esc).
+        if edit && page != Page::Classes {
+            ui::slim(panel, order, "<  BACK", Act::Back, None, false, Val::Percent(100.0));
+        }
         });
 
         // Bottom left, under the lists: what the thing under the cursor is, and for guns,

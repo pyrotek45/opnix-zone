@@ -51,6 +51,8 @@ pub struct Cover {
     pub edges: [bool; 2],
     /// Stepped out round a corner to shoot: where we stepped from, and which way.
     peek: Option<(Vec3, f32)>,
+    /// How much further out (or back in) than the usual step the player has shuffled.
+    peek_reach: f32,
 }
 
 impl Cover {
@@ -225,6 +227,7 @@ fn take_cover(
     statics: Res<Statics>,
     mut cover: ResMut<Cover>,
     mut players: Query<(&Transform, &mut PlayerInput, &Health), With<LocalPlayer>>,
+    (map, camera): (Res<Map>, Query<&GlobalTransform, With<crate::view::WorldCamera>>),
 ) {
     let Ok((transform, mut input, health)) = players.single_mut() else {
         return;
@@ -309,6 +312,25 @@ fn take_cover(
     if (slide < 0.0 && cover.edges[0]) || (slide > 0.0 && cover.edges[1]) {
         slide = 0.0;
     }
+    // Going to the sights from the shoulder view: aim at what the crosshair was on, so the
+    // point you were looking at stays in the middle of the screen.
+    if controls.aim && !cover.aiming
+        && let Ok(eye) = camera.single()
+    {
+        let from = eye.translation();
+        let dir = eye.forward().as_vec3();
+        let mut reach = map.raycast(from, dir, 150.0);
+        if let Some((d, _)) = statics.raycast(from, dir, reach) {
+            reach = reach.min(d);
+        }
+        let target = from + dir * reach.max(2.0);
+        let head = feet + Vec3::Y * stance::eye(stance::STAND);
+        let to = target - head;
+        if to.length() > 0.5 {
+            input.yaw = f32::atan2(-to.x, -to.z);
+            input.pitch = (to.y / to.length()).clamp(-1.0, 1.0).asin().clamp(-1.45, 1.45);
+        }
+    }
     cover.aiming = controls.aim;
     input.buttons &= !buttons::SPRINT;
     // A light lean into the wall keeps us pressed against it.
@@ -317,9 +339,10 @@ fn take_cover(
     if cover.aiming {
         input.movement = Vec2::ZERO;
         if wall.low {
-            // Pop up over it.
+            // Pop up over it, and still shuffle along it while aiming (never off its end).
             input.stance = stance::STAND;
             input.lean = 0;
+            input.movement = to_input(yaw, along * slide * 0.45 + press);
         } else {
             // Step out round whichever edge we are at, toward where we are looking (no
             // leaning in this game: the whole robot comes out past the corner).
@@ -359,7 +382,9 @@ fn take_cover(
                 }
             }
             if let Some((home, side)) = cover.peek {
-                let out = home + along * side * 0.65 + wall.normal * 0.1;
+                // Stepped out: the stick shuffles further out or back in a little.
+                cover.peek_reach = (cover.peek_reach + slide * side * dt * 1.2).clamp(-0.3, 0.6);
+                let out = home + along * side * (0.65 + cover.peek_reach) + wall.normal * 0.1;
                 let to = Vec3::new(out.x - feet.x, 0.0, out.z - feet.z);
                 input.movement = if to.length() > 0.05 { to_input(yaw, to.normalize() * (to.length() * 6.0).min(1.0)) } else { Vec2::ZERO };
             }
@@ -369,6 +394,7 @@ fn take_cover(
         let to = Vec3::new(home.x - feet.x, 0.0, home.z - feet.z);
         if to.length() < 0.06 {
             cover.peek = None;
+            cover.peek_reach = 0.0;
         } else {
             input.movement = to_input(yaw, to.normalize() * (to.length() * 6.0).min(1.0));
         }

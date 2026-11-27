@@ -726,8 +726,18 @@ const BACK: f32 = 0.08;
 /// Length of a bullpup's butt, which holds the action and magazine behind the grip.
 const BUTT: f32 = 0.26;
 
-fn barrel_length(frame: &GunFrame, equipped: &[u8; SLOT_COUNT]) -> f32 {
-    frame.barrel * [1.0, 1.6, 0.6, 1.1, 1.25, 0.45][(equipped[slot::BARREL] as usize).min(5)]
+fn barrel_length(frame: &GunFrame, class: GunClass, equipped: &[u8; SLOT_COUNT]) -> f32 {
+    frame.barrel * stretch(class) * [1.0, 1.6, 0.6, 1.1, 1.25, 0.45][(equipped[slot::BARREL] as usize).min(5)]
+}
+
+/// How much longer than their frames say guns are drawn ahead of the grip (receiver and
+/// barrel; the stock stays put): seen from behind, a long gun should reach well out in
+/// front of the shooter, not look stubby against its own stock.
+pub fn stretch(class: GunClass) -> f32 {
+    match class {
+        GunClass::Pistol => 1.1,
+        _ => 1.32,
+    }
 }
 
 /// Height of the surface sights and optics mount on: the receiver top, a carry handle, or the rail over a top magazine.
@@ -739,7 +749,7 @@ fn deck_height(frame: &GunFrame) -> f32 {
 pub fn muzzle_distance(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> f32 {
     let Some(frame) = def.frame else { return def.length };
     let device = [0.0, 0.08, 0.26, 0.07, 0.1, 0.36, 0.06][(equipped[slot::MUZZLE] as usize).min(6)];
-    frame.receiver - BACK + barrel_length(&frame, equipped) + device
+    frame.receiver * stretch(def.class) - BACK + barrel_length(&frame, def.class, equipped) + device
 }
 
 /// Height of the sight line above the grip.
@@ -763,17 +773,17 @@ pub fn sight_height(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> f32 {
 pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
     let Some(f) = def.frame else { return def.model.clone() };
     let v = |s: usize| equipped[s] as usize;
-    let (w, h, r) = (f.width, f.height, f.receiver);
+    let (w, h, r) = (f.width, f.height, f.receiver * stretch(def.class));
     let (front, mid, top) = (BACK - r, BACK - r * 0.5, h * 0.5);
     let bore_y = h * 0.12;
-    let barrel = barrel_length(&f, equipped);
+    let barrel = barrel_length(&f, def.class, equipped);
     let tip = front - barrel;
     let bore = f.bore * if v(slot::BARREL) == 3 { 1.35 } else { 1.0 };
     let deck = deck_height(&f);
     let bullpup = f.layout == GunLayout::Bullpup;
     let revolver = f.mag == MagShape::Cylinder;
     let slide = def.class == GunClass::Pistol && !revolver;
-    let guard = (f.barrel * 0.7).min(barrel - 0.02).max(0.05);
+    let guard = (f.barrel * stretch(def.class) * 0.7).min(barrel - 0.02).max(0.05);
     let (zu, yu) = (front - (guard * 0.55).max(0.06), bore_y - h * 0.36);
 
     // Receiver.
@@ -1074,13 +1084,14 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             let zf = front - barrel * 0.82;
             let post = deck + 0.055 - bore_y;
             m = m
-                .cube(Paint::Dark, [0.022, deck + 0.03, BACK - 0.04], [0.016, 0.05, 0.025])
-                .cube(Paint::Dark, [-0.022, deck + 0.03, BACK - 0.04], [0.016, 0.05, 0.025])
-                .cube(Paint::Glow, [0.0, deck + 0.05, zf], [0.014, 0.01, 0.016]);
+                // A tight rear notch and a slim front post: a precise sight picture.
+                .cube(Paint::Dark, [0.014, deck + 0.03, BACK - 0.04], [0.012, 0.05, 0.02])
+                .cube(Paint::Dark, [-0.014, deck + 0.03, BACK - 0.04], [0.012, 0.05, 0.02])
+                .cube(Paint::Glow, [0.0, deck + 0.052, zf], [0.006, 0.006, 0.008]);
             if f.carry {
                 m.plate(Paint::Dark, 0.0, [bore_y + bore * 0.4, zf + 0.02], [deck + 0.045, zf], 0.016, 0.02)
             } else {
-                m.cube(Paint::Dark, [0.0, bore_y + post * 0.5, zf], [0.016, post, 0.02])
+                m.cube(Paint::Dark, [0.0, bore_y + post * 0.5, zf], [0.008, post, 0.016])
             }
         }
         1 => m
@@ -1088,13 +1099,13 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
             .cube(Paint::Dark, [0.026, yb + 0.045, z0 - 0.02], [0.008, 0.05, 0.012])
             .cube(Paint::Dark, [-0.026, yb + 0.045, z0 - 0.02], [0.008, 0.05, 0.012])
             .cube(Paint::Dark, [0.0, yb + 0.072, z0 - 0.02], [0.06, 0.008, 0.012])
-            .cube(Paint::Red, [0.0, yb + 0.045, z0 - 0.024], [0.006, 0.006, 0.003]),
+            .cube(Paint::Red, [0.0, yb + 0.045, z0 - 0.024], [0.0035, 0.0035, 0.002]),
         2 => m
             .cube(Paint::Dark, [0.0, yb + 0.006, z0], [0.075, 0.012, 0.09])
             .cube(Paint::Dark, [0.034, yb + 0.037, z0], [0.008, 0.062, 0.09])
             .cube(Paint::Dark, [-0.034, yb + 0.037, z0], [0.008, 0.062, 0.09])
             .cube(Paint::Dark, [0.0, yb + 0.07, z0], [0.076, 0.008, 0.09])
-            .cube(Paint::Red, [0.0, yb + 0.037, z0 - 0.04], [0.005, 0.005, 0.003]),
+            .cube(Paint::Red, [0.0, yb + 0.037, z0 - 0.04], [0.003, 0.003, 0.002]),
         3 => m
             .cube(Paint::Dark, [0.0, yb + 0.008, z0], [0.04, 0.016, 0.08])
             .cylinder(Paint::Dark, [0.0, yb + 0.05, z0], [0.06, 0.16, 0.06])

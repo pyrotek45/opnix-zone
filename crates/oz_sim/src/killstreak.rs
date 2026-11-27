@@ -197,6 +197,8 @@ const CARGO_DELAY: f32 = 4.0;
 /// How fast a crate comes down under its chute (m/s), and how long it stays once landed.
 const CHUTE_SPEED: f32 = 4.5;
 const CRATE_LIFE: f32 = 60.0;
+/// Resupplies in one crate: press Use at it to take one.
+pub const CRATE_USES: u8 = 2;
 
 /// Authority: flies cargo planes, drops their crates, lands them and hands out supplies.
 #[allow(clippy::too_many_arguments)]
@@ -207,7 +209,7 @@ pub fn run_supply(
     mut ids: ResMut<NetIds>,
     mut planes: Query<(Entity, &mut Cargo, &mut Transform), (Without<SupplyCrate>, Without<Player>)>,
     mut crates: Query<(Entity, &mut SupplyCrate, &mut Transform, &mut crate::loot::Pickup), (Without<Cargo>, Without<Player>)>,
-    mut players: Query<(&Transform, &mut Player, &mut Health, &mut Arsenal), (Without<Cargo>, Without<SupplyCrate>)>,
+    mut players: Query<(&Transform, &mut Player, &mut Health, &mut Arsenal, &PlayerInput), (Without<Cargo>, Without<SupplyCrate>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let dt = sim_dt(&time);
@@ -220,7 +222,7 @@ pub fn run_supply(
                 MatchEntity,
                 ids.next(),
                 SupplyCrate { team: cargo.team, ground: cargo.at.y, used: Vec::new() },
-                crate::loot::Pickup { loot: crate::loot::Loot::Supply { team: cargo.team }, life: Some(CRATE_LIFE) },
+                crate::loot::Pickup { loot: crate::loot::Loot::Supply { team: cargo.team, uses: CRATE_USES }, life: Some(CRATE_LIFE) },
                 Transform::from_translation(transform.translation - Vec3::Y * 2.5),
             ));
         }
@@ -241,10 +243,22 @@ pub fn run_supply(
             continue;
         }
         let at = transform.translation;
-        for (body, mut mate, mut health, mut arsenal) in &mut players {
-            if mate.team != supply.team || !health.alive() || supply.used.contains(&mate.id) || body.translation.distance(at) > 2.2 {
+        let crate::loot::Loot::Supply { team, uses } = pickup.loot else { continue };
+        if uses == 0 {
+            // Emptied: it stays a little while as an open, empty box, then goes.
+            pickup.life = Some(life.min(8.0));
+            continue;
+        }
+        for (body, mut mate, mut health, mut arsenal, input) in &mut players {
+            // Walk up and press Use to open it and take a resupply (once each).
+            if mate.team != supply.team || !health.alive() || !input.interact || supply.used.contains(&mate.id) || body.translation.distance(at) > 2.2 {
                 continue;
             }
+            let crate::loot::Loot::Supply { uses, .. } = pickup.loot else { break };
+            if uses == 0 {
+                break;
+            }
+            pickup.loot = crate::loot::Loot::Supply { team, uses: uses - 1 };
             supply.used.push(mate.id);
             health.hp = health.max;
             mate.burn_time = 0.0;

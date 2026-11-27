@@ -89,7 +89,7 @@ impl Plugin for TacticalPlugin {
             .add_systems(Update, (toggles, share_lamp).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
             .add_systems(OnEnter(MatchPhase::Active), (spawn, |mut hands: ResMut<Hands>| *hands = Hands { since_throw: 9.0, since_cancel: 9.0, since_melee: 9.0, ..default() }))
             .add_systems(Update, track_hands.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, ((update, loot_prompt, point_at_ledge).chain(), minimap, dress_loot, spin_loot, sway_chutes).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, ((update, loot_prompt, supply_prompt, point_at_ledge).chain(), minimap, dress_loot, spin_loot, sway_chutes, crate_state).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -504,15 +504,20 @@ fn dress_loot(
             Loot::Gear(_) => Some(art.bake(&BlockModel::new().cube(Paint::Rust, [0.0, 0.15, 0.0], [0.45, 0.3, 0.45]).cylinder(Paint::Iron, [0.0, 0.38, 0.0], [0.14, 0.18, 0.14]).cube(Paint::Gold, [0.0, 0.15, -0.23], [0.3, 0.06, 0.01]), &mut meshes)),
             Loot::Supply { .. } => {
                 // A banded wooden crate with a medical cross, and a parachute over it while it falls.
+                // An open-topped box (dark inside), a lid that comes off once it is empty, and
+                // a light on the side for each resupply left in it.
                 let body = BlockModel::new()
-                    .cube(Paint::Wood, [0.0, 0.42, 0.0], [1.0, 0.84, 0.8])
+                    .cube(Paint::Dark, [0.0, 0.42, 0.0], [0.9, 0.78, 0.7])
+                    .cube(Paint::Wood, [0.0, 0.06, 0.0], [1.0, 0.12, 0.8])
+                    .cube(Paint::Wood, [0.0, 0.42, -0.375], [1.0, 0.84, 0.05])
+                    .cube(Paint::Wood, [0.0, 0.42, 0.375], [1.0, 0.84, 0.05])
+                    .cube(Paint::Wood, [-0.475, 0.42, 0.0], [0.05, 0.84, 0.8])
+                    .cube(Paint::Wood, [0.475, 0.42, 0.0], [0.05, 0.84, 0.8])
                     .cube(Paint::Iron, [0.0, 0.2, 0.0], [1.02, 0.07, 0.82])
                     .cube(Paint::Iron, [0.0, 0.66, 0.0], [1.02, 0.07, 0.82])
                     .cube(Paint::Bone, [0.0, 0.42, -0.406], [0.34, 0.1, 0.01])
-                    .cube(Paint::Bone, [0.0, 0.42, -0.406], [0.1, 0.34, 0.01])
-                    .cube(Paint::Bone, [0.506, 0.42, 0.0], [0.01, 0.1, 0.34])
-                    .cube(Paint::Bone, [0.506, 0.42, 0.0], [0.01, 0.34, 0.1])
-                    .shard(Paint::Green, [0.0, 0.9, 0.0], [0.08, 0.08, 0.08]);
+                    .cube(Paint::Bone, [0.0, 0.42, -0.406], [0.1, 0.34, 0.01]);
+                let lid = BlockModel::new().cube(Paint::Wood, [0.0, 0.87, 0.0], [1.04, 0.06, 0.84]).cube(Paint::Iron, [0.0, 0.905, 0.0], [0.2, 0.02, 0.84]);
                 let chute = BlockModel::new()
                     .cone(Paint::Coral, [0.0, 4.2, 0.0], [3.4, 1.3, 3.4])
                     .cylinder(Paint::Bone, [0.0, 3.62, 0.0], [3.3, 0.06, 3.3])
@@ -523,6 +528,18 @@ fn dress_loot(
                 commands.entity(entity).insert(Visibility::Inherited);
                 let crate_root = commands.spawn((Transform::default(), Visibility::Inherited, ChildOf(entity))).id();
                 art.spawn(&mut commands, crate_root, &art.bake(&body, &mut meshes));
+                let lid_root = commands.spawn((CrateLid, Transform::default(), Visibility::Inherited, ChildOf(entity))).id();
+                art.spawn(&mut commands, lid_root, &art.bake(&lid, &mut meshes));
+                for i in 0..oz_sim::killstreak::CRATE_USES {
+                    commands.spawn((
+                        CrateCell(i),
+                        Mesh3d(art.primitive(Shape::Cube)),
+                        MeshMaterial3d(art.paint(Paint::Green)),
+                        Transform::from_xyz(0.51, 0.58 - i as f32 * 0.2, 0.0).with_scale(Vec3::new(0.02, 0.12, 0.3)),
+                        bevy::pbr::NotShadowCaster,
+                        ChildOf(entity),
+                    ));
+                }
                 let canopy = commands.spawn((Parachute, Transform::default(), Visibility::Inherited, ChildOf(entity))).id();
                 art.spawn(&mut commands, canopy, &art.bake(&chute, &mut meshes));
                 continue;
@@ -548,6 +565,56 @@ fn dress_loot(
 /// A falling supply crate's canopy: swaying on the way down, packed away once it lands.
 #[derive(Component)]
 struct Parachute;
+
+/// A supply crate's lid (off once it is empty) and its lights, one per resupply left.
+#[derive(Component)]
+struct CrateLid;
+
+#[derive(Component)]
+struct CrateCell(u8);
+
+/// Lights and lid follow how many resupplies are left in each crate.
+fn crate_state(crates: Query<(&oz_sim::loot::Pickup, &Children)>, mut lids: Query<&mut Visibility, (With<CrateLid>, Without<CrateCell>)>, mut cells: Query<(&CrateCell, &mut Visibility), Without<CrateLid>>) {
+    for (pickup, children) in &crates {
+        let oz_sim::loot::Loot::Supply { uses, .. } = pickup.loot else { continue };
+        for child in children.iter() {
+            if let Ok(mut lid) = lids.get_mut(child) {
+                let wanted = if uses > 0 { Visibility::Inherited } else { Visibility::Hidden };
+                if *lid != wanted {
+                    *lid = wanted;
+                }
+            }
+            if let Ok((cell, mut shown)) = cells.get_mut(child) {
+                let wanted = if cell.0 < uses { Visibility::Inherited } else { Visibility::Hidden };
+                if *shown != wanted {
+                    *shown = wanted;
+                }
+            }
+        }
+    }
+}
+
+/// Next to one of your team's crates with something left in it: the prompt to open it.
+fn supply_prompt(
+    controls: Res<Controls>,
+    settings: Res<Settings>,
+    players: Query<(&Player, &Transform, &Health), With<LocalPlayer>>,
+    crates: Query<(&Transform, &oz_sim::loot::Pickup)>,
+    mut actions: ResMut<crate::hud::HandActions>,
+) {
+    let Ok((me, at, health)) = players.single() else { return };
+    if !health.alive() {
+        return;
+    }
+    let near = crates.iter().find_map(|(t, p)| match p.loot {
+        oz_sim::loot::Loot::Supply { team, uses } if team == me.team && uses > 0 && t.translation.distance(at.translation) < 2.2 => Some(uses),
+        _ => None,
+    });
+    if let Some(uses) = near {
+        let key = if controls.gamepad { "X".to_string() } else { settings.bindings.label(Action::Interact) };
+        actions.0.insert(0, (key, format!("RESUPPLY  ({uses} LEFT)")));
+    }
+}
 
 fn sway_chutes(time: Res<Time>, map: Res<Map>, statics: Res<oz_sim::session::Statics>, crates: Query<(&Transform, &Children), (With<oz_sim::loot::Pickup>, Without<Parachute>)>, mut chutes: Query<(&mut Transform, &mut Visibility), With<Parachute>>) {
     let t = time.elapsed_secs();

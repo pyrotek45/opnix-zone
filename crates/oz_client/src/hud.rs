@@ -126,7 +126,8 @@ struct ScopeImages([Handle<Image>; 3]);
 /// A round scope mask: black outside the glass, a reticle inside. `kind` 1 = ACOG chevron,
 /// 2 = sniper crosshair, 3 = thermal (a white cross with a ring, on a cold blue rim).
 fn scope_image(kind: u8) -> Image {
-    let size = 256usize;
+    // Fine enough that hairlines stay hairlines on a big screen.
+    let size = 640usize;
     let c = size as f32 / 2.0;
     let mut pixels = vec![0u8; size * size * 4];
     for y in 0..size {
@@ -145,27 +146,28 @@ fn scope_image(kind: u8) -> Image {
             let line = |v: f32, w: f32| v.abs() < w;
             if kind == 2 {
                 // Heavy posts from the edge, fine cross in the middle, mil dots.
-                let post = (line(dx, 3.0) && dy.abs() > c * 0.45) || (line(dy, 3.0) && dx.abs() > c * 0.45);
-                let fine = (line(dx, 0.7) || line(dy, 0.7)) && d < 0.93;
-                let dot = (line(dx, 1.5) || line(dy, 1.5)) && ((dx.abs().max(dy.abs()) / (c * 0.09)).fract() < 0.12) && dx.abs().max(dy.abs()) > 4.0 && d < 0.45;
+                let post = (line(dx, 2.6) && dy.abs() > c * 0.45) || (line(dy, 2.6) && dx.abs() > c * 0.45);
+                let fine = (line(dx, 0.55) || line(dy, 0.55)) && d < 0.93;
+                let dot = (line(dx, 1.6) || line(dy, 1.6)) && ((dx.abs().max(dy.abs()) / (c * 0.09)).fract() < 0.05) && dx.abs().max(dy.abs()) > 6.0 && d < 0.45;
                 if (post && d < 0.93) || fine || dot {
                     rgba = [8, 8, 10, 255];
                 }
             } else if kind == 3 {
                 // A thin white cross with a gap in the middle, a ring round it, and a centre dot.
-                let cross = (line(dx, 0.8) || line(dy, 0.8)) && dx.abs().max(dy.abs()) > c * 0.08 && d < 0.93;
-                let ring = (d - 0.3).abs() < 0.008;
-                if cross || ring || d < 0.02 {
+                let cross = (line(dx, 0.6) || line(dy, 0.6)) && dx.abs().max(dy.abs()) > c * 0.08 && d < 0.93;
+                let ring = (d - 0.3).abs() < 0.003;
+                if cross || ring || d < 0.008 {
                     rgba = [235, 245, 255, 240];
                 }
             } else if kind == 1 {
                 // An amber chevron with a fine stadia line below it.
-                let up = dy - 2.0;
-                let chevron = up >= 0.0 && up < c * 0.12 && (dx.abs() - up * 0.9).abs() < 1.6;
-                let stadia = line(dx, 0.7) && dy > c * 0.14 && dy < c * 0.6;
+                // A slim chevron whose tip is the aim point, and hairline stadia.
+                let up = dy;
+                let chevron = up >= 0.0 && up < c * 0.07 && (dx.abs() - up * 0.9).abs() < 0.9;
+                let stadia = line(dx, 0.45) && dy > c * 0.1 && dy < c * 0.6;
                 if chevron {
                     rgba = [255, 190, 70, 255];
-                } else if stadia || (line(dy, 0.7) && dx.abs() > c * 0.55 && d < 0.93) {
+                } else if stadia || (line(dy, 0.45) && dx.abs() > c * 0.55 && d < 0.93) {
                     rgba = [10, 10, 10, 230];
                 }
             }

@@ -54,6 +54,8 @@ pub enum Role {
 
 #[derive(Component, Default)]
 pub struct Bot {
+    /// Last shot at or hit by someone it could not see: where from, and when.
+    threat: Option<(Vec3, f32)>,
     pub plan: Plan,
     pub role: Role,
     /// When the current plan runs out (match seconds).
@@ -276,6 +278,28 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
     if bot.plan == Plan::Retreat && !expired {
         return;
     }
+    // Shot at by someone it cannot see: never sit there and take it. Close in on them from
+    // the side, or rush them, sprinting from cover to cover.
+    if let Some((from, at)) = bot.threat
+        && now - at < 4.0
+        && !matches!(bot.plan, Plan::Flank | Plan::Hunt)
+    {
+        bot.threat = Some((from, at - 10.0));
+        let far = from.distance(feet) > 35.0;
+        if far || rng.0.chance(0.55) {
+            let side = if rng.0.chance(0.5) { 1.0 } else { -1.0 };
+            let across = (from - feet).xz().normalize_or_zero().perp() * side * 16.0;
+            let wide = from + Vec3::new(across.x, 0.0, across.y);
+            bot.plan = Plan::Flank;
+            bot.plan_until = now + 10.0;
+            go(bot, Vec3::new(wide.x, map.height(wide.x, wide.z), wide.z));
+        } else {
+            bot.plan = Plan::Hunt;
+            bot.plan_until = now + 8.0;
+            go(bot, from);
+        }
+        return;
+    }
     // Strayed from a human squad leader: drop whatever it was doing and catch up.
     let strayed = bodies.iter().filter(|b| b.team == me.team && !b.bot).any(|_| true)
         && bodies.iter().filter(|b| b.team == me.team).min_by_key(|b| (b.bot as u8, b.id)).is_some_and(|l| !l.bot && l.id != me.id && l.at.distance(feet) > 10.0);
@@ -299,7 +323,7 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
     // A new plan. Who leads the team: a human if there is one, else the lowest id.
     let leader = bodies.iter().filter(|b| b.team == me.team).min_by_key(|b| (b.bot as u8, b.id)).copied();
     let leading = leader.is_none_or(|l| l.id == me.id);
-    let target = if fresh.is_some() { fresh } else if now - intel.map_or(-99.0, |(_, t)| t) > 20.0 { hunch(rng) } else { None };
+    let target = if fresh.is_some() { fresh } else if now - intel.map_or(-99.0, |(_, t)| t) > 12.0 { hunch(rng) } else { None };
     let enemy_base = map.team_spawns[(1 - me.team.min(1)) as usize].first().copied().unwrap_or(Vec2::ZERO);
     let watch = |from: Vec3, at: Vec3| yaw_to((at - from).xz());
     let flank = |bot: &mut Bot, at: Vec3| {
@@ -326,7 +350,7 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
             }
             Some(p) if rng.0.chance(0.5) || fresh.is_none() => flank(bot, p),
             // A real sighting: wait for them to come round, gun on the angle.
-            Some(p) => camp(bot, feet, watch(feet, p), rng.0.range(5.0, 9.0)),
+            Some(p) => camp(bot, feet, watch(feet, p), rng.0.range(3.0, 5.0)),
             None if matches!(bot.plan, Plan::Camp { .. }) => {
                 bot.plan = Plan::Search;
                 bot.plan_until = now + rng.0.range(12.0, 20.0);
@@ -335,7 +359,7 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
             None => {
                 let spot = sweep_point(map, rng);
                 let face = watch(spot, Vec3::new(enemy_base.x, spot.y, enemy_base.y));
-                camp(bot, spot, face, rng.0.range(8.0, 14.0));
+                camp(bot, spot, face, rng.0.range(4.0, 7.0));
             }
         }
         return;
@@ -377,7 +401,7 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
         (Role::Flanker, Some(p)) if bot.plan != Plan::Flank => flank(bot, p),
         (Role::Anchor, Some(p)) => {
             // Hold the angle the trouble will come from, a little back from the leader.
-            camp(bot, feet, watch(feet, p), rng.0.range(6.0, 10.0));
+            camp(bot, feet, watch(feet, p), rng.0.range(3.0, 6.0));
         }
         _ => {
             // Stay with the leader, spread out a little to one side and behind.
@@ -661,6 +685,30 @@ pub fn drive_bots(
                 }
             }
             bot.last_hp = health.hp;
+        } else if health.alive() {
+            // Versus bots notice fire too: a round past the head or a hit gives the shooter's
+            // rough position to the whole team, and the bot stops whatever it was doing.
+            let feet = transform.translation;
+            let chest = feet + Vec3::Y * 1.1;
+            let near_miss = fired.iter().filter(|(team, ..)| *team != me.team).find(|(_, from, to)| {
+                let span = *to - *from;
+                let along = ((chest - *from).dot(span) / span.length_squared().max(1e-4)).clamp(0.0, 1.0);
+                (*from + span * along).distance(chest) < 3.0
+            });
+            let hit = health.hp < bot.last_hp - 0.5;
+            let source = near_miss.map(|(_, from, _)| *from).or_else(|| {
+                hit.then(|| fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet)))).flatten()
+            });
+            if let Some(from) = source {
+                let fresh = bot.threat.is_none_or(|(_, at)| now - at > 3.0);
+                bot.threat = Some((from, now));
+                intel.0[(me.team as usize).min(1)] = Some((from, now));
+                if fresh && bot.target.is_none() {
+                    bot.plan_until = 0.0;
+                    bot.think = 0.0;
+                }
+            }
+            bot.last_hp = health.hp;
         }
         // Flashed: stumble about blind until it wears off.
         if let Some(mut stunned) = stunned
@@ -695,9 +743,11 @@ pub fn drive_bots(
             bot.think = rng.0.range(0.2, 0.35);
             // The nearest enemy we can actually see, upright or leaning out of cover.
             let upright = PlayerInput { lean: 0, ..*input };
+            // Under fire, it scans hard and far for whoever is shooting.
+            let sight = if bot.threat.is_some_and(|(_, at)| now - at < 6.0) { 120.0 } else { 85.0 };
             let sees = |from: Vec3, chest: Vec3| {
                 let distance = chest.distance(from);
-                distance < 85.0
+                distance < sight
                     && obstruction(&map, &statics, &solids, from, (chest - from) / distance.max(1e-3), distance) >= distance - 0.6
                     && !crate::combat::smoke_between(smokes, from, chest)
                     && (distance < 4.0 || !leaves_between(foliage, from, chest))
