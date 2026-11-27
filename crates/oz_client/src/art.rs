@@ -73,7 +73,10 @@ pub fn seated(part: &Part) -> Part {
         return *part;
     }
     let thin = part.size.min_element().max(1e-4);
-    let margin = (0.000015 / thin).clamp(0.0001, 0.0015).min(thin * 0.3);
+    // Thickness sets the step; the paint picks a notch within it, so two parts of different
+    // colour laid in one plane never fight over it either.
+    let notch = Paint::ALL.iter().position(|p| *p == part.paint).unwrap_or(0) as f32 * 0.00004;
+    let margin = ((0.000015 / thin).clamp(0.0001, 0.0015) + notch).min(thin * 0.3);
     Part { size: part.size + Vec3::splat(margin * 2.0), ..*part }
 }
 
