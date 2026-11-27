@@ -89,7 +89,7 @@ impl Plugin for TacticalPlugin {
             .add_systems(Update, (toggles, share_lamp).chain().in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)))
             .add_systems(OnEnter(MatchPhase::Active), (spawn, |mut hands: ResMut<Hands>| *hands = Hands { since_throw: 9.0, since_cancel: 9.0, since_melee: 9.0, ..default() }))
             .add_systems(Update, track_hands.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)))
-            .add_systems(Update, ((update, loot_prompt, point_at_ledge).chain(), minimap, dress_loot, spin_loot).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, ((update, loot_prompt, point_at_ledge).chain(), minimap, dress_loot, spin_loot, sway_chutes).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -494,6 +494,31 @@ fn dress_loot(
             Loot::Ammo => Some(art.bake(&BlockModel::new().cube(Paint::Green, [0.0, 0.18, 0.0], [0.55, 0.32, 0.32]).cube(Paint::Gold, [0.0, 0.36, 0.0], [0.3, 0.05, 0.12]).cube(Paint::Dark, [0.0, 0.18, -0.165], [0.4, 0.08, 0.01]), &mut meshes)),
             Loot::Armor => Some(art.bake(&BlockModel::new().cube(Paint::Steel, [0.0, 0.32, 0.0], [0.5, 0.6, 0.12]).cube(Paint::Dark, [0.0, 0.32, -0.07], [0.36, 0.42, 0.02]).cube(Paint::Aether, [0.0, 0.5, -0.085], [0.2, 0.05, 0.01]), &mut meshes)),
             Loot::Gear(_) => Some(art.bake(&BlockModel::new().cube(Paint::Rust, [0.0, 0.15, 0.0], [0.45, 0.3, 0.45]).cylinder(Paint::Iron, [0.0, 0.38, 0.0], [0.14, 0.18, 0.14]).cube(Paint::Gold, [0.0, 0.15, -0.23], [0.3, 0.06, 0.01]), &mut meshes)),
+            Loot::Supply { .. } => {
+                // A banded wooden crate with a medical cross, and a parachute over it while it falls.
+                let body = BlockModel::new()
+                    .cube(Paint::Wood, [0.0, 0.42, 0.0], [1.0, 0.84, 0.8])
+                    .cube(Paint::Iron, [0.0, 0.2, 0.0], [1.02, 0.07, 0.82])
+                    .cube(Paint::Iron, [0.0, 0.66, 0.0], [1.02, 0.07, 0.82])
+                    .cube(Paint::Bone, [0.0, 0.42, -0.406], [0.34, 0.1, 0.01])
+                    .cube(Paint::Bone, [0.0, 0.42, -0.406], [0.1, 0.34, 0.01])
+                    .cube(Paint::Bone, [0.506, 0.42, 0.0], [0.01, 0.1, 0.34])
+                    .cube(Paint::Bone, [0.506, 0.42, 0.0], [0.01, 0.34, 0.1])
+                    .shard(Paint::Green, [0.0, 0.9, 0.0], [0.08, 0.08, 0.08]);
+                let chute = BlockModel::new()
+                    .cone(Paint::Coral, [0.0, 4.2, 0.0], [3.4, 1.3, 3.4])
+                    .cylinder(Paint::Bone, [0.0, 3.62, 0.0], [3.3, 0.06, 3.3])
+                    .segment(Paint::Bone, [0.45, 0.84, 0.35], [1.55, 3.6, 1.2], 0.02)
+                    .segment(Paint::Bone, [-0.45, 0.84, 0.35], [-1.55, 3.6, 1.2], 0.02)
+                    .segment(Paint::Bone, [0.45, 0.84, -0.35], [1.55, 3.6, -1.2], 0.02)
+                    .segment(Paint::Bone, [-0.45, 0.84, -0.35], [-1.55, 3.6, -1.2], 0.02);
+                commands.entity(entity).insert(Visibility::Inherited);
+                let crate_root = commands.spawn((Transform::default(), Visibility::Inherited, ChildOf(entity))).id();
+                art.spawn(&mut commands, crate_root, &art.bake(&body, &mut meshes));
+                let canopy = commands.spawn((Parachute, Transform::default(), Visibility::Inherited, ChildOf(entity))).id();
+                art.spawn(&mut commands, canopy, &art.bake(&chute, &mut meshes));
+                continue;
+            }
         };
         commands.entity(entity).insert(Visibility::Inherited);
         let lift = if matches!(pickup.loot, Loot::Weapon { .. }) { 0.55 } else { 0.05 };
@@ -509,6 +534,28 @@ fn dress_loot(
             bevy::pbr::NotShadowCaster,
             ChildOf(entity),
         ));
+    }
+}
+
+/// A falling supply crate's canopy: swaying on the way down, packed away once it lands.
+#[derive(Component)]
+struct Parachute;
+
+fn sway_chutes(time: Res<Time>, map: Res<Map>, statics: Res<oz_sim::session::Statics>, crates: Query<(&Transform, &Children), (With<oz_sim::loot::Pickup>, Without<Parachute>)>, mut chutes: Query<(&mut Transform, &mut Visibility), With<Parachute>>) {
+    let t = time.elapsed_secs();
+    for (at, children) in &crates {
+        let p = at.translation;
+        let ground = map.height(p.x, p.z).max(statics.support(p.x, p.z, p.y + 0.3));
+        let falling = p.y - ground > 0.15;
+        for child in children.iter() {
+            if let Ok((mut transform, mut visibility)) = chutes.get_mut(child) {
+                let wanted = if falling { Visibility::Inherited } else { Visibility::Hidden };
+                if *visibility != wanted {
+                    *visibility = wanted;
+                }
+                transform.rotation = Quat::from_rotation_z((t * 1.3).sin() * 0.08) * Quat::from_rotation_x((t * 0.9).cos() * 0.06);
+            }
+        }
     }
 }
 

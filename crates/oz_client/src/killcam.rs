@@ -119,6 +119,8 @@ pub struct KillCam {
     best_score: f32,
     capture: Option<(f32, u8, String)>,
     best: Option<Clip>,
+    /// The replay is looking down a scope of this kind (0 = none): the HUD draws its glass.
+    pub scope: u8,
 }
 
 impl KillCam {
@@ -347,6 +349,7 @@ fn run(
     mut robots: Query<&mut Visibility, (With<crate::avatar::PlayerRobot>, Without<Ghost>, Without<ReplayGun>)>,
     mut ghosts: Query<(&mut Transform, &mut Pose, &mut Visibility), (With<Ghost>, Without<WorldCamera>, Without<crate::avatar::PlayerRobot>, Without<ReplayGun>)>,
     mut held: Query<&mut Transform, (With<ReplayGun>, Without<Ghost>, Without<WorldCamera>)>,
+    mut gun_shown: Query<&mut Visibility, (With<ReplayGun>, Without<Ghost>, Without<crate::avatar::PlayerRobot>)>,
     mut cameras: Query<(&mut Transform, &mut Projection), (With<WorldCamera>, Without<Ghost>, Without<ReplayTracer>)>,
     mut tracers: Query<(Entity, &mut ReplayTracer)>,
 ) {
@@ -379,6 +382,7 @@ fn run(
                 commands.entity(gun).despawn();
             }
             commands.entity(replay.overlay).despawn();
+            cam.scope = 0;
             for mut visibility in robots.iter_mut() {
                 if *visibility == Visibility::Hidden {
                     *visibility = Visibility::Inherited;
@@ -528,15 +532,31 @@ fn run(
         camera.translation = position;
         camera.rotation = rotation;
         let aiming = killer.flags & flags::AIMING != 0;
+        // What the killer's gun does when aimed: its zoom, and whether that is through glass.
+        let stats = content.weapons.get(killer.weapon as usize).map(|def| oz_core::arsenal::resolve(def, &oz_core::arsenal::WeaponState { equipped: killer.parts, ..default() }, &content.attachments));
+        let (ads_fov, scope) = stats.map_or((55.0, 0), |s| (s.ads_fov, s.scope));
+        let scoped = aiming && scope > 0;
+        cam.scope = if scoped { scope } else { 0 };
         if let Projection::Perspective(perspective) = &mut *projection {
-            perspective.fov = if slow { 52f32 } else if aiming { 50f32 } else { 70f32 }.to_radians();
+            let fov = if aiming { ads_fov * 70.0 / crate::view::BASE_FOV } else if slow { 60.0 } else { 70.0 };
+            perspective.fov = fov.to_radians();
         }
-        if let Some(mut gun) = replay.gun.and_then(|g| held.get_mut(g).ok()) {
-            // Hip or shouldered, with a kick on every shot it fires.
-            let kick = cam.shots.iter().filter(|s| (replay.clock - s.t) >= 0.0 && (replay.clock - s.t) < 0.07 && s.from.distance(eye) < 2.5).count().min(1) as f32;
-            let hold = if aiming { Vec3::new(0.0, -0.12, -0.32) } else { Vec3::new(0.17, -0.2, -0.36) };
-            gun.translation = position + rotation * (hold + Vec3::Z * kick * 0.05);
-            gun.rotation = rotation * Quat::from_rotation_x(kick * 0.08);
+        if let Some(gun) = replay.gun {
+            if let Ok(mut shown) = gun_shown.get_mut(gun) {
+                // Down a scope the glass is the view; the gun itself would only be in the way.
+                let wanted = if scoped { Visibility::Hidden } else { Visibility::Inherited };
+                if *shown != wanted {
+                    *shown = wanted;
+                }
+            }
+            if let Ok(mut gun) = held.get_mut(gun) {
+                // Hip or shouldered, scaled down like a view model, with a kick on every shot.
+                let kick = cam.shots.iter().filter(|s| (replay.clock - s.t) >= 0.0 && (replay.clock - s.t) < 0.07 && s.from.distance(eye) < 2.5).count().min(1) as f32;
+                let hold = if aiming { Vec3::new(0.0, -0.075, -0.2) } else { Vec3::new(0.12, -0.13, -0.24) };
+                gun.translation = position + rotation * (hold + Vec3::Z * kick * 0.03);
+                gun.rotation = rotation * Quat::from_rotation_x(kick * 0.08);
+                gun.scale = Vec3::splat(0.55);
+            }
         }
     }
     cam.replay = Some(replay);

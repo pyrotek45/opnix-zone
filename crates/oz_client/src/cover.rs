@@ -339,6 +339,24 @@ fn take_cover(
             input.lean = 0;
             if side != 0.0 && cover.peek.is_none() {
                 cover.peek = Some((feet, side));
+            } else if side == 0.0 && cover.peek.is_none() {
+                // Not right at an end: find the nearest corner within reach along the wall
+                // (either way, the one toward where we look first) and go round that.
+                let looking = if along.dot(Quat::from_rotation_y(yaw) * Vec3::NEG_Z) >= 0.0 { 1.0 } else { -1.0 };
+                let mut found = None;
+                'search: for step in 1..=12 {
+                    let d = step as f32 * 0.1;
+                    for dir in [looking, -looking] {
+                        if wall_behind(&statics, chest + along * dir * d, &wall).is_none() {
+                            found = Some((dir, d));
+                            break 'search;
+                        }
+                    }
+                }
+                if let Some((dir, d)) = found {
+                    let home = feet + along * dir * (d - EDGE).max(0.0);
+                    cover.peek = Some((Vec3::new(home.x, feet.y, home.z), dir));
+                }
             }
             if let Some((home, side)) = cover.peek {
                 let out = home + along * side * 0.65 + wall.normal * 0.1;

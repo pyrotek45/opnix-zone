@@ -76,6 +76,8 @@ pub struct Pose {
     /// In cover: how far to turn the body (radians, relative to where the player looks)
     /// so its back is to the wall.
     pub cover: Option<f32>,
+    /// Firing blind from cover: the gun held up over the top (or round the edge).
+    pub blind: bool,
     /// Force a face (showroom); otherwise the face follows events.
     pub face: Option<usize>,
 }
@@ -125,6 +127,9 @@ pub struct Rig {
     pub(crate) cook: bool,
     /// Ladder: how much of the climbing pose is showing, and where in the hand-over-hand cycle.
     pub(crate) climb: f32,
+    /// Hunkered behind cover (0..1), and arms up for blind fire (0..1).
+    pub(crate) hunker: f32,
+    pub(crate) blind: f32,
     pub(crate) climb_phase: f32,
     /// The body's current turn away from the view (cover), eased.
     pub(crate) turn: f32,
@@ -414,6 +419,8 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
         turn: 0.0,
         climb: 0.0,
         climb_phase: 0.0,
+        hunker: 0.0,
+        blind: 0.0,
     }
 }
 
@@ -582,6 +589,7 @@ fn pose_players(
         pose.lean += (lean - pose.lean) * (1.0 - (-dt * 12.0).exp());
         let facing = transform.rotation.to_euler(EulerRot::YXZ).0;
         pose.cover = oz_sim::player::cover_yaw(input.cover).filter(|_| !pose.dead).map(|yaw| (yaw - facing + PI).rem_euclid(TAU) - PI);
+        pose.blind = input.held(oz_sim::player::buttons::BLIND) && !pose.dead;
         if health.hp < rig.last_hp - 0.5 {
             rig.hurt = 0.6;
         }
@@ -695,10 +703,15 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let body_rot = Quat::from_rotation_y(rig.turn) * body_rot;
         set(&mut transforms, rig.body, body_at, body_rot, blend);
 
+        // Hunkered down behind cover: lower and folded over, so the head stays under the top
+        // of a waist-high wall (the hit spheres in `weapons` drop the same way).
+        let hunker_target = (pose.cover.is_some() && pose.stance == stance::CROUCH && !pose.aiming && !pose.dead) as u8 as f32;
+        rig.hunker = towards(rig.hunker, hunker_target, 9.0);
+        let hunker = rig.hunker * c;
         // Hips: standing bobs with the stride; crouch-walking stays low and level; kneeling is lowest.
         let swing = p.sin();
         let stand_hip = HIP - p.cos().abs() * 0.05 * k;
-        let crouch_hip = 0.45 + 0.1 * moving - p.cos().abs() * 0.02 * k;
+        let crouch_hip = 0.5 + 0.06 * moving - p.cos().abs() * 0.02 * k - 0.1 * rig.hunker;
         let hip_target = st * stand_hip + c * crouch_hip + pr * HIP;
         let hip_y = rig.hip.update(hip_target, 260.0, 0.62, dt);
         set(&mut transforms, rig.hips, Vec3::Y * hip_y, Quat::IDENTITY, 1.0);
@@ -711,7 +724,9 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             let stand = (s * (0.78 * k).min(0.95), -lift * (1.05 * k).min(1.25));
             // Crouch-walk: knees well bent, short quick steps; blends into a kneel when still.
             let crouch_walk = (0.85 + s * 0.42, -1.35 - lift * 0.55);
-            let kneel = if side == 0 { (1.45, -1.45) } else { (-0.05, -1.5) };
+            // Kneeling: worked out from the hip height so the front foot is flat on the
+            // ground and the back knee rests on it (no sinking into the floor).
+            let kneel = kneel_leg(rig.hip.value, side == 0);
             let crouch = (kneel.0 + (crouch_walk.0 - kneel.0) * moving, kneel.1 + (crouch_walk.1 - kneel.1) * moving);
             // Prone: legs out straight with a slow crawl.
             let prone = (s * 0.15 * k.min(1.0), -lift * 0.3 * k.min(1.0));
@@ -742,7 +757,7 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
 
         // Upper body: lean into the run, peek out of cover, aim where the player looks.
         let prone = pr > 0.5 && !pose.dead;
-        let torso_lean = st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.24 - 0.1 * moving);
+        let torso_lean = st * (-0.1 * k - if pose.sprinting { 0.18 } else { 0.0 }) + c * (-0.24 - 0.1 * moving) - 0.32 * hunker;
         // Leaning out to aim rolls the whole torso; blind fire (leaning without aiming) keeps
         // the body in and only pushes the gun round the corner.
         let roll = Quat::from_rotation_z(-pose.lean * if pose.aiming { 0.3 } else { 0.06 });
@@ -754,8 +769,11 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let aim_pitch = aim_pitch + (-1.35 - aim_pitch) * rig.climb;
         let tilt = Quat::from_rotation_z(0.45 * r + fumble * 2.0);
         let melee = if rig.melee_t < 0.42 { (rig.melee_t / 0.42 * PI).sin() } else { 0.0 };
+        // Blind fire over low cover: both arms up, the gun held over the top.
+        rig.blind = towards(rig.blind, (pose.blind && pose.lean.abs() < 0.3) as u8 as f32, 14.0);
         let aim_at = Vec3::Y * SHOULDER
             + if pose.aiming { Vec3::new(-0.04, 0.03, -0.04) } else { Vec3::new(pose.lean * 0.4, 0.0, 0.0) }
+            + Vec3::new(0.0, 0.62, 0.12) * rig.blind
             + Vec3::new(0.0, 0.05, -0.3) * melee
             + Vec3::new(0.0, -0.05 * r + fumble, 0.07 * kick.max(0.0) - 0.03 * kick.min(0.0));
         set(&mut transforms, rig.aim, aim_at, rot(aim_pitch + 0.4 * melee) * Quat::from_rotation_y(0.5 * melee) * tilt, if prone { blend } else { 1.0 - (-dt * 30.0).exp() });
@@ -778,7 +796,7 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
             set(&mut transforms, rig.arms[1], Vec3::ZERO, Quat::IDENTITY, blend);
         }
         // The head follows the aim, and glances down at the gun while reloading.
-        let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r };
+        let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r - 0.35 * hunker };
         set(&mut transforms, rig.head, Vec3::Y * NECK, rot(head_pitch), blend);
 
         // Face: dead > hurt > angry > blink > smile.
@@ -801,6 +819,30 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
                 }
             }
         }
+    }
+}
+
+/// Thigh and knee angles for a kneel at hip height `hip`: the front leg (`front`) puts
+/// its foot flat on the ground a little ahead; the back leg rests its knee on the ground
+/// with the shin lying back along it. Two-bone IK in the leg's own plane.
+fn kneel_leg(hip: f32, front: bool) -> (f32, f32) {
+    const SHIN: f32 = 0.46;
+    // The thigh joint sits just under the hips.
+    let drop = (hip - 0.02).max(0.2);
+    if front {
+        // Foot (sole) on the ground, a little forward of the hip.
+        let (x, y) = (0.3f32, drop);
+        let d = (x * x + y * y).sqrt().clamp(0.05, THIGH + SHIN - 1e-3);
+        let toward = x.atan2(y);
+        let at_hip = ((THIGH * THIGH + d * d - SHIN * SHIN) / (2.0 * THIGH * d)).clamp(-1.0, 1.0).acos();
+        let at_foot = ((SHIN * SHIN + d * d - THIGH * THIGH) / (2.0 * SHIN * d)).clamp(-1.0, 1.0).acos();
+        let thigh = toward + at_hip;
+        let shin = toward - at_foot;
+        (thigh, shin - thigh)
+    } else {
+        // Knee on the ground (its pad is ~0.06 thick), shin flat behind.
+        let thigh = -((drop - 0.06) / THIGH).clamp(-1.0, 1.0).acos();
+        (thigh, -FRAC_PI_2 - thigh)
     }
 }
 

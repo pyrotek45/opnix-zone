@@ -58,6 +58,10 @@ struct Body {
     yaw: f32,
     /// Head offset from leaning.
     lean: Vec3,
+    /// Crouched in cover: hunkered lower.
+    hunker: bool,
+    /// Firing blind: where the gun (and the arm holding it) is exposed.
+    blind: Option<Vec3>,
     /// Limbs already shot off (cannot be hit again).
     lost: u8,
     name: String,
@@ -73,6 +77,8 @@ impl Body {
         let (head, torso, arms, legs, torso_r) = match self.stance {
             stance::PRONE => (up(0.32) + forward * 0.62, up(0.26) + forward * 0.05, up(0.24) + forward * 0.45, up(0.18) - forward * 0.6, 0.34),
             // Crouched, the head sits just under low cover (`worldgen::COVER_HEIGHT`).
+            // Hunkered in cover it folds lower still: the body stays under a waist-high wall.
+            stance::CROUCH if self.hunker => (up(0.82) + forward * 0.12, up(0.55), up(0.62) - forward * 0.02, up(0.26), 0.34),
             stance::CROUCH => (up(0.95) + self.lean, up(0.62) + self.lean * 0.5, up(0.72) + self.lean * 0.5 - forward * 0.05, up(0.28), 0.36),
             _ => (up(1.62) + self.lean, up(1.05) + self.lean * 0.55, up(1.18) + self.lean * 0.55, up(0.45), 0.36),
         };
@@ -81,7 +87,8 @@ impl Body {
             (head, 0.24, part::HEAD),
             (torso, torso_r, part::TORSO),
             (arms - right * arm_x, 0.15, part::LEFT_ARM),
-            (arms + right * arm_x, 0.15, part::RIGHT_ARM),
+            // Blind fire: the gun arm is up over the top (or round the edge), and can be hit there.
+            (self.blind.unwrap_or(arms + right * arm_x), 0.15, part::RIGHT_ARM),
             (legs - right * 0.13, 0.19, part::LEFT_LEG),
             (legs + right * 0.13, 0.19, part::RIGHT_LEG),
         ]
@@ -178,6 +185,8 @@ pub fn fire_weapons(
                 stance: input.stance,
                 yaw: input.yaw,
                 lean: crate::player::lean_offset(&statics, transform.translation, input),
+                hunker: input.cover != 0 && input.stance == stance::CROUCH && !input.held(crate::player::buttons::AIM),
+                blind: input.held(crate::player::buttons::BLIND).then(|| crate::player::shot_origin(&statics, transform.translation, input) - Vec3::Y * 0.1),
                 lost: player.lost,
                 name: player.name.clone(),
             })

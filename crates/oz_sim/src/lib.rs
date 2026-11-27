@@ -135,6 +135,7 @@ impl Plugin for SimPlugin {
                     killstreak::shoot_down,
                     combat::run_mines,
                     killstreak::run_streaks,
+                    killstreak::run_supply,
                     killstreak::bots_call_in,
                 )
                     .chain()

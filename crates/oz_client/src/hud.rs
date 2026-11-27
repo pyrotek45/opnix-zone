@@ -861,13 +861,17 @@ fn scope_and_stance(
     mut overlay: Query<&mut Visibility, With<ScopeOverlay>>,
     mut glass: Query<&mut ImageNode, With<ScopeGlass>>,
     mut limbs: Query<(&StanceLimb, &mut Node)>,
+    killcam: Res<crate::killcam::KillCam>,
 ) {
+    // A replay looking down the killer's scope shows its glass too.
+    let replay = killcam.playing() && killcam.scope > 0;
     if let Ok(mut visibility) = overlay.single_mut() {
-        let wanted = if view.scoped > 0.5 && *screen == Screen::None { Visibility::Inherited } else { Visibility::Hidden };
+        let wanted = if replay || (view.scoped > 0.5 && *screen == Screen::None) { Visibility::Inherited } else { Visibility::Hidden };
         set(&mut *visibility, wanted);
     }
     if let (Ok(mut glass), Some(images)) = (glass.single_mut(), images) {
-        let handle = &images.0[if view.scope_kind >= 2 { 1 } else { 0 }];
+        let kind = if replay { killcam.scope } else { view.scope_kind };
+        let handle = &images.0[if kind >= 2 { 1 } else { 0 }];
         if glass.image != *handle {
             glass.image = handle.clone();
         }

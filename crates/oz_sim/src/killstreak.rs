@@ -171,6 +171,91 @@ pub struct Drone {
     pub orbit: f32,
 }
 
+/// A cargo plane on its way to drop supplies at `at`.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Cargo {
+    pub at: Vec3,
+    pub dir: Vec3,
+    pub team: u8,
+    pub owner: u8,
+    pub dropped: bool,
+}
+
+/// A supply crate: falls under its parachute, then resupplies each teammate who reaches it once.
+#[derive(Component, Clone, Debug)]
+pub struct SupplyCrate {
+    pub team: u8,
+    pub ground: f32,
+    pub used: Vec<u8>,
+}
+
+const CARGO_HP: f32 = 300.0;
+const CARGO_SPEED: f32 = 36.0;
+const CARGO_HEIGHT: f32 = 38.0;
+/// Seconds from the call to the drop.
+const CARGO_DELAY: f32 = 4.0;
+/// How fast a crate comes down under its chute (m/s), and how long it stays once landed.
+const CHUTE_SPEED: f32 = 4.5;
+const CRATE_LIFE: f32 = 60.0;
+
+/// Authority: flies cargo planes, drops their crates, lands them and hands out supplies.
+#[allow(clippy::too_many_arguments)]
+pub fn run_supply(
+    time: Res<Time>,
+    content: Res<Content>,
+    mut commands: Commands,
+    mut ids: ResMut<NetIds>,
+    mut planes: Query<(Entity, &mut Cargo, &mut Transform), (Without<SupplyCrate>, Without<Player>)>,
+    mut crates: Query<(Entity, &mut SupplyCrate, &mut Transform, &mut crate::loot::Pickup), (Without<Cargo>, Without<Player>)>,
+    mut players: Query<(&Transform, &mut Player, &mut Health, &mut Arsenal), (Without<Cargo>, Without<SupplyCrate>)>,
+    mut fx: EventWriter<FxEvent>,
+) {
+    let dt = sim_dt(&time);
+    for (entity, mut cargo, mut transform) in &mut planes {
+        transform.translation += cargo.dir * CARGO_SPEED * dt;
+        let past = (transform.translation - cargo.at).xz().dot(cargo.dir.xz());
+        if !cargo.dropped && past >= 0.0 {
+            cargo.dropped = true;
+            commands.spawn((
+                MatchEntity,
+                ids.next(),
+                SupplyCrate { team: cargo.team, ground: cargo.at.y, used: Vec::new() },
+                crate::loot::Pickup { loot: crate::loot::Loot::Supply { team: cargo.team }, life: Some(CRATE_LIFE) },
+                Transform::from_translation(transform.translation - Vec3::Y * 2.5),
+            ));
+        }
+        if past > 220.0 {
+            commands.entity(entity).despawn();
+        }
+    }
+    for (entity, mut supply, mut transform, mut pickup) in &mut crates {
+        if transform.translation.y > supply.ground + 0.01 {
+            // Under the chute: a slow, slightly swaying descent.
+            transform.translation.y = (transform.translation.y - CHUTE_SPEED * dt).max(supply.ground);
+            continue;
+        }
+        let life = pickup.life.unwrap_or(0.0) - dt;
+        pickup.life = Some(life);
+        if life <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let at = transform.translation;
+        for (body, mut mate, mut health, mut arsenal) in &mut players {
+            if mate.team != supply.team || !health.alive() || supply.used.contains(&mate.id) || body.translation.distance(at) > 2.2 {
+                continue;
+            }
+            supply.used.push(mate.id);
+            health.hp = health.max;
+            mate.burn_time = 0.0;
+            crate::weapons::top_up(&mut arsenal, &content.weapons);
+            mate.gear_left = content.gear.get(mate.gear as usize).map_or(mate.gear_left, |g| g.count.max(mate.gear_left));
+            fx.write(FxEvent::tell(mate.id, "RESUPPLIED"));
+            fx.write(FxEvent::Sound { sfx: Sfx::Buy, at: Some(at) });
+        }
+    }
+}
+
 /// Authority: turns call-in commands into rewards.
 #[allow(clippy::too_many_arguments)]
 pub fn use_streaks(
@@ -222,15 +307,21 @@ pub fn use_streaks(
                 ));
             }
             reward::SUPPLY => {
-                for (mut mate, _, _, mut health, mut arsenal) in &mut players {
-                    if mate.team == team && health.alive() {
-                        health.hp = health.max;
-                        mate.burn_time = 0.0;
-                        crate::weapons::top_up(&mut arsenal, &content.weapons);
-                        mate.gear_left = content.gear.get(mate.gear as usize).map_or(mate.gear_left, |g| g.count.max(mate.gear_left));
-                    }
-                }
+                // A cargo plane flies over and drops a crate on a parachute a few steps
+                // ahead of you; teammates walk up to it to heal and rearm.
+                let forward = Vec3::new(-input.yaw.sin(), 0.0, -input.yaw.cos());
+                let spot = transform.translation + forward * 5.0;
+                let at = Vec3::new(spot.x, map.height(spot.x, spot.z).max(statics.support(spot.x, spot.z, transform.translation.y + 1.0)), spot.z);
+                let start = at + Vec3::Y * CARGO_HEIGHT - forward * CARGO_SPEED * CARGO_DELAY;
+                commands.spawn((
+                    MatchEntity,
+                    ids.next(),
+                    Cargo { at, dir: forward, team, owner: id, dropped: false },
+                    Aircraft { look: oz_core::content::ShotLook::RadarPlane, hp: CARGO_HP, team, owner: id, radius: 4.0, hit_by: None },
+                    Transform::from_translation(start).looking_to(forward, Vec3::Y),
+                ));
                 fx.write(FxEvent::Sound { sfx: Sfx::Buy, at: None });
+                fx.write(FxEvent::tell(id, "SUPPLY DROP INBOUND"));
             }
             reward::ARTILLERY => {
                 let (at, dir) = aim(transform, input);

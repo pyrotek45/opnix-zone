@@ -225,6 +225,8 @@ pub struct Player {
     pub ping: u16,
     /// Seconds of spawn protection left (versus). Firing ends it early.
     pub protect: f32,
+    /// Seconds spent in the enemy base (versus): after a short grace it hurts.
+    pub trespass: f32,
     /// Kills since the last death (versus killstreaks).
     pub streak: u16,
     /// Earned, unused killstreak rewards, oldest first (ids of `killstreak::reward`, 0 = empty).
@@ -339,6 +341,7 @@ impl Player {
             flags: 0,
             ping: 0,
             protect: 0.0,
+            trespass: 0.0,
             streak: 0,
             rewards: [0; crate::killstreak::STACK],
             streaks: crate::killstreak::DEFAULT_STREAKS,
@@ -834,6 +837,18 @@ pub fn vitals(
     let fighters: Vec<(u8, Vec3)> = players.iter().filter(|(_, h, ..)| h.alive()).map(|(p, _, t, ..)| (p.team, t.translation)).collect();
     for (mut player, mut health, mut transform, mut arsenal, mut input) in &mut players {
         if health.alive() {
+            // The other team's base is off limits: no camping where people spawn.
+            if rules.pvp && !rules.hunt && state.phase == Phase::Live && in_enemy_base(&map, player.team, transform.translation) {
+                if player.trespass == 0.0 {
+                    fx.write(FxEvent::tell(player.id, "RESTRICTED AREA - LEAVE THE ENEMY BASE"));
+                }
+                player.trespass += dt;
+                if player.trespass > 2.0 {
+                    damage_player(&mut health, &mut player, 40.0 * dt, None, &mut state, &mut fx);
+                }
+            } else {
+                player.trespass = 0.0;
+            }
             player.calm += dt;
             player.life += dt;
             player.protect = (player.protect - dt).max(0.0);
@@ -914,6 +929,24 @@ pub fn respawn(
     health.hp = health.max;
     transform.translation = spawn_point(map, player.id, rules.pvp.then_some(player.team));
     input.stance = stance::STAND;
+}
+
+/// How far round a team's spawn points its base reaches (versus).
+pub const BASE_RADIUS: f32 = 14.0;
+
+/// Middle of a team's base.
+pub fn base_centre(map: &GameMap, team: u8) -> Option<Vec2> {
+    let spawns = &map.team_spawns[(team as usize).min(1)];
+    (!spawns.is_empty()).then(|| spawns.iter().copied().sum::<Vec2>() / spawns.len() as f32)
+}
+
+/// Is `at` inside the base of `team`'s enemies?
+pub fn in_enemy_base(map: &GameMap, team: u8, at: Vec3) -> bool {
+    let other = 1 - team.min(1);
+    base_centre(map, other).is_some_and(|c| {
+        let reach = map.team_spawns[other as usize].iter().map(|s| s.distance(c)).fold(0.0, f32::max) + BASE_RADIUS * 0.6;
+        at.xz().distance(c) < reach.min(BASE_RADIUS * 1.5)
+    })
 }
 
 /// The team spawn point furthest from the nearest enemy.

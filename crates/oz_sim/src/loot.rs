@@ -28,6 +28,8 @@ pub enum Loot {
     /// A catalog gear index.
     Gear(u8),
     Armor,
+    /// A killstreak supply crate (`killstreak::SupplyCrate`): not taken like loot.
+    Supply { team: u8 },
 }
 
 /// Something lying on the ground to take.
@@ -226,6 +228,7 @@ pub fn run_loot(
                         gear.name.to_string()
                     })
                 }),
+                Loot::Supply { .. } => None,
                 Loot::Weapon { index, parts, ammo, reserve } => {
                     let i = index as usize;
                     let Some(def) = content.weapons.get(i) else { continue };
@@ -300,6 +303,7 @@ pub fn encode(loot: &Loot) -> (u8, u8, u32) {
         Loot::Armor => (1, 0, 0),
         Loot::Gear(index) => (2, index, 0),
         Loot::Weapon { index, parts, .. } => (3, index, parts.iter().enumerate().fold(0u32, |bits, (i, p)| bits | ((*p as u32 & 7) << (i * 3)))),
+        Loot::Supply { team } => (4, team, 0),
     }
 }
 
@@ -308,6 +312,7 @@ pub fn decode(sub: u8, aux: u8, packed: u32) -> Loot {
         0 => Loot::Ammo,
         1 => Loot::Armor,
         2 => Loot::Gear(aux),
+        4 => Loot::Supply { team: aux },
         _ => Loot::Weapon { index: aux, parts: std::array::from_fn(|i| ((packed >> (i * 3)) & 7) as u8), ammo: 0, reserve: 0 },
     }
 }
@@ -318,7 +323,7 @@ mod tests {
 
     #[test]
     fn loot_round_trips_through_a_snapshot() {
-        for loot in [Loot::Ammo, Loot::Armor, Loot::Gear(3), Loot::Weapon { index: 7, parts: [1, 0, 2, 3, 0, 1, 4], ammo: 0, reserve: 0 }] {
+        for loot in [Loot::Ammo, Loot::Armor, Loot::Gear(3), Loot::Supply { team: 1 }, Loot::Weapon { index: 7, parts: [1, 0, 2, 3, 0, 1, 4], ammo: 0, reserve: 0 }] {
             let (sub, aux, packed) = encode(&loot);
             assert_eq!(decode(sub, aux, packed), loot);
         }

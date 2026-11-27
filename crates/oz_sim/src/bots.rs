@@ -228,6 +228,14 @@ struct Body {
 #[allow(clippy::too_many_arguments)]
 fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rng: &mut SimRng, bodies: &[Body], intel: Option<(Vec3, f32)>, now: f32) {
     let go = |bot: &mut Bot, at: Vec3| {
+        // Never into the enemy base: stop at its edge.
+        let at = match crate::player::base_centre(map, 1 - me.team.min(1)) {
+            Some(c) if crate::player::in_enemy_base(map, me.team, at) => {
+                let out = (at.xz() - c).normalize_or(Vec2::X) * crate::player::BASE_RADIUS * 1.6 + c;
+                Vec3::new(out.x, map.height(out.x, out.y), out.y)
+            }
+            _ => at,
+        };
         if bot.goal.distance(at) > 2.0 || bot.path.is_empty() {
             bot.goal = at;
             bot.path.clear();
