@@ -68,7 +68,7 @@ impl Plugin for CoverPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Cover>()
             .add_systems(OnEnter(MatchPhase::Active), |mut cover: ResMut<Cover>| *cover = Cover::default())
-            .add_systems(Update, (demo, take_cover, mark_cover).chain().in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
+            .add_systems(Update, (demo, take_cover, mark_cover, demo_photos).chain().in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -84,16 +84,38 @@ fn demo(
     mut done: Local<bool>,
 ) {
     let Ok(which) = std::env::var("OPNIX_COVER_DEMO") else { return };
-    if *done || state.phase != Phase::Live {
+    if state.phase != Phase::Live {
         return;
     }
     let Ok((mut transform, mut input, health)) = players.single_mut() else { return };
     if !health.alive() {
         return;
     }
+    if *done {
+        // `OPNIX_DEMO_FIRE=1` keeps the trigger held (blind fire from cover).
+        if std::env::var("OPNIX_DEMO_FIRE").is_ok_and(|v| v == "1") {
+            input.buttons |= buttons::FIRE;
+        }
+        return;
+    }
     let dirs = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z];
     let mut spot: Option<(Vec3, Vec3, Vec3)> = None; // feet, wall normal, where to look
-    if which == "ledge" {
+    if which == "low" {
+        // Crouched behind a waist-high crate or wall, looking out over it.
+        'o: for block in map.blocks.iter().filter(|b| b.solid && b.aabb.half.y > 0.4 && b.aabb.half.y < 0.65 && b.aabb.half.x.min(b.aabb.half.z) > 0.5) {
+            let b = block.aabb;
+            for normal in dirs {
+                let face = b.center + normal * (b.half.dot(normal.abs()) + OFFSET + 0.02);
+                let feet = Vec3::new(face.x, map.height(face.x, face.z), face.z);
+                if (b.bottom() - feet.y).abs() > 0.2 || statics.blocked(feet.x, feet.z, feet.y, 1.2, 0.3) || statics.raycast(feet + Vec3::Y * 1.5, -normal, 12.0).is_some() {
+                    continue;
+                }
+                let turn = std::env::var("OPNIX_DEMO_LOOK").ok().and_then(|d| d.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
+                spot = Some((feet, normal, feet + Quat::from_rotation_y(turn) * (-normal * 10.0) + Vec3::Y * 1.0));
+                break 'o;
+            }
+        }
+    } else if which == "ledge" {
         // Facing a low wall a step away, out of cover: the vault chevron should show.
         'l: for block in map.blocks.iter().filter(|b| b.solid && b.aabb.half.y < 0.6 && b.aabb.half.y > 0.25 && b.aabb.half.x.max(b.aabb.half.z) > 0.8) {
             let b = block.aabb;
@@ -152,8 +174,32 @@ fn demo(
     if which == "ledge" {
         return;
     }
-    let low = which == "window";
+    let low = which == "window" || which == "low";
     cover.wall = Some(Wall { normal, low });
+}
+
+/// `OPNIX_SHOTS=dir`: once the match is live, saves `OPNIX_SHOT_COUNT` screenshots (default 6)
+/// `OPNIX_SHOT_EVERY` seconds apart (default 0.4) after a 3 s settle, then quits.
+fn demo_photos(mut commands: Commands, time: Res<Time>, state: Res<MatchState>, mut clock: Local<f32>, mut taken: Local<u32>, mut exit: EventWriter<AppExit>) {
+    let Ok(dir) = std::env::var("OPNIX_SHOTS") else { return };
+    if state.phase != Phase::Live {
+        return;
+    }
+    let count = std::env::var("OPNIX_SHOT_COUNT").ok().and_then(|n| n.parse().ok()).unwrap_or(6u32);
+    let every = std::env::var("OPNIX_SHOT_EVERY").ok().and_then(|n| n.parse().ok()).unwrap_or(0.4f32);
+    *clock += time.delta_secs();
+    let due = 3.0 + every * *taken as f32;
+    if *taken >= count {
+        if *clock > due + 1.0 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    if *clock >= due {
+        let path = format!("{dir}/shot{:02}.png", *taken);
+        commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window()).observe(crate::devshots::save_ppm(path));
+        *taken += 1;
+    }
 }
 
 /// Tells everyone which way the wall at your back faces, so your robot sits with its back

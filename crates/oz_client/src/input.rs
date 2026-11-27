@@ -67,9 +67,9 @@ pub struct Controls {
     pub melee: bool,
     /// Take-cover button held.
     pub cover_held: bool,
-    /// Screw the suppressor on or off (tap D-pad down / U).
+    /// Screw the suppressor on or off (tap D-pad up / U).
     pub suppressor: bool,
-    /// Switch the flashlight (hold D-pad down / H).
+    /// Switch the flashlight (D-pad down / H).
     pub flashlight: bool,
     /// Pad X this frame: vaults when there is something to vault, else reload / use as usual.
     pub vault: bool,
@@ -143,7 +143,7 @@ fn read_devices(
     gamepads: Query<&Gamepad>,
     mut controls: ResMut<Controls>,
     mut stick_nav: Local<[bool; 4]>,
-    mut dpad_down: Local<f32>,
+    mut dpad_up: Local<f32>,
 ) {
     let was_gamepad = controls.gamepad;
     let mut c = Controls { gamepad: was_gamepad, ..default() };
@@ -242,25 +242,25 @@ fn read_devices(
         c.sprint |= held(GamepadButton::LeftThumb);
         c.sprint_pressed |= hit(GamepadButton::LeftThumb);
         c.gear |= held(GamepadButton::RightTrigger);
-        c.inspect |= hit(GamepadButton::DPadUp);
         c.cover |= hit(GamepadButton::LeftTrigger);
         c.cover_held |= held(GamepadButton::LeftTrigger);
         c.melee |= hit(GamepadButton::RightThumb);
         c.killstreak |= hit(GamepadButton::DPadRight);
         c.night_vision |= hit(GamepadButton::DPadLeft);
-        // D-pad down, Rainbow-style: tap to screw the suppressor on or off, hold for the flashlight.
-        // (The class picker is on the pause menu.)
-        if held(GamepadButton::DPadDown) {
-            let was = *dpad_down;
-            *dpad_down += time.delta_secs();
-            if was < 0.4 && *dpad_down >= 0.4 {
-                c.flashlight = true;
+        // D-pad down switches the flashlight. D-pad up: tap to screw the suppressor on or off,
+        // hold to inspect the gun. (The class picker is on the pause menu.)
+        c.flashlight |= hit(GamepadButton::DPadDown);
+        if held(GamepadButton::DPadUp) {
+            let was = *dpad_up;
+            *dpad_up += time.delta_secs();
+            if was < 0.4 && *dpad_up >= 0.4 {
+                c.inspect = true;
             }
         } else {
-            if *dpad_down > 0.0 && *dpad_down < 0.4 {
+            if *dpad_up > 0.0 && *dpad_up < 0.4 {
                 c.suppressor = true;
             }
-            *dpad_down = 0.0;
+            *dpad_up = 0.0;
         }
         c.scoreboard |= held(GamepadButton::Select);
         c.pause |= hit(GamepadButton::Start);

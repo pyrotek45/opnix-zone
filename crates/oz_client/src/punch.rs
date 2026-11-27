@@ -421,14 +421,14 @@ fn react(
                     continue;
                 }
                 // A flash star at the muzzle: ours from the viewmodel, theirs from the robot's gun.
-                let muzzle = if *by == me && view.muzzle != Vec3::ZERO {
+                let muzzle = if *by == me && view.muzzle != Vec3::ZERO && view.third < 0.4 {
                     Some(camera.translation + camera.rotation * view.muzzle)
                 } else {
                     rigs.iter().find(|(_, p)| p.id == *by).and_then(|(rig, _)| joints.get(rig.gun).ok()).map(|g| g.translation() + g.forward().as_vec3() * 0.55)
                 };
                 if let Some(muzzle) = muzzle.filter(|_| !*quiet) {
                     let mine = *by == me;
-                    let size = if mine { 0.05 } else { 0.16 };
+                    let size = if mine && view.third < 0.4 { 0.05 } else if mine { 0.1 } else { 0.16 };
                     for k in 0..2 {
                         let roll = kit.rng.range(0.0, TAU) + k as f32 * FRAC_PI_2;
                         let arm = Quat::from_rotation_arc(Vec3::Z, dir) * Quat::from_rotation_z(roll);

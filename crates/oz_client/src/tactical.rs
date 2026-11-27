@@ -762,8 +762,8 @@ fn share_lamp(lamp: Res<Lamp>, mut players: Query<(&mut PlayerInput, &Health), W
     }
 }
 
-/// D-pad down, Rainbow-style: tap to screw the suppressor on or off (if the gun came with
-/// one), hold to switch the flashlight. U and H on a keyboard.
+/// D-pad up screws the suppressor on or off (if the gun came with one); D-pad down switches
+/// the flashlight. U and H on a keyboard.
 #[allow(clippy::too_many_arguments)]
 fn toggles(
     controls: Res<Controls>,

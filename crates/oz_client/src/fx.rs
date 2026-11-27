@@ -189,7 +189,7 @@ fn spawn_effects(
             }
             FxEvent::Shot { by, sound, from, to, beam, tracer, quiet, .. } => {
                 // Tracers leave the real muzzle: our viewmodel's, or the shooter robot's gun.
-                let muzzle = if *by == me && view.muzzle != Vec3::ZERO {
+                let muzzle = if *by == me && view.muzzle != Vec3::ZERO && view.third < 0.4 {
                     Some(camera.translation + camera.rotation * view.muzzle)
                 } else {
                     rigs.iter().find(|(_, p)| p.id == *by).and_then(|(rig, _)| joints.get(rig.gun).ok()).map(|g| g.translation() + g.forward().as_vec3() * 0.55)
@@ -216,8 +216,8 @@ fn spawn_effects(
                     fx.streak(*from, *to, 0.035, Paint::Aether, 0.11);
                     fx.burst(*to, 1, &[Paint::Aether, Paint::Spark], 2.0, 0.06, 0.25);
                 } else {
-                    // Our own tracers start a little ahead so they do not fill the screen.
-                    let start = if *by == me { *from + (*to - *from).normalize_or_zero() * 0.6 } else { *from };
+                    // Our own tracers start a little ahead so they do not fill the screen (in first person).
+                    let start = if *by == me && view.third < 0.4 { *from + (*to - *from).normalize_or_zero() * 0.6 } else { *from };
                     // Suppressed shots leave faint tracers; special ammo shows its colour.
                     let width = if *quiet { 0.012 } else { 0.022 };
                     fx.streak(start, *to, width, if *by == 255 { Paint::Blue } else { *tracer }, 0.055);

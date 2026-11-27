@@ -171,6 +171,11 @@ impl KillCam {
         self.replay.is_some()
     }
 
+    /// The recorded time the replay is showing.
+    pub fn replay_clock(&self) -> Option<f32> {
+        self.replay.as_ref().map(|r| r.clock)
+    }
+
     fn tally(&mut self, id: u8) -> &mut Tally {
         if let Some(at) = self.tallies.iter().position(|t| t.id == id) {
             return &mut self.tallies[at];
@@ -699,11 +704,29 @@ fn overlay(commands: &mut Commands, tag: &str, headline: &str, weapon: &str, ski
 
 /// Developer aid: `OPNIX_BAIT=1` drops the local player halfway to the enemy base once the
 /// match is live, facing it, so a death (and its kill cam) comes quickly for screenshots.
-fn bait(map: Res<Map>, state: Res<MatchState>, mut players: Query<(&Player, &mut Transform, &mut PlayerInput), With<LocalPlayer>>, mut done: Local<bool>) {
+fn bait(
+    map: Res<Map>,
+    state: Res<MatchState>,
+    mut players: Query<(&Player, &mut Transform, &mut PlayerInput), With<LocalPlayer>>,
+    enemies: Query<(&Player, &Transform, &PlayerInput), Without<LocalPlayer>>,
+    mut done: Local<bool>,
+) {
     if *done || state.phase != Phase::Live || std::env::var("OPNIX_BAIT").is_err() {
         return;
     }
     let Ok((me, mut transform, mut input)) = players.single_mut() else { return };
+    // `OPNIX_BAIT=close`: a dozen metres in front of the nearest enemy instead, in its sights.
+    if std::env::var("OPNIX_BAIT").is_ok_and(|v| v == "close") {
+        let mine = transform.translation;
+        let Some((at, yaw)) = enemies.iter().filter(|(p, ..)| p.team != me.team).map(|(_, t, i)| (t.translation, i.yaw)).min_by(|a, b| a.0.distance(mine).total_cmp(&b.0.distance(mine))) else { return };
+        *done = true;
+        let ahead = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+        let spot = at + ahead * 12.0;
+        transform.translation = map.ground(spot.x, spot.z);
+        let to = at - transform.translation;
+        input.yaw = f32::atan2(-to.x, -to.z);
+        return;
+    }
     let (Some(ours), Some(theirs)) = (oz_sim::player::base_centre(&map, me.team), oz_sim::player::base_centre(&map, 1 - me.team.min(1))) else { return };
     *done = true;
     let mid = ours.lerp(theirs, 0.6);
