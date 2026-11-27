@@ -699,7 +699,9 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         // Blind fire keeps the back to the wall too: only the gun arm goes up and over.
         let over_top = pose.blind && pose.lean.abs() < 0.3;
         let wanted_turn = match pose.cover {
-            Some(turn) if (!pose.aiming && rig.angry < 0.8) || pose.blind => turn,
+            // In cover only going to the sights turns the body out; shooting blind (or having
+            // just shot) leaves the back to the wall.
+            Some(turn) if !pose.aiming || pose.blind => turn,
             _ => 0.0,
         };
         // Half a turn either way is the same distance: keep going the way it already is, so

@@ -82,6 +82,7 @@ fn demo(
     mut cover: ResMut<Cover>,
     mut players: Query<(&mut Transform, &mut PlayerInput, &Health), With<LocalPlayer>>,
     mut done: Local<bool>,
+    (time, mut controls, mut clock): (Res<Time>, ResMut<Controls>, Local<f32>),
 ) {
     let Ok(which) = std::env::var("OPNIX_COVER_DEMO") else { return };
     if state.phase != Phase::Live {
@@ -95,6 +96,22 @@ fn demo(
         // `OPNIX_DEMO_FIRE=1` keeps the trigger held (blind fire from cover).
         if std::env::var("OPNIX_DEMO_FIRE").is_ok_and(|v| v == "1") {
             input.buttons |= buttons::FIRE;
+        }
+        // `OPNIX_DEMO_FIRE=seq`: blind fire for 4 s, rest in cover 4 s, up on the sights 4 s,
+        // then fire on the sights.
+        if std::env::var("OPNIX_DEMO_FIRE").is_ok_and(|v| v == "seq") {
+            *clock += time.delta_secs();
+            let t = *clock;
+            if !(4.0..8.0).contains(&t) {
+                input.buttons |= buttons::FIRE;
+            }
+            if t >= 8.0 {
+                controls.aim = true;
+                input.buttons |= buttons::AIM;
+            }
+            if (8.0..12.0).contains(&t) {
+                input.buttons &= !buttons::FIRE;
+            }
         }
         return;
     }
