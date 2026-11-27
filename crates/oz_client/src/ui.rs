@@ -77,6 +77,7 @@ pub enum Setting {
     Fullscreen,
     Vsync,
     Volume,
+    Effects,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

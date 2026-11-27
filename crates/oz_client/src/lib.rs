@@ -12,6 +12,7 @@
 //! * [`actors`] - visuals for enemies, structures, ore, projectiles, players.
 //! * [`view`] - first-person camera, low-resolution render target, viewmodel.
 //! * [`fx`] - tracers, particles and explosions.
+//! * [`punch`] - heavy combat feedback: hit-stop, kill confirms, damage numbers, big blasts.
 //! * [`ui`] - a small widget kit with mouse, keyboard and gamepad focus.
 //! * [`avatar`] - the TV-headed robot operators and their animation rig.
 //! * [`showroom`] - an off-screen stage behind menus, lobby and gunsmith.
@@ -49,6 +50,7 @@ pub mod optics;
 pub mod predict;
 pub mod qol;
 pub mod props;
+pub mod punch;
 pub mod reconnect;
 pub mod retro;
 pub mod scene;
@@ -132,7 +134,7 @@ impl Plugin for ClientPlugin {
             props::PropsPlugin,
             tactical::TacticalPlugin,
         ));
-        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin, qol::QolPlugin, naming::NamingPlugin, objectives::ObjectivesPlugin));
+        app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin, qol::QolPlugin, naming::NamingPlugin, objectives::ObjectivesPlugin, punch::PunchPlugin));
         #[cfg(feature = "audio")]
         app.add_plugins((audio::AudioFxPlugin, announcer::AnnouncerPlugin));
     }

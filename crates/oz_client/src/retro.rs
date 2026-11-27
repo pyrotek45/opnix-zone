@@ -34,12 +34,18 @@ pub struct Retro {
     pub enabled: f32,
     pub levels: f32,
     pub strength: f32,
-    pub _pad: f32,
+    /// Colour fringing at the screen edges, 0..1 (a big hit or a blast nearby; see `punch`).
+    pub aberration: f32,
+    /// A coloured glow washing in from the screen edges (`edge_a` = strength).
+    pub edge_r: f32,
+    pub edge_g: f32,
+    pub edge_b: f32,
+    pub edge_a: f32,
 }
 
 impl Default for Retro {
     fn default() -> Self {
-        Self { enabled: 1.0, levels: 8.0, strength: 0.85, _pad: 0.0 }
+        Self { enabled: 1.0, levels: 8.0, strength: 0.85, aberration: 0.0, edge_r: 0.0, edge_g: 0.0, edge_b: 0.0, edge_a: 0.0 }
     }
 }
 

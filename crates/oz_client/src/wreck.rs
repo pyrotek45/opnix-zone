@@ -103,6 +103,15 @@ fn break_apart(
         let mut hide = 0;
         if killed {
             rig.fall = Vec3::new(push.dot(transform.right().as_vec3()), 0.0, push.dot(transform.back().as_vec3()));
+            // How it goes down: thrown back from close range, slumping from a headshot, crumpling otherwise.
+            let range = transform.translation.distance(from);
+            rig.death = if head {
+                crate::avatar::death::SLUMP
+            } else if range < 6.0 {
+                crate::avatar::death::KNOCKBACK
+            } else {
+                crate::avatar::death::CRUMPLE
+            };
             if blast {
                 // Everything goes, outward and up.
                 hide = HIDE_ALL;

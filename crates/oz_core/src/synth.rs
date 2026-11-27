@@ -102,6 +102,23 @@ pub enum Sfx {
     RocketFly,
     /// A killstreak drone's rotors (loop).
     DroneBuzz,
+    // Combat feedback (client-side juice).
+    /// A crisp metallic tick for each hit you land.
+    HitTick,
+    /// A heavy thunk and a bright chime: you got the kill.
+    KillConfirm,
+    /// The low, rolling body of a big explosion.
+    Rumble,
+    /// The sharp crack and crackle of an explosion close by.
+    Crack,
+    /// Kill confirm for a headshot: the thunk, then a high ringing ping.
+    KillHeadshot,
+    /// A grenade or canister skipping off the ground.
+    Clink,
+    /// A robot's systems winding down as it dies.
+    PowerDown,
+    /// A heavy metal body hitting the ground.
+    BodyFall,
 }
 
 /// Where a sound is heard, which changes how it sounds.
@@ -185,6 +202,14 @@ impl Sfx {
             Sfx::RocketFly,
             Sfx::DroneBuzz,
             Sfx::Rustle,
+            Sfx::HitTick,
+            Sfx::KillConfirm,
+            Sfx::Rumble,
+            Sfx::Crack,
+            Sfx::KillHeadshot,
+            Sfx::Clink,
+            Sfx::PowerDown,
+            Sfx::BodyFall,
         ]);
         all
     }
@@ -193,14 +218,15 @@ impl Sfx {
     pub fn variants(self) -> u32 {
         match self {
             Sfx::Shot(_) | Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy | Sfx::StepWood | Sfx::Crawl | Sfx::ImpactDirt | Sfx::ImpactConcrete | Sfx::ImpactMetal | Sfx::Whizz | Sfx::Shell => 3,
-            Sfx::Explosion | Sfx::Ricochet | Sfx::Debris | Sfx::Thunder => 2,
+            Sfx::Explosion | Sfx::Ricochet | Sfx::Debris | Sfx::Thunder | Sfx::HitTick | Sfx::Rumble | Sfx::Crack | Sfx::BodyFall => 2,
+            Sfx::Clink => 3,
             _ => 1,
         }
     }
 
     /// Does where it is heard change the sound (rooms, distance)?
     pub fn spatial_variants(self) -> bool {
-        matches!(self, Sfx::Shot(_) | Sfx::Explosion | Sfx::Step | Sfx::StepHeavy | Sfx::StepWood | Sfx::EnemyShot | Sfx::Thunder | Sfx::DoorBreak | Sfx::Shatter)
+        matches!(self, Sfx::Shot(_) | Sfx::Explosion | Sfx::Rumble | Sfx::Crack | Sfx::Step | Sfx::StepHeavy | Sfx::StepWood | Sfx::EnemyShot | Sfx::Thunder | Sfx::DoorBreak | Sfx::Shatter)
     }
 }
 
@@ -521,6 +547,70 @@ fn modeled(sfx: Sfx, take: u32) -> Option<Vec<f32>> {
                 burst(&mut out, &mut rng, at, 0.0005, 0.004, &[Biquad::highpass(2000.0)], 0.25 * part);
             }
         }
+        // Hit tick: a tiny struck plate, bright enough to cut through gunfire.
+        Sfx::HitTick => {
+            burst(&mut out, &mut rng, 0.0, 0.0002, 0.006, &[Biquad::bandpass(3400.0 * tone, 4.0)], 2.2);
+            thump(&mut out, 0.0, 1900.0 * tone, 1900.0 * tone, 0.022, 0.32);
+            thump(&mut out, 0.0, 2850.0 * tone, 2850.0 * tone, 0.014, 0.18);
+            thump(&mut out, 0.0, 420.0, 220.0, 0.018, 0.35);
+        }
+        // Kill confirm: a heavy thunk you feel, then a two-note chime.
+        Sfx::KillConfirm => {
+            thump(&mut out, 0.0, 170.0, 52.0, 0.08, 0.95);
+            burst(&mut out, &mut rng, 0.0, 0.0005, 0.025, &[Biquad::lowpass(2200.0), Biquad::highpass(120.0)], 1.4);
+            grains(&mut out, &mut rng, 0.005, 0.06, 5, (2500.0, 5500.0), 0.3);
+            thump(&mut out, 0.045, 1318.5, 1318.5, 0.09, 0.3);
+            thump(&mut out, 0.105, 1975.5, 1975.5, 0.16, 0.26);
+            thump(&mut out, 0.105, 987.8, 987.8, 0.16, 0.14);
+        }
+        // Headshot kill: the same thunk, then a bright bell-like ping that rings on.
+        Sfx::KillHeadshot => {
+            thump(&mut out, 0.0, 190.0, 55.0, 0.08, 0.9);
+            burst(&mut out, &mut rng, 0.0, 0.0003, 0.012, &[Biquad::bandpass(4200.0, 3.0)], 1.6);
+            thump(&mut out, 0.03, 2637.0, 2637.0, 0.22, 0.26);
+            thump(&mut out, 0.03, 3951.0, 3951.0, 0.14, 0.14);
+            thump(&mut out, 0.03, 1318.5, 1318.5, 0.18, 0.16);
+        }
+        // A metal can skipping on stone: two inharmonic rings and a tick.
+        Sfx::Clink => {
+            burst(&mut out, &mut rng, 0.0, 0.0002, 0.003, &[Biquad::highpass(3000.0)], 0.8);
+            thump(&mut out, 0.0, 2350.0 * tone, 2350.0 * tone, 0.03, 0.3);
+            thump(&mut out, 0.0, 3720.0 * tone, 3720.0 * tone, 0.018, 0.18);
+            thump(&mut out, 0.0, 900.0 * tone, 600.0, 0.012, 0.25);
+        }
+        // Power-down: a falling electronic whine with a last crackle.
+        Sfx::PowerDown => {
+            let length = (0.55 * SAMPLE_RATE as f32) as usize;
+            out.resize(length, 0.0);
+            let mut phase = 0.0f32;
+            for (i, sample) in out.iter_mut().enumerate() {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                let freq = 90.0 + 700.0 * (-t * 6.0).exp();
+                phase = (phase + freq / SAMPLE_RATE as f32).fract();
+                let square = if phase < 0.5 { 0.3 } else { -0.3 };
+                *sample += square * (t / 0.01).min(1.0) * (1.0 - t / 0.55).max(0.0).powi(2) * 0.8;
+            }
+            grains(&mut out, &mut rng, 0.05, 0.3, 8, (2000.0, 5000.0), 0.25);
+        }
+        // A heavy robot hitting the ground: a dull thud and a rattle of plates.
+        Sfx::BodyFall => {
+            thump(&mut out, 0.0, 120.0 * tone, 48.0, 0.07, 0.9);
+            burst(&mut out, &mut rng, 0.0, 0.002, 0.05, &[Biquad::lowpass(700.0), Biquad::highpass(60.0)], 2.2);
+            grains(&mut out, &mut rng, 0.01, 0.18, 10, (1200.0, 4200.0), 0.35);
+        }
+        // Explosion body: a long, rolling low end with the ground shaking.
+        Sfx::Rumble => {
+            thump(&mut out, 0.0, 75.0 * tone, 28.0, 0.35, 0.9);
+            burst(&mut out, &mut rng, 0.0, 0.03, 0.5 * tone, &[Biquad::lowpass(140.0), Biquad::highpass(22.0)], 7.0);
+            burst(&mut out, &mut rng, 0.15, 0.2, 0.7, &[Biquad::lowpass(90.0), Biquad::highpass(20.0)], 5.0);
+        }
+        // Explosion crack: a hard transient, then debris crackling down.
+        Sfx::Crack => {
+            burst(&mut out, &mut rng, 0.0, 0.0002, 0.005, &[Biquad::highpass(1600.0)], 1.6);
+            burst(&mut out, &mut rng, 0.0005, 0.001, 0.04, &[Biquad::bandpass(850.0 * tone, 0.8)], 2.2);
+            grains(&mut out, &mut rng, 0.04, 0.5, 26, (1800.0, 6000.0), 0.4);
+            grains(&mut out, &mut rng, 0.2, 0.7, 12, (600.0, 1600.0), 0.35);
+        }
         _ => return None,
     }
     Some(out)
@@ -757,6 +847,8 @@ fn render_voices(sfx: Sfx, take: u32) -> Vec<f32> {
             }
         }
         Sfx::Surf | Sfx::NightDrone | Sfx::Rain | Sfx::Wind | Sfx::Birds | Sfx::RocketFly | Sfx::DroneBuzz => return render_loop(sfx),
+        // Modelled in `modeled`.
+        Sfx::HitTick | Sfx::KillConfirm | Sfx::Rumble | Sfx::Crack | Sfx::KillHeadshot | Sfx::Clink | Sfx::PowerDown | Sfx::BodyFall => {}
     }
     // Gunshots get a chest thump and everything loud gets a slap-back echo, so
     // the island sounds like a place rather than a sample player.

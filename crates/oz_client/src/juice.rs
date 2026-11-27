@@ -89,7 +89,7 @@ fn spawn_banner(mut commands: Commands) {
         .spawn((
             MatchEntity,
             BannerRoot,
-            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), top: Val::Percent(24.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() },
+            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), top: Val::Percent(31.0), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..default() },
             Visibility::Hidden,
             GlobalZIndex(30),
         ))
@@ -113,6 +113,7 @@ fn medals(
     mut notices: ResMut<crate::hud::Notices>,
     local: Query<&Player, With<LocalPlayer>>,
     mut announce: EventWriter<Announce>,
+    bodies: Query<(&Player, &Transform)>,
 ) {
     let Ok(me) = local.single() else {
         events.clear();
@@ -137,12 +138,20 @@ fn medals(
                     2 => titles.push("DOUBLE KILL"),
                     3 => titles.push("TRIPLE KILL"),
                     4 => titles.push("QUAD KILL"),
-                    n if n >= 5 => titles.push("RAMPAGE"),
+                    5 => titles.push("PENTA KILL"),
+                    n if n >= 6 => titles.push("RAMPAGE"),
                     _ => {}
                 }
                 if *head {
                     titles.push("HEADSHOT");
                     sounds.write(PlaySfx::new(Sfx::Headshot, None));
+                }
+                // How far the shot carried.
+                let at = |id: u8| bodies.iter().find(|(p, _)| p.id == id).map(|(_, t)| t.translation);
+                match at(*victim).zip(at(me.id)).map(|(a, b)| a.distance(b)) {
+                    Some(range) if range > 45.0 => titles.push("LONGSHOT"),
+                    Some(range) if range < 3.0 => titles.push("POINT BLANK"),
+                    _ => {}
                 }
                 if death.killer == Some(*victim) {
                     titles.push("REVENGE");
@@ -153,7 +162,14 @@ fn medals(
                 let subtitle = format!("{}  +{}", name_of(*victim), 100 + 50 * titles.len());
                 if let Some((title, rest)) = titles.split_first() {
                     let more = rest.join("  +  ");
-                    banners.push(*title, if more.is_empty() { subtitle } else { format!("{more}   {subtitle}") }, ui::GOOD);
+                    // Bigger chains burn hotter: gold, orange, then red.
+                    let color = match chain {
+                        0 | 1 => ui::GOOD,
+                        2 => Color::srgb(1.0, 0.85, 0.3),
+                        3 => Color::srgb(1.0, 0.6, 0.25),
+                        _ => Color::srgb(1.0, 0.32, 0.35),
+                    };
+                    banners.push(*title, if more.is_empty() { subtitle } else { format!("{more}   {subtitle}") }, color);
                     sounds.write(PlaySfx::new(Sfx::Medal, None));
                 } else {
                     banners.push("", subtitle, ui::TEXT);
@@ -238,8 +254,15 @@ fn show_banner(
             let age = age + dt;
             banners.showing = Some(age);
             // Slam in big, settle, then fade away.
-            let slam = 1.0 + 0.7 * (1.0 - (age / 0.14).min(1.0)).powi(2);
+            // ...with a little bounce and a wobble as it lands.
+            let slam = if age < 0.14 {
+                1.0 + 0.9 * (1.0 - age / 0.14).powi(2)
+            } else {
+                let t = age - 0.14;
+                1.0 - 0.08 * (-t * 12.0).exp() * (t * 34.0).sin()
+            };
             transform.scale = Vec3::splat(slam);
+            transform.rotation = Quat::from_rotation_z(0.05 * (-age * 9.0).exp() * (age * 38.0).sin());
             let fade = ((BANNER_SECONDS - age) / 0.35).clamp(0.0, 1.0);
             title_color.0 = title_color.0.with_alpha(fade);
         }

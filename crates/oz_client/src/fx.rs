@@ -56,11 +56,13 @@ pub struct PlaySfx {
     pub volume: f32,
     /// Seconds to wait before playing (casings landing, a reload's second click).
     pub delay: f32,
+    /// Playback speed: above 1 is higher (hit ticks climb as a burst lands).
+    pub pitch: f32,
 }
 
 impl PlaySfx {
     pub fn new(sfx: Sfx, at: Option<Vec3>) -> Self {
-        Self { sfx, at, volume: 1.0, delay: 0.0 }
+        Self { sfx, at, volume: 1.0, delay: 0.0, pitch: 1.0 }
     }
 
     /// A non-positional interface sound.
@@ -74,6 +76,10 @@ impl PlaySfx {
 
     pub fn quiet(self, volume: f32) -> Self {
         Self { volume, ..self }
+    }
+
+    pub fn pitched(self, pitch: f32) -> Self {
+        Self { pitch, ..self }
     }
 }
 
@@ -453,10 +459,7 @@ fn spawn_effects(
                 view.hit = if *head { 0.22 } else { 0.14 };
                 view.kill = *kill;
                 view.head_hit = *head;
-                sounds.write(PlaySfx::new(if *kill { Sfx::Kill } else { Sfx::Hit }, None));
-                if *head && !*kill {
-                    sounds.write(PlaySfx { volume: 0.5, ..PlaySfx::new(Sfx::Headshot, None) });
-                }
+                // The tick, the kill thunk and the headshot ding are played by `punch`.
             }
             FxEvent::LimbLost { player, by, .. } if *by == me || *player == me || bodies.iter().any(|(p, _)| p.id == *player) => {
                 if let Some((_, body)) = bodies.iter().find(|(p, _)| p.id == *player) {

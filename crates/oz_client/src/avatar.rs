@@ -121,6 +121,8 @@ pub struct Rig {
     pub(crate) reload: f32,
     /// Which way it falls when it dies (robot-local, x right / z back) and how hard.
     pub(crate) fall: Vec3,
+    /// How it dies (see [`death`]), set by `wreck` from the killing blow.
+    pub(crate) death: u8,
     /// Footfalls so far, so each new one can be heard.
     pub(crate) steps: i32,
     /// Holding a grenade with the pin out, seconds since it was thrown, and since a melee strike.
@@ -412,6 +414,7 @@ pub fn spawn_robot(commands: &mut Commands, art: &Art, parts: &RobotParts, root:
         slapped: false,
         reload: 0.0,
         fall: Vec3::Z,
+        death: death::CRUMPLE,
         steps: 0,
         cook: false,
         throw_t: 9.0,
@@ -682,14 +685,10 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let moving = rig.moving;
 
         // Whole body: prone lies forward, dead falls backward.
-        let (body_at, body_rot) = if pose.dead {
-            // Topple the way the killing blow pushed: fast, a small bounce on landing, then still.
-            let t = rig.dead_for;
-            let fall = ease(t / 0.4) + (t * 18.0).sin() * 0.08 * (-(t - 0.4).max(0.0) * 8.0).exp() * (t > 0.4) as u8 as f32;
-            let dir = Vec3::new(rig.fall.x, 0.0, rig.fall.z).normalize_or(Vec3::Z);
-            let axis = Vec3::Y.cross(dir).normalize_or(Vec3::X);
-            let slump = Vec3::new(0.0, 0.18, 0.0) + dir * 0.35;
-            (slump * fall, Quat::from_axis_angle(axis, FRAC_PI_2 * fall))
+        // Dying: a procedural fall picked by the killing blow (see `death_pose`).
+        let dying = pose.dead.then(|| death_pose(rig.death, rig.fall, rig.dead_for));
+        let (body_at, body_rot) = if let Some(d) = &dying {
+            (d.body_at, d.body_rot)
         } else {
             (Vec3::new(0.0, 0.2, 1.08) * pr, Quat::IDENTITY.slerp(rot(-FRAC_PI_2), pr))
         };
@@ -802,6 +801,18 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         // The head follows the aim, and glances down at the gun while reloading.
         let head_pitch = if pose.dead { 0.0 } else { pose.pitch * 0.8 + correction - 0.35 * r - 0.5 * hunker };
         set(&mut transforms, rig.head, Vec3::Y * NECK, rot(head_pitch), blend);
+        // A dying robot's joints go limp and follow the fall instead.
+        if let Some(d) = &dying {
+            set(&mut transforms, rig.hips, Vec3::Y * d.hip, Quat::IDENTITY, blend);
+            for side in 0..2 {
+                let sign = if side == 0 { 1.0 } else { -1.0 };
+                set(&mut transforms, rig.thighs[side], Vec3::new(-0.12 * sign, -0.02, 0.0), rot(d.legs[side].0), blend);
+                set(&mut transforms, rig.shins[side], Vec3::new(0.0, -THIGH, 0.0), rot(d.legs[side].1), blend);
+                set(&mut transforms, rig.arms[side], Vec3::ZERO, d.arms[side], blend);
+            }
+            set(&mut transforms, rig.torso, Vec3::Y * 0.06, d.torso, blend);
+            set(&mut transforms, rig.head, Vec3::Y * NECK, d.head, blend);
+        }
 
         // Face: dead > hurt > angry > blink > smile.
         let current = pose.face.unwrap_or(if pose.dead {
@@ -821,6 +832,106 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
                 if *v != wanted {
                     *v = wanted;
                 }
+            }
+        }
+    }
+}
+
+/// The ways a robot can go down.
+pub mod death {
+    /// Body shot: the knees buckle, then it pitches forward onto its face.
+    pub const CRUMPLE: u8 = 0;
+    /// Headshot: a stiff jolt, knees go, then it slumps over the way it was hit.
+    pub const SLUMP: u8 = 1;
+    /// Close-range blast or shotgun: thrown back off its feet, twisting as it goes.
+    pub const KNOCKBACK: u8 = 2;
+}
+
+/// Where every joint of a dying robot is, `t` seconds into its fall.
+struct Death {
+    body_at: Vec3,
+    body_rot: Quat,
+    hip: f32,
+    /// (thigh, shin) for left and right.
+    legs: [(f32, f32); 2],
+    arms: [Quat; 2],
+    torso: Quat,
+    head: Quat,
+}
+
+/// A procedural, rag-doll-ish fall: phases eased into each other, limbs that
+/// flop on decaying wobbles, and a little bounce when it hits the ground.
+fn death_pose(kind: u8, fall: Vec3, t: f32) -> Death {
+    let smooth = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    // Accelerating into the ground, like a real fall.
+    let drop = |x: f32| x.clamp(0.0, 1.0).powi(2);
+    let rot = |x: f32| Quat::from_rotation_x(x);
+    let push = Vec3::new(fall.x, 0.0, fall.z).normalize_or(Vec3::Z);
+    // Tips the top of the body toward `dir` by `angle`.
+    let tilt = |dir: Vec3, angle: f32| Quat::from_axis_angle(Vec3::Y.cross(dir).normalize_or(Vec3::X), angle);
+    // The bounce after landing at `t0`.
+    let settle = |t0: f32, amount: f32| if t > t0 { amount * (-(t - t0) * 8.0).exp() * ((t - t0) * 24.0).sin() } else { 0.0 };
+    // Loose limbs swinging on a dying wobble from `t0`.
+    let flop = |t0: f32, phase: f32| if t > t0 { ((t - t0) * 14.0 + phase).sin() * (-(t - t0) * 4.0).exp() } else { 0.0 };
+    let limp = |out: f32, forward: f32, side: f32| rot(forward) * Quat::from_rotation_z(out * side);
+    match kind {
+        death::KNOCKBACK => {
+            let k = drop(t / 0.42);
+            let spin = Quat::from_rotation_y(if fall.x >= 0.0 { 1.0 } else { -1.0 } * 1.2 * smooth(t / 0.55));
+            let lift = if t < 0.42 { (t / 0.42 * std::f32::consts::PI).sin() * 0.4 } else { 0.0 };
+            let angle = FRAC_PI_2 * k + settle(0.42, 0.14);
+            let thrown = push * 1.6 * smooth(t / 0.5);
+            let land = flop(0.42, 0.0);
+            Death {
+                body_at: thrown + Vec3::Y * (lift + 0.14 * k),
+                body_rot: spin * tilt(push, angle),
+                hip: HIP,
+                legs: [(1.0 * smooth(t / 0.25) - 0.6 * k + 0.3 * land, -0.5 * smooth(t / 0.25)), (0.5 * smooth(t / 0.3) - 0.3 * k - 0.3 * land, -0.9 * smooth(t / 0.3))],
+                arms: [limp(0.9 * smooth(t / 0.2), 2.0 * smooth(t / 0.3) - 0.8 * k + 0.5 * land, 1.0), limp(0.7 * smooth(t / 0.25), 1.6 * smooth(t / 0.3) - 0.6 * k - 0.4 * land, -1.0)],
+                torso: rot(0.35 * smooth(t / 0.3)),
+                head: rot(0.6 * smooth(t / 0.25) - 0.4 * k),
+            }
+        }
+        death::SLUMP => {
+            // Stiff for a beat, then down to the knees, then over sideways.
+            let jolt = if t < 0.18 { (t / 0.18 * std::f32::consts::PI).sin() * 0.18 } else { 0.0 };
+            let knees = smooth((t - 0.12) / 0.35);
+            let over = drop((t - 0.5) / 0.5);
+            let hip = HIP + (0.48 - HIP) * knees;
+            let dir = (push + Vec3::new(0.35, 0.0, 0.0)).normalize_or(push);
+            let angle = 1.5 * over + settle(1.0, 0.1) + jolt;
+            let land = flop(1.0, 0.0);
+            let kneel = [kneel_leg(hip, true), kneel_leg(hip, false)];
+            Death {
+                body_at: dir * 0.3 * over,
+                body_rot: tilt(dir, angle),
+                hip,
+                legs: [(kneel[0].0 * knees * (1.0 - 0.6 * over), kneel[0].1 * knees * (1.0 - 0.5 * over)), (kneel[1].0 * knees, kneel[1].1 * knees * (1.0 - 0.3 * over))],
+                arms: [limp(0.15 + 0.5 * over, -0.2 * knees + 0.6 * over + 0.4 * land, 1.0), limp(0.15 + 0.3 * over, -0.2 * knees + 0.3 * over - 0.3 * land, -1.0)],
+                torso: rot(-0.45 * knees + 0.2 * over) * Quat::from_rotation_z(0.25 * knees),
+                head: rot(-0.7 * knees),
+            }
+        }
+        _ => {
+            // The knees buckle under it, then it pitches forward, mostly face-down.
+            let knees = smooth(t / 0.3);
+            let over = drop((t - 0.28) / 0.42);
+            let hip = HIP + (0.5 - HIP) * knees;
+            let dir = (Vec3::NEG_Z * 0.75 + push * 0.4).normalize_or(Vec3::NEG_Z);
+            let angle = 1.42 * over + settle(0.7, 0.12);
+            let land = flop(0.7, 0.0);
+            let kneel = [kneel_leg(hip, true), kneel_leg(hip, false)];
+            Death {
+                body_at: dir * 0.35 * over,
+                body_rot: tilt(dir, angle),
+                hip,
+                legs: [(kneel[0].0 * knees * (1.0 - 0.7 * over), kneel[0].1 * knees * (1.0 - 0.4 * over)), (kneel[1].0 * knees * (1.0 - 0.5 * over), kneel[1].1 * knees)],
+                arms: [limp(0.2 + 0.4 * over, 0.3 * knees + 1.1 * over + 0.5 * land, 1.0), limp(0.25 + 0.3 * over, 0.2 * knees + 0.9 * over - 0.4 * land, -1.0)],
+                torso: rot(-0.4 * knees + 0.25 * over),
+                head: rot(-0.6 * knees + 0.3 * over),
             }
         }
     }

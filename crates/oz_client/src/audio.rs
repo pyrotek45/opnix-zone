@@ -208,7 +208,7 @@ fn play(
         }
         // A little random pitch stops repeated sounds from feeling machine-stamped.
         let wobble = (*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
-        let speed = if musical { 1.0 } else { 1.0 + wobble * if footstep(event.sfx) { 0.22 } else { 0.12 } };
+        let speed = event.pitch * if musical { 1.0 } else { 1.0 + wobble * if footstep(event.sfx) { 0.22 } else { 0.12 } };
         let playback = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain)).with_speed(speed);
         match event.at {
             Some(at) if distance > 0.5 => {
