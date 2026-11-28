@@ -7,6 +7,13 @@
 //! hand is free (you carry two); with both full, press Use to swap the gun you are
 //! holding for it - yours drops where you stand.
 //!
+//! Every spot is somewhere both teams can walk to from their spawns (the nav grid decides,
+//! ladders included): never inside anything, on a roof with no way up or under water. Better
+//! guns are harder to find: each spot has a [`Tier`] - the riskier the spot (upper floors, the
+//! middle of the map, between the bases), the rarer what lies there. Pistols, SMGs and
+//! shotguns turn up everywhere; rifles and marksman rifles mostly at the riskier spots; sniper
+//! rifles, machine guns, launchers and the costliest attachments only at the riskiest.
+//!
 //! The other versus modes have no loot, but the fallen there sometimes drop a box of
 //! ammo (always when their killer is running dry), so nobody is left with an empty gun.
 
@@ -19,9 +26,33 @@ use crate::{
 };
 use bevy::prelude::*;
 use oz_core::{
-    arsenal::{SLOT_COUNT, options, resolve},
+    arsenal::{GunClass, SLOT_COUNT, WeaponDef, options, resolve},
+    collide::StaticWorld,
+    content::Catalog,
+    rng::Rng,
     synth::Sfx,
+    worldgen::World as GameMap,
 };
+
+/// How rare what lies at a loot spot is, by how risky the spot is to reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Tier {
+    Common,
+    Uncommon,
+    Rare,
+}
+
+impl Tier {
+    /// The tier a gun belongs to: sidearms, SMGs and shotguns are common, rifles (and the
+    /// marksman rifles among them) uncommon, sniper rifles, machine guns and launchers rare.
+    pub fn of(def: &WeaponDef) -> Tier {
+        match def.class {
+            GunClass::Pistol | GunClass::Smg | GunClass::Shotgun | GunClass::Tool => Tier::Common,
+            GunClass::Rifle => Tier::Uncommon,
+            GunClass::Sniper | GunClass::Lmg | GunClass::Launcher => Tier::Rare,
+        }
+    }
+}
 
 /// What a pickup gives.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,6 +78,7 @@ pub struct Pickup {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct LootSpot {
     pub at: Vec3,
+    pub tier: Tier,
     pub wait: f32,
     pub stocked: Option<Entity>,
 }
@@ -71,18 +103,42 @@ pub fn scavenge(rules: Option<Res<Rules>>) -> bool {
     rules.is_some_and(|rules| rules.loot || rules.hunt)
 }
 
+/// Chance a gun at a spot of each tier is of each tier: (common, uncommon, rare).
+pub const GUN_ODDS: [[f32; 3]; 3] = [[0.85, 0.15, 0.0], [0.35, 0.55, 0.10], [0.0, 0.35, 0.65]];
+
 /// What appears at a spot: mostly guns (with a random set of parts), then ammo, gear, armour.
-fn roll(content: &Content, rng: &mut SimRng) -> Loot {
+/// The spot's tier sets how good a gun it holds and how many and how costly its parts.
+pub fn roll(content: &Catalog, rng: &mut Rng, tier: Tier) -> Loot {
     let guns: Vec<u8> = (1..content.weapons.len() as u8).filter(|i| content.weapons[*i as usize].frame.is_some()).collect();
-    let r = rng.0.unit();
+    let r = rng.unit();
     if r < 0.45 && !guns.is_empty() {
-        let index = guns[rng.0.below(guns.len())];
+        // Which tier of gun, then which gun of that tier (falling back to any).
+        let odds = GUN_ODDS[tier as usize];
+        let pick = rng.unit();
+        let want = if pick < odds[0] { Tier::Common } else if pick < odds[0] + odds[1] { Tier::Uncommon } else { Tier::Rare };
+        let of_tier: Vec<u8> = guns.iter().copied().filter(|i| Tier::of(&content.weapons[*i as usize]) == want).collect();
+        let pool = if of_tier.is_empty() { &guns } else { &of_tier };
+        let index = pool[rng.below(pool.len())];
         let def = &content.weapons[index as usize];
         let mut parts = def.defaults;
+        let fit = match tier {
+            Tier::Common => 0.2,
+            Tier::Uncommon => 0.45,
+            Tier::Rare => 0.7,
+        };
         for (slot, part) in parts.iter_mut().enumerate() {
-            let choices = options(def, &content.attachments, slot);
-            if rng.0.chance(0.45) && !choices.is_empty() {
-                *part = choices[rng.0.below(choices.len())].0 as u8;
+            let mut choices = options(def, &content.attachments, slot);
+            // The costliest third of the parts for a slot only turn up at the rare spots, the
+            // middle third from the uncommon ones up.
+            choices.sort_by_key(|c| c.3);
+            let keep = match tier {
+                Tier::Common => choices.len().div_ceil(3),
+                Tier::Uncommon => (choices.len() * 2).div_ceil(3),
+                Tier::Rare => choices.len(),
+            };
+            choices.truncate(keep.max(1).min(choices.len()));
+            if rng.chance(fit) && !choices.is_empty() {
+                *part = choices[rng.below(choices.len())].0 as u8;
             }
         }
         let state = oz_core::arsenal::WeaponState { equipped: parts, ..Default::default() };
@@ -91,22 +147,80 @@ fn roll(content: &Content, rng: &mut SimRng) -> Loot {
     } else if r < 0.75 {
         Loot::Ammo
     } else if r < 0.9 && !content.gear.is_empty() {
-        Loot::Gear(rng.0.below(content.gear.len()) as u8)
+        Loot::Gear(rng.below(content.gear.len()) as u8)
     } else {
         Loot::Armor
     }
 }
 
+/// Where loot lies on a map: `count` spots both teams can walk to from their spawns, each
+/// with its tier - the riskiest fifth rare, the next third uncommon, the rest common.
+pub fn loot_spots(map: &GameMap, statics: &StaticWorld, nav: &crate::nav::Nav, rng: &mut SimRng, count: usize) -> Vec<(Vec3, Tier)> {
+    let spawns: Vec<Vec3> = (0..2u8)
+        .map(|team| {
+            let p = map.team_spawns[team as usize].first().copied().unwrap_or(map.spawn);
+            Vec3::new(p.x, crate::player::ground_under(map, statics, p.x, p.y, map.height(p.x, p.y) + 1.0), p.y)
+        })
+        .collect();
+    let centre = (spawns[0].xz() + spawns[1].xz()) * 0.5;
+    let reach = (spawns[0].xz().distance(spawns[1].xz()) * 0.5).max(20.0);
+    let mut found: Vec<(Vec3, f32)> = Vec::with_capacity(count);
+    for _ in 0..count * 40 {
+        if found.len() >= count {
+            break;
+        }
+        // A point on any floor: round the waypoints indoors, anywhere in the arena outside.
+        let (x, z) = if let Some(p) = rng.0.pick(&map.waypoints).copied() {
+            (p.x + rng.0.range(-1.5, 1.5), p.z + rng.0.range(-1.5, 1.5))
+        } else {
+            let r = map.arena * 0.95;
+            (rng.0.range(-r, r), rng.0.range(-r, r))
+        };
+        if !map.in_bounds(x, z) || map.team_spawns.iter().flatten().any(|s| s.distance(Vec2::new(x, z)) < 12.0) {
+            continue;
+        }
+        let ground = map.height(x, z);
+        let level = rng.0.below(3) as f32;
+        let at = Vec3::new(x, crate::player::ground_under(map, statics, x, z, ground + level * 3.2 + 1.0), z);
+        // Dry, clear of everything solid, apart from the other spots, and walkable to.
+        let dry = at.y > map.water + 0.1;
+        let clear = !statics.blocked(at.x, at.z, at.y + 0.05, 1.7, 0.45);
+        let apart = found.iter().all(|(p, _)| p.distance(at) > 4.0);
+        if !(dry && clear && apart && spawns.iter().all(|s| nav.reaches(*s, at))) {
+            continue;
+        }
+        // Risk: up off the ground (upper floors, roofs, ledges), and out in the middle.
+        let height = ((at.y - ground) / 3.2).clamp(0.0, 2.0);
+        let middle = 1.0 - (at.xz().distance(centre) / reach).clamp(0.0, 1.0);
+        found.push((at, height * 0.6 + middle));
+    }
+    let mut order: Vec<usize> = (0..found.len()).collect();
+    order.sort_by(|a, b| found[*b].1.total_cmp(&found[*a].1));
+    let mut tiers = vec![Tier::Common; found.len()];
+    for (rank, &i) in order.iter().enumerate() {
+        let f = rank as f32 / found.len().max(1) as f32;
+        tiers[i] = if f < 0.2 { Tier::Rare } else if f < 0.55 { Tier::Uncommon } else { Tier::Common };
+    }
+    found.into_iter().zip(tiers).map(|((at, _), tier)| (at, tier)).collect()
+}
+
 /// Authority: lays the loot spots out once per match (after the lobby).
-pub fn place_spots(mut commands: Commands, map: Res<Map>, statics: Res<Statics>, mut rng: ResMut<SimRng>, spots: Query<(), With<LootSpot>>, state: Res<MatchState>, rules: Res<Rules>) {
+#[allow(clippy::too_many_arguments)]
+pub fn place_spots(mut commands: Commands, map: Res<Map>, statics: Res<Statics>, nav: Option<Res<crate::nav::Nav>>, mut rng: ResMut<SimRng>, spots: Query<(), With<LootSpot>>, state: Res<MatchState>, rules: Res<Rules>) {
     // Loot lying about town is scavenge only; hunt just has what hostiles drop.
     if !rules.loot || !spots.is_empty() || state.phase == Phase::Lobby {
         return;
     }
-    for _ in 0..SPOTS {
-        let at = crate::versus::hunt_post(&map, &statics, &mut rng);
-        // The spot does not care whose base it is near; just keep it off the spawn pads.
-        commands.spawn((MatchEntity, LootSpot { at, wait: rng.0.range(0.0, 2.0), stocked: None }));
+    let built;
+    let nav = match nav.as_deref() {
+        Some(nav) => nav,
+        None => {
+            built = crate::nav::Nav::build(&map, &statics);
+            &built
+        }
+    };
+    for (at, tier) in loot_spots(&map, &statics, nav, &mut rng, SPOTS) {
+        commands.spawn((MatchEntity, LootSpot { at, tier, wait: rng.0.range(0.0, 2.0), stocked: None }));
     }
 }
 
@@ -156,7 +270,7 @@ pub fn run_loot(
         }
         spot.wait -= dt;
         if spot.wait <= 0.0 {
-            let loot = roll(&content, &mut rng);
+            let loot = roll(&content.0, &mut rng.0, spot.tier);
             spot.stocked = Some(commands.spawn((MatchEntity, ids.next(), Pickup { loot, life: None }, Transform::from_translation(spot.at))).id());
         }
     }
@@ -416,6 +530,61 @@ pub fn decode(sub: u8, aux: u8, packed: u32) -> Loot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use oz_core::worldgen::{Biome, Layout, Theme, Weather, WorldRecipe};
+
+    /// Every gun lies where both teams can walk to it, never in anything, on a roof with no
+    /// way up or under water; the riskier spots hold the rarer guns, and across many seeds
+    /// common guns turn up most, rare ones least.
+    #[test]
+    fn guns_lie_within_reach_and_the_best_are_hardest_to_find() {
+        let catalog = Catalog { weapons: oz_core::kit::standard_guns(), ..Default::default() };
+        let mut recipes: Vec<(String, WorldRecipe)> = Vec::new();
+        for seed in [1u64, 4, 9, 16] {
+            recipes.push((format!("town {seed}"), WorldRecipe::themed(seed, Biome::IronShoals, Theme::ALL[seed as usize % Theme::ALL.len()])));
+            recipes.push((format!("small town {seed}"), WorldRecipe::grid_town(Layout::SmallTown, seed, Biome::IronShoals)));
+        }
+        for layout in [Layout::Mountainside, Layout::OfficeTower, Layout::Crossroads, Layout::Dockyard, Layout::SpaceStation] {
+            recipes.push((format!("{layout:?}"), WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear)));
+        }
+        let mut found = [[0usize; 3]; 3];
+        for (what, recipe) in recipes {
+            let map = GameMap::generate(recipe);
+            let statics = map.statics();
+            let nav = crate::nav::Nav::build(&map, &statics);
+            let mut rng = SimRng(Rng::new(recipe.seed ^ 0x100f));
+            let spots = loot_spots(&map, &statics, &nav, &mut rng, SPOTS);
+            assert!(spots.len() >= SPOTS * 3 / 4, "{what}: only {} loot spots", spots.len());
+            let spawns: Vec<Vec3> = (0..2).map(|t| {
+                let p = map.team_spawns[t].first().copied().unwrap_or(map.spawn);
+                Vec3::new(p.x, crate::player::ground_under(&map, &statics, p.x, p.y, map.height(p.x, p.y) + 1.0), p.y)
+            }).collect();
+            let mut counts = [0usize; 3];
+            for &(at, tier) in &spots {
+                assert!(at.y > map.water + 0.1, "{what}: loot under water at {at:?}");
+                assert!(!statics.blocked(at.x, at.z, at.y + 0.05, 1.7, 0.45), "{what}: loot inside something at {at:?}");
+                for s in &spawns {
+                    assert!(nav.reaches(*s, at), "{what}: loot at {at:?} cannot be reached from {s:?}");
+                }
+                counts[tier as usize] += 1;
+            }
+            assert!(counts.iter().all(|c| *c > 0), "{what}: tiers {counts:?}");
+            for &(_, tier) in &spots {
+                for _ in 0..40 {
+                    if let Loot::Weapon { index, .. } = roll(&catalog, &mut rng.0, tier) {
+                        found[tier as usize][Tier::of(&catalog.weapons[index as usize]) as usize] += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("guns by spot tier (common, uncommon, rare): {found:?}");
+        // Common spots never hold the rare guns; rare spots mostly do.
+        assert_eq!(found[0][2], 0);
+        assert!(found[2][2] > found[2][0] + found[2][1] / 2);
+        // Over the whole map, common guns are the most found and rare the least.
+        let total: Vec<usize> = (0..3).map(|g| (0..3).map(|t| found[t][g]).sum()).collect();
+        assert!(total[0] > total[1] && total[1] > total[2], "guns found by tier {total:?}");
+    }
 
     #[test]
     fn loot_round_trips_through_a_snapshot() {

@@ -203,6 +203,15 @@ impl Nav {
         self.nodes(column).filter(|n| (self.floor[*n] - from).abs() <= MAX_RISE).min_by(|a, b| (self.floor[*a] - from).abs().total_cmp(&(self.floor[*b] - from).abs()))
     }
 
+    /// Can someone standing at `from` walk (and climb ladders) to stand right at `to`: a
+    /// surface under it within a step, and a way there? False for a roof with no way up, a
+    /// pocket walled off, or a point in the air or inside something.
+    pub fn reaches(&self, from: Vec3, to: Vec3) -> bool {
+        let (Some(start), Some(goal)) = (self.nearest(from), self.nearest(to)) else { return false };
+        let at = self.center(goal);
+        at.xz().distance(to.xz()) < CELL * 1.5 && (self.floor[goal] - to.y).abs() < 0.6 && self.reachable(self.region[start], self.region[goal])
+    }
+
     /// Is there a surface to stand on near this point (at about its height)?
     pub fn walkable(&self, p: Vec3) -> bool {
         self.column_at(p.xz()).is_some_and(|c| self.nodes(c).any(|n| (self.floor[n] - p.y).abs() < 1.0))
