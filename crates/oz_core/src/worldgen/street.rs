@@ -26,6 +26,9 @@ impl World {
             && p.y.abs() < reach
             && self.height(p.x, p.y) > self.water + 0.4
             && !self.occupied(p, r)
+            // Off the roads and paths; anything big off the pavements too, leaving room to pass.
+            && !self.lanes.iter().any(|l| (r >= 0.9 || !l.pavement()) && l.covers(p, r, 0.05))
+            && self.in_the_way(p, self.height(p.x, p.y), r).is_none()
             && !self.props.iter().any(|q| Vec2::new(q.pos.x, q.pos.z).distance(p) < r + 1.0)
             && !self.clutter.iter().any(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) < r + if c.kind == ClutterKind::Car { 2.6 } else { 1.2 })
             && !self.doors.iter().any(|d| Vec2::new(d.center.x, d.center.z).distance(p) < r + 2.6)
@@ -90,27 +93,32 @@ impl World {
                 let placed = if roll < 0.24 && !rural {
                     self.street_clear(p, 0.5) && {
                         self.lamp_post(p, face);
+                        self.street_items.push(("lamp post", p, 0.5));
                         true
                     }
                 } else if roll < 0.32 {
                     self.street_clear(p, 0.4) && {
                         self.hydrant(p);
+                        self.street_items.push(("hydrant", p, 0.4));
                         true
                     }
                 } else if roll < 0.40 {
                     self.street_clear(p, 0.5) && {
                         self.street_sign(p, dir, &mut rng);
+                        self.street_items.push(("street sign", p, 0.5));
                         true
                     }
                 } else if roll < 0.47 && !rural {
                     let q = p + normal * side * 0.3;
                     self.street_clear(q, 1.0) && {
                         self.planter(q, dir, &mut rng);
+                        self.street_items.push(("planter", q, 1.0));
                         true
                     }
                 } else if roll < 0.53 {
                     self.street_clear(p, 1.0) && {
                         self.bike(p, dir, &mut rng);
+                        self.street_items.push(("bike", p, 1.0));
                         true
                     }
                 } else if roll < 0.58 && !rural {
@@ -118,12 +126,14 @@ impl World {
                         for s in [-0.7, 0.0, 0.7] {
                             self.bollard(p + dir * s);
                         }
+                        self.street_items.push(("bollards", p, 0.9));
                         true
                     }
                 } else if roll < 0.61 && !rural {
                     let q = p + normal * side * 0.6;
                     self.street_clear(q, 1.0) && {
                         self.phone_booth(q, face);
+                        self.street_items.push(("phone booth", q, 1.0));
                         true
                     }
                 } else if roll < 0.64 {
@@ -135,12 +145,14 @@ impl World {
                         self.vending(q, g, glow);
                         self.mark_furniture(from);
                         self.vending_detail(q, face, g);
+                        self.street_items.push(("vending machine", q, 0.9));
                         true
                     }
                 } else if roll < 0.67 && w >= 6.0 {
                     let q = p + normal * side * 3.5;
                     self.street_clear(q, 3.6) && {
                         self.billboard(q, face, &mut rng);
+                        self.street_items.push(("billboard", q, 3.6));
                         true
                     }
                 } else {
@@ -591,6 +603,7 @@ impl World {
                 let face = if face.x.abs() > face.y.abs() { Vec2::new(face.x.signum(), 0.0) } else { Vec2::new(0.0, face.y.signum()) };
                 if self.street_clear(p, 2.0) && !self.near_road(p, 0.5) {
                     self.market_stall(p, face, &mut rng);
+                    self.street_items.push(("market stall", p, 2.0));
                     self.street_spots.push(p);
                     placed += 1;
                 }

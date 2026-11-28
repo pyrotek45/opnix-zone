@@ -1,11 +1,16 @@
 //! Mountainside: a fixed map on a slope. Five levels climb from a village in the valley
 //! (south) to a lodge and radio station on the summit (north), each a flat terrace held up by a
-//! rock cliff. A switchback road zig-zags up between ramps, stairs are cut into the cliffs, and
-//! the cliff tops have rocky parapets to shoot down from. The team bases sit at either end of
-//! the middle terrace, so both teams can fight uphill or down.
+//! rock cliff. The team bases sit at either end of the middle terrace, so both teams can fight
+//! uphill or down.
+//!
+//! Everything joins up: a switchback road climbs each flank - Main Street through the village,
+//! up a ramp, along a terrace, up the next - and ends where roads end, in the market square on
+//! the middle terrace, at the bases and in the lodge's forecourt on the summit. Stairs cut into
+//! the cliffs join footpaths that run along the terraces to the road. Every house faces its
+//! street or path, with a path to its door and, in the village, sometimes a driveway.
 
 use super::{
-    COVER_HEIGHT, Clutter, ClutterKind, Prop, PropKind, World,
+    Area, AreaKind, COVER_HEIGHT, Clutter, ClutterKind, Prop, PropKind, World,
     shapes::{Furnish, Plan, Roof},
 };
 use crate::{collide::Aabb, model::Paint, noise, rng::Rng};
@@ -24,11 +29,31 @@ pub(super) const STAIRS: [&[f32]; 4] = [&[9.0], &[-30.0, 30.0], &[0.0, -92.0, 92
 /// The bases: either end of the middle terrace.
 const BASE: (f32, f32) = (104.0, -5.0);
 const RAMP_HALF: f32 = 5.0;
+/// The lodge's forecourt on the summit: half its width, and its north edge (the lodge's front).
+const FORECOURT: (f32, f32) = (12.0, 71.0);
+/// The market square in the middle of the middle terrace: half its width and depth.
+const SQUARE: (f32, f32) = (12.0, 9.0);
+/// The footpaths along the terraces, (z, x from, x to): the lower one between the ramp roads,
+/// the upper one from chalet to chalet past every flight of stairs.
+const PROMENADES: [(f32, f32, f32); 2] = [(-47.0, -70.0, 70.0), (26.0, -104.0, 104.0)];
 pub(super) const STEP_RUN: f32 = 0.42;
 
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Where the paths from the foot and the top of the stairs at `s` up cliff `i` run to (z):
+/// the road or footpath below, and the one above.
+fn stair_paths(i: usize, s: f32) -> (f32, f32) {
+    match i {
+        0 => (level_mid(0) + 3.5, PROMENADES[0].0),
+        1 => (PROMENADES[0].0, level_mid(2) - 3.0),
+        // The middle flight comes down into the market square; the outer ones to the road.
+        2 if s == 0.0 => (level_mid(2) + SQUARE.1 - 0.5, PROMENADES[1].0),
+        2 => (level_mid(2) + 3.0, PROMENADES[1].0),
+        _ => (PROMENADES[1].0, level_mid(4) + 2.0),
+    }
 }
 
 /// Middle of each level's flat (z).
@@ -103,7 +128,7 @@ impl World {
             }
             // Stairs cut into the face: eighteen steps up to the cliff top.
             for &s in STAIRS[i] {
-                self.cliff_stairs(s, b, lo, hi);
+                self.cliff_stairs(i, s, b, lo, hi);
             }
         }
     }
@@ -112,7 +137,7 @@ impl World {
     /// solid steps from the ground up, kerbed cheeks either side that run down into the ground
     /// (low cover, drawn as one smooth sloping wall), hand rails on posts, a landing pad at the
     /// foot and a gravel path out from it.
-    fn cliff_stairs(&mut self, s: f32, b: f32, lo: f32, hi: f32) {
+    fn cliff_stairs(&mut self, i: usize, s: f32, b: f32, lo: f32, hi: f32) {
         let n = ((hi - lo) / 0.29).ceil() as usize;
         let rise = (hi - lo) / n as f32;
         let front = b - 1.6;
@@ -163,9 +188,13 @@ impl World {
         // A paved landing at the foot and a gravel path on out across the terrace.
         let g = self.height(s, foot - 1.0);
         self.flat(s - 1.7, s + 1.7, foot - 1.6, foot, g + 0.01, Paint::Concrete);
-        self.road(Vec2::new(s, foot - 1.6), Vec2::new(s, foot - 9.0), 1.8, Paint::Sand, false);
-        // And at the top, the path goes on north.
-        self.road(Vec2::new(s, b + 1.8), Vec2::new(s, b + 8.0), 1.8, Paint::Sand, false);
+        self.areas.push(Area { lo: Vec2::new(s - 1.7, foot - 1.6), hi: Vec2::new(s + 1.7, b + 1.8), kind: AreaKind::Steps });
+        // And at the top, the path goes on north. Both run to the road or footpath they join.
+        let (down, up) = stair_paths(i, s);
+        if foot - 1.6 - down > 0.3 {
+            self.road(Vec2::new(s, foot - 1.6), Vec2::new(s, down), 1.8, Paint::Sand, false);
+        }
+        self.road(Vec2::new(s, b + 1.8), Vec2::new(s, up), 1.8, Paint::Sand, false);
         self.scree(Vec2::new(s - 2.6, foot + 0.8), 1.2, 6, Paint::Rock);
         self.scree(Vec2::new(s + 2.6, foot + 0.8), 1.2, 6, Paint::Rock);
     }
@@ -202,31 +231,96 @@ impl World {
         }
     }
 
-    /// The switchback road: along each level between the ramps, and up them.
+    /// The switchback road, one smooth climb on each flank: Main Street through the village,
+    /// up the ramps to the terraces, out to the bases on the middle one, and over the summit
+    /// into the lodge's forecourt. Each terrace's footpath joins the stairs to it.
     fn switchback(&mut self) {
         let asphalt = Paint::Dark;
-        // The valley street, end to end.
-        self.road(Vec2::new(-120.0, level_mid(0)), Vec2::new(120.0, level_mid(0)), 7.0, asphalt, true);
+        // Main Street, end to end of the valley.
+        self.road(Vec2::new(-112.0, level_mid(0)), Vec2::new(112.0, level_mid(0)), 7.0, asphalt, true);
         for s in [-1.0f32, 1.0] {
-            let mut x = 70.0 * s;
+            let mut x = RAMPS[0][1] * s;
             let mut z = level_mid(0);
             for (i, &b) in CLIFFS.iter().enumerate() {
                 let rx = RAMPS[i].iter().copied().find(|r| r.signum() == s).unwrap_or(x);
                 // Along the level to the foot of the ramp, then up it.
-                self.road(Vec2::new(x, z), Vec2::new(rx, z), 6.0, asphalt, true);
-                self.road(Vec2::new(rx, z), Vec2::new(rx, b - 9.0), 6.0, asphalt, false);
+                if (rx - x).abs() > 0.1 {
+                    self.road(Vec2::new(x, z), Vec2::new(rx, z), 6.0, asphalt, true);
+                }
+                self.road(Vec2::new(rx, z), Vec2::new(rx, b - 9.0), 6.0, asphalt, true);
                 self.ramp_road(rx, b - 9.0, b + 9.0);
+                self.areas.push(Area { lo: Vec2::new(rx - RAMP_HALF, b - 9.5), hi: Vec2::new(rx + RAMP_HALF, b + 9.5), kind: AreaKind::Steps });
                 let next = level_mid(i + 1);
-                self.road(Vec2::new(rx, b + 9.0), Vec2::new(rx, next), 6.0, asphalt, false);
+                self.road(Vec2::new(rx, b + 9.0), Vec2::new(rx, next), 6.0, asphalt, true);
                 x = rx;
                 z = next;
             }
-            // Over the summit to the lodge.
-            self.road(Vec2::new(x, z), Vec2::new(0.0, z), 6.0, asphalt, true);
+            // Over the summit into the lodge's forecourt.
+            self.road(Vec2::new(x, z), Vec2::new(s * FORECOURT.0, z), 6.0, asphalt, true);
+            // The middle terrace: out to the base, and in to the market square.
+            let mid = level_mid(2);
+            self.road(Vec2::new(s * RAMPS[1][1], mid), Vec2::new(s * (BASE.0 - 12.0), mid), 6.0, asphalt, true);
+            self.road(Vec2::new(s * RAMPS[2][1], mid), Vec2::new(s * SQUARE.0, mid), 6.0, asphalt, true);
         }
-        // The middle terrace's road runs out to the bases.
+        // The lodge's forecourt and the market square, where the roads end.
+        let (fx, fz) = FORECOURT;
+        self.ground_paint(-fx, fx, level_mid(4) - 3.5, fz, Paint::Concrete);
+        self.areas.push(Area { lo: Vec2::new(-fx, level_mid(4) - 3.5), hi: Vec2::new(fx, fz), kind: AreaKind::Parking });
+        let (sx, sz) = SQUARE;
+        let mid = level_mid(2);
+        self.ground_paint(-sx, sx, mid - sz, mid + sz, Paint::Slate);
+        self.areas.push(Area { lo: Vec2::new(-sx, mid - sz), hi: Vec2::new(sx, mid + sz), kind: AreaKind::Plaza });
+        // The bases' pads.
         for s in [-1.0f32, 1.0] {
-            self.road(Vec2::new(s * 84.0, level_mid(2)), Vec2::new(s * 120.0, level_mid(2)), 6.0, asphalt, false);
+            let (a, c) = (s * (BASE.0 - 11.0), s * (BASE.0 + 8.0));
+            self.areas.push(Area { lo: Vec2::new(a.min(c), BASE.1 - 18.0), hi: Vec2::new(a.max(c), BASE.1 + 14.0), kind: AreaKind::Base });
+        }
+        // Footpaths along the terraces, from stairs to stairs and on to the road.
+        for (z, x0, x1) in PROMENADES {
+            self.road(Vec2::new(x0, z), Vec2::new(x1, z), 1.8, Paint::Sand, false);
+        }
+    }
+
+    /// A gravel path (one axis) from `a` to `b`.
+    fn path(&mut self, a: Vec2, b: Vec2) {
+        // Narrow enough to pass between a balcony's posts.
+        self.road(a, b, 1.1, Paint::Sand, false);
+    }
+
+    /// The doorway built since door `from` on a face at `z` (a south or north wall), if any.
+    fn door_at(&self, from: usize, z: f32) -> Option<Vec2> {
+        self.doors[from..].iter().filter(|d| d.along_x && (d.center.z - z).abs() < 0.6).map(|d| Vec2::new(d.center.x, d.center.z)).next()
+    }
+
+    /// A house facing the street on the side `front` (0 south, 3 north) with a path from its
+    /// door to the kerb at `kerb` (z), and sometimes a driveway beside it with the car in it.
+    #[allow(clippy::too_many_arguments)]
+    fn street_house(&mut self, rng: &mut Rng, at: Vec2, half: Vec2, floors: u32, front: usize, kerb: f32, driveway: Option<f32>) {
+        let from = self.doors.len();
+        let dir = if front == 0 { -1.0 } else { 1.0 };
+        let face = at.y + dir * half.y;
+        self.house(rng, at, half, floors, front);
+        if let Some(door) = self.door_at(from, face) {
+            // Past the porch, if it has one, then down to the street.
+            self.path(Vec2::new(door.x, face + dir * 0.2), Vec2::new(door.x, kerb));
+        }
+        if let Some(side) = driveway {
+            let x = at.x + side * (half.x + 2.0);
+            let (z0, z1) = (kerb.min(face - dir * 3.0), kerb.max(face - dir * 3.0));
+            self.ground_paint(x - 1.6, x + 1.6, z0, z1, Paint::Concrete);
+            self.areas.push(Area { lo: Vec2::new(x - 1.6, z0), hi: Vec2::new(x + 1.6, z1), kind: AreaKind::Parking });
+            if rng.chance(0.6) {
+                let p = Vec2::new(x, (z0 + z1) * 0.5);
+                self.clutter.push(Clutter { kind: ClutterKind::Car, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned: false });
+            }
+        }
+    }
+
+    /// A car at the kerb of an east-west road at `z` (`side` the kerb's side), if there is room.
+    fn kerb_car(&mut self, x: f32, z: f32, width: f32, side: f32) {
+        let p = Vec2::new(x, z + side * (width * 0.5 - 1.5));
+        if !self.occupied(p, 2.4) && self.clutter.iter().all(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) > 6.0) {
+            self.clutter.push(Clutter { kind: ClutterKind::Car, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned: true });
         }
     }
 
@@ -279,71 +373,122 @@ impl World {
         }
     }
 
-    /// The valley village: houses along the street, a chapel with a bell tower, a square.
+    /// The valley village: Main Street with a row of houses either side, each facing it with a
+    /// path to its door and some with a driveway; the chapel and its bell tower on the north
+    /// side looking over the village square across the street; cars at the kerbs.
     fn valley_village(&mut self, rng: &mut Rng) {
         let z = level_mid(0);
-        self.plaza_at(rng, Vec2::new(0.0, z - 16.0));
-        // The chapel: a tall nave with a bell tower at its front.
-        let chapel = Vec2::new(0.0, z + 15.0);
-        self.building_plan(rng, chapel, Vec2::new(5.0, 8.0), 2, &Plan { walls: Some(Paint::Bone), trim: Some(Paint::Steel), roof: Roof::Gable(Paint::Dark), furnish: Furnish::Plain, random_doors: false, doors: [Some((chapel.x, 1.7)), None, None, None], ladder: false, ..Plan::default() });
-        let tower = Vec2::new(-9.2, z + 11.0);
+        let (north_kerb, south_kerb) = (z + 3.5, z - 3.5);
+        // The square: paved, a fountain in the middle, opening onto Main Street.
+        let (sq_lo, sq_hi) = (Vec2::new(-14.0, z - 18.0), Vec2::new(14.0, south_kerb));
+        self.ground_paint(sq_lo.x, sq_hi.x, sq_lo.y, sq_hi.y, Paint::Slate);
+        self.areas.push(Area { lo: sq_lo, hi: sq_hi, kind: AreaKind::Plaza });
+        self.plaza_at(rng, Vec2::new(0.0, z - 11.0));
+        for s in [-1.0f32, 1.0] {
+            let p = Vec2::new(s * 10.5, z - 15.5);
+            self.clutter.push(Clutter { kind: ClutterKind::Bench, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned: true });
+        }
+        // The chapel faces the square across the street, its tower beside it.
+        let chapel = Vec2::new(0.0, z + 12.0);
+        let from = self.doors.len();
+        self.building_plan(rng, chapel, Vec2::new(5.0, 6.5), 2, &Plan { walls: Some(Paint::Bone), trim: Some(Paint::Steel), roof: Roof::Gable(Paint::Dark), furnish: Furnish::Plain, random_doors: false, doors: [Some((chapel.x, 1.7)), None, None, None], ladder: false, ..Plan::default() });
+        if let Some(door) = self.door_at(from, chapel.y - 6.5) {
+            self.road(Vec2::new(door.x, chapel.y - 6.7), Vec2::new(door.x, north_kerb), 2.4, Paint::Sand, false);
+        }
+        let tower = Vec2::new(-9.2, z + 9.0);
+        let from = self.doors.len();
         let (_, top) = self.building_plan(rng, tower, Vec2::new(3.2, 3.0), 4, &Plan { walls: Some(Paint::Bone), trim: Some(Paint::Steel), roof: Roof::Flat, furnish: Furnish::Bare, random_doors: false, doors: [Some((tower.x, 1.7)), None, None, None], ladder: false, ..Plan::default() });
-        // The spire stands on the roof slab.
+        if let Some(door) = self.door_at(from, tower.y - 3.0) {
+            self.path(Vec2::new(door.x, tower.y - 3.2), Vec2::new(door.x, north_kerb));
+        }
         self.decor(Aabb::span(Vec3::new(tower.x - 0.06, top + 0.3, tower.y - 0.06), Vec3::new(tower.x + 0.06, top + 5.0, tower.y + 0.06)), Paint::Gold);
-        // Houses either side of the street.
-        for side in [-1.0f32, 1.0] {
-            let mut x = 18.0;
-            while x < 104.0 {
-                for s in [-1.0f32, 1.0] {
-                    let at = Vec2::new(s * (x + rng.range(-1.0, 1.0)), z + side * 12.0);
-                    let floors = if rng.chance(0.4) { 2 } else { 1 };
-                    let half = Vec2::new(rng.range(4.2, 5.4), rng.range(3.8, 4.4));
-                    self.house(rng, at, half, floors, if side > 0.0 { 0 } else { 3 });
-                }
-                x += rng.range(15.0, 19.0);
+        // The rows of houses, clear of the ramps and the stairs (north) and the square (south).
+        for s in [-1.0f32, 1.0] {
+            for (k, &x) in [20.0f32, 36.0, 52.0, 92.0, 108.0].iter().enumerate() {
+                let half = Vec2::new(rng.range(4.2, 5.0), rng.range(3.8, 4.4));
+                let at = Vec2::new(s * x, north_kerb + 4.5 + half.y);
+                let floors = if rng.chance(0.4) { 2 } else { 1 };
+                // Driveways where the gap to the next house allows.
+                let driveway = matches!(k, 1 | 3).then_some(s);
+                self.street_house(rng, at, half, floors, 0, north_kerb, driveway);
+            }
+            for (k, &x) in [24.0f32, 40.0, 56.0, 72.0, 88.0, 104.0].iter().enumerate() {
+                let half = Vec2::new(rng.range(4.2, 5.0), rng.range(3.8, 4.4));
+                let at = Vec2::new(s * x, south_kerb - 4.5 - half.y);
+                let floors = if rng.chance(0.4) { 2 } else { 1 };
+                let driveway = matches!(k, 0 | 2 | 4).then_some(s);
+                self.street_house(rng, at, half, floors, 3, south_kerb, driveway);
             }
         }
-        // Cars down the street.
-        for _ in 0..8 {
-            let p = Vec2::new(rng.range(-100.0, 100.0), z + if rng.chance(0.5) { 2.4 } else { -2.4 });
-            if !self.occupied(p, 2.4) && self.clutter.iter().all(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) > 6.0) {
-                self.clutter.push(Clutter { kind: ClutterKind::Car, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned: true });
+        // Cars at the kerbs, clear of the junctions.
+        for (x, side) in [(28.0f32, 1.0f32), (84.0, 1.0), (46.0, -1.0), (80.0, -1.0)] {
+            for s in [-1.0, 1.0] {
+                self.kerb_car(s * (x + rng.range(-1.0, 1.0)), z, 7.0, side);
             }
         }
     }
 
-    /// The lower terrace: vineyard rows behind stone walls, a farmhouse and a barn.
+    /// The lower terrace: vineyard rows behind stone walls, a farmhouse and a barn either side
+    /// of the stairs, the footpath along it.
     fn lower_terrace(&mut self, rng: &mut Rng) {
         let z = level_mid(1);
-        self.barn(rng, Vec2::new(-40.0, z + 6.0), Vec2::new(7.5, 5.5));
-        self.house(rng, Vec2::new(40.0, z + 7.0), Vec2::new(5.0, 4.4), 2, 0);
+        let walk = PROMENADES[0].0;
+        let barn = Vec2::new(-42.0, z + 6.0);
+        self.barn(rng, barn, Vec2::new(7.5, 5.5));
+        // From the barn's east doors along to the stairs' path.
+        self.path(Vec2::new(barn.x + 7.7, barn.y - 0.5), Vec2::new(-30.0, barn.y - 0.5));
+        // The yard in front of the barn doors.
+        self.ground_paint(barn.x + 7.5, barn.x + 11.0, barn.y - 3.0, barn.y + 2.0, Paint::Sand);
+        self.areas.push(Area { lo: Vec2::new(barn.x + 7.5, barn.y - 3.0), hi: Vec2::new(barn.x + 11.0, barn.y + 2.0), kind: AreaKind::Parking });
+        self.street_house(rng, Vec2::new(42.0, z + 7.0), Vec2::new(5.0, 4.4), 2, 0, walk + 0.9, None);
         // Vine rows: low walls you can crouch behind, the length of the field.
         for side in [-1.0f32, 1.0] {
             for k in 0..4 {
                 let rz = z - 12.0 + k as f32 * 6.0;
+                if (rz - walk).abs() < 2.0 {
+                    continue;
+                }
                 let (a, c) = (side * 48.0, side * 60.0);
                 self.low_wall(Vec2::new(a.min(c), rz), Vec2::new(a.max(c), rz), COVER_HEIGHT, 0.5, Paint::Rock);
-                let (a, c) = (side * 10.0, side * 24.0);
+                let (a, c) = (side * 12.0, side * 24.0);
                 self.low_wall(Vec2::new(a.min(c), rz), Vec2::new(a.max(c), rz), COVER_HEIGHT, 0.5, Paint::Rock);
             }
         }
         for _ in 0..10 {
             let p = Vec2::new(rng.range(-100.0, 100.0), z + rng.range(-14.0, 14.0));
-            if !self.occupied(p, 2.0) && !self.near_road(p, 1.0) {
+            if !self.occupied(p, 2.0) && !self.near_road(p, 1.0) && !self.in_area(p, 2.0) {
                 self.hay_stack(p, rng.chance(0.5), None);
             }
         }
     }
 
-    /// The middle terrace: the bases at either end, an inn and a garage in the middle.
+    /// The middle terrace: the bases at either end, the market square in the middle with the
+    /// inn on it, garages with their driveways and a fuel stop on the road.
     fn middle_terrace(&mut self, rng: &mut Rng) {
         let z = level_mid(2);
-        let inn = Vec2::new(-18.0, z + 9.0);
-        self.building_plan(rng, inn, Vec2::new(7.0, 5.5), 3, &Plan { walls: Some(Paint::Wood), roof: Roof::Gable(Paint::Rust), furnish: Furnish::Home, chimney: true, ..Plan::default() });
-        self.garage(rng, Vec2::new(16.0, z + 8.5), 0);
-        self.garage(rng, Vec2::new(22.0, z + 8.5), 0);
-        // A fuel stop: pumps (cover) under a canopy on posts.
-        let pumps = Vec2::new(18.0, z - 10.0);
+        let kerb = z + 3.0;
+        // The inn, looking onto the square.
+        let inn = Vec2::new(-21.0, kerb + 6.5);
+        let from = self.doors.len();
+        let mut plan = Plan { walls: Some(Paint::Wood), roof: Roof::Gable(Paint::Rust), furnish: Furnish::Home, chimney: true, random_doors: false, ..Plan::default() };
+        plan.doors[0] = Some((inn.x + 2.0, super::DOOR_WIDTH));
+        plan.doors[3] = Some((inn.x - 2.0, super::DOOR_WIDTH));
+        self.building_plan(rng, inn, Vec2::new(7.0, 5.5), 3, &plan);
+        if let Some(door) = self.door_at(from, inn.y - 5.5) {
+            self.path(Vec2::new(door.x, inn.y - 5.7), Vec2::new(door.x, kerb));
+        }
+        // Two garages, each with its driveway down to the road.
+        for gx in [17.0, 24.0] {
+            let g = Vec2::new(gx, kerb + 1.5 + 3.3);
+            self.garage(rng, g, 0);
+            self.ground_paint(gx - 1.6, gx + 1.6, kerb, g.y - 3.3, Paint::Concrete);
+            self.areas.push(Area { lo: Vec2::new(gx - 1.6, kerb), hi: Vec2::new(gx + 1.6, g.y - 3.3), kind: AreaKind::Parking });
+        }
+        // The fuel stop: pumps (cover) under a canopy on posts, on a forecourt off the road.
+        let pumps = Vec2::new(22.0, z - 12.0);
+        let (lo, hi) = (Vec2::new(SQUARE.0, pumps.y - 7.0), Vec2::new(28.8, z - 3.0));
+        self.ground_paint(lo.x, hi.x, lo.y, hi.y, Paint::Concrete);
+        self.areas.push(Area { lo, hi, kind: AreaKind::Parking });
         let g = self.height(pumps.x, pumps.y);
         for dx in [-4.0, 0.0, 4.0] {
             self.solid(Aabb::span(Vec3::new(pumps.x + dx - 0.4, g, pumps.y - 0.3), Vec3::new(pumps.x + dx + 0.4, g + 1.5, pumps.y + 0.3)), Paint::Coral);
@@ -354,7 +499,17 @@ impl World {
         }
         self.solid(Aabb::span(Vec3::new(pumps.x - 7.0, g + 3.6, pumps.y - 3.0), Vec3::new(pumps.x + 7.0, g + 4.0, pumps.y + 3.0)), Paint::Bone);
         self.decor(Aabb::span(Vec3::new(pumps.x - 7.02, g + 3.65, pumps.y - 3.02), Vec3::new(pumps.x + 7.02, g + 3.8, pumps.y + 3.02)), Paint::Red);
-        for (kind, n) in [(ClutterKind::Barrel, 6), (ClutterKind::Car, 4), (ClutterKind::Crates, 6), (ClutterKind::Bin, 4)] {
+        // Cars filling up and waiting, lined up with the pumps.
+        for dx in [-2.0, 2.0] {
+            let p = Vec2::new(pumps.x + dx * 1.6, pumps.y + 3.4);
+            self.clutter.push(Clutter { kind: ClutterKind::Car, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned: false });
+        }
+        // Cars at the kerbs out toward the bases.
+        for x in [-74.0f32, -60.0, 62.0, 76.0] {
+            self.kerb_car(x, z, 6.0, if x < 0.0 { 1.0 } else { -1.0 });
+        }
+        // Barrels, crates and bins for cover round the terrace.
+        for (kind, n) in [(ClutterKind::Barrel, 6), (ClutterKind::Crates, 8), (ClutterKind::Bin, 3)] {
             let mut placed = 0;
             for _ in 0..n * 12 {
                 if placed >= n {
@@ -362,7 +517,7 @@ impl World {
                 }
                 let p = Vec2::new(rng.range(-80.0, 80.0), z + rng.range(-14.0, 14.0));
                 let reach = kind.half().x.max(kind.half().z) + 0.8;
-                if self.occupied(p, reach) || self.clutter.iter().any(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) < reach + 2.0) {
+                if self.occupied(p, reach) || self.on_lane(p, reach) || self.in_area(p, reach) || self.clutter.iter().any(|c| Vec2::new(c.pos.x, c.pos.z).distance(p) < reach + 2.0) {
                     continue;
                 }
                 self.clutter.push(Clutter { kind, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned: rng.chance(0.5) });
@@ -371,50 +526,80 @@ impl World {
         }
         for _ in 0..8 {
             let p = Vec2::new(rng.range(-80.0, 80.0), z + rng.range(-14.0, 12.0));
-            if !self.occupied(p, 6.0) && !self.near_road(p, 3.0) {
+            if !self.occupied(p, 6.0) && !self.near_road(p, 3.0) && !self.in_area(p, 3.0) {
                 let size = rng.range(1.2, 2.2);
                 self.outcrop(rng, p, size);
             }
         }
     }
 
-    /// The upper terrace: chalets among rocks and pines, a cable-car station.
+    /// The upper terrace: chalets facing the road and the footpath, the cable-car station on
+    /// the path above the middle stairs, rocks and pines.
     fn upper_terrace(&mut self, rng: &mut Rng) {
         let z = level_mid(3);
-        for (x, front) in [(-76.0, 0), (-36.0, 0), (36.0, 0), (76.0, 0), (-100.0, 2), (100.0, 1)] {
-            let at = Vec2::new(x + rng.range(-3.0, 3.0), z + rng.range(2.0, 8.0));
-            if !self.occupied(at, 7.0) {
-                self.cabin(rng, at, front);
+        let walk = PROMENADES[1].0;
+        for s in [-1.0f32, 1.0] {
+            // Two by the road, facing it; one out past the stairs, facing the path.
+            for (x, kerb) in [(35.0f32, z + 3.0), (82.0, walk + 0.9), (104.0, walk + 0.9)] {
+                let at = Vec2::new(s * x, kerb + 7.5);
+                let from = self.doors.len();
+                self.cabin(rng, at, 0);
+                // Its front door, on the south wall, and down off the porch to the road or path.
+                let door = self.doors[from..].iter().find(|d| d.along_x && d.center.z < at.y).map(|d| Vec2::new(d.center.x, d.center.z));
+                if let Some(door) = door {
+                    self.path(Vec2::new(door.x, door.y - 2.4), Vec2::new(door.x, kerb));
+                }
             }
         }
-        // The cable-car station: a hall with a tall pylon beside it.
-        let station = Vec2::new(0.0, z + 6.0);
-        self.building_plan(rng, station, Vec2::new(6.0, 5.0), 2, &Plan { walls: Some(Paint::Concrete), roof: Roof::Flat, furnish: Furnish::Plain, ..Plan::default() });
-        let g = self.height(10.0, z + 6.0);
-        self.solid(Aabb::span(Vec3::new(9.0, g - 0.3, z + 4.8), Vec3::new(10.2, g + 12.0, z + 6.0)), Paint::Iron);
-        self.solid(Aabb::span(Vec3::new(8.0, g + 12.0, z + 4.4), Vec3::new(11.2, g + 12.3, z + 6.4)), Paint::Iron);
+        // The cable-car station: a hall with a tall pylon beside it, its door on the path.
+        let station = Vec2::new(0.0, walk + 0.9 + 6.0 + 5.0);
+        let from = self.doors.len();
+        let mut plan = Plan { walls: Some(Paint::Concrete), roof: Roof::Flat, furnish: Furnish::Plain, random_doors: false, ..Plan::default() };
+        plan.doors[0] = Some((station.x - 2.0, super::DOOR_WIDTH));
+        plan.doors[1] = Some((station.y, super::DOOR_WIDTH));
+        self.building_plan(rng, station, Vec2::new(6.0, 5.0), 2, &plan);
+        if let Some(door) = self.door_at(from, station.y - 5.0) {
+            self.path(Vec2::new(door.x, station.y - 5.2), Vec2::new(door.x, walk + 0.9));
+        }
+        let g = self.height(10.0, station.y);
+        self.solid(Aabb::span(Vec3::new(9.0, g - 0.3, station.y - 1.2), Vec3::new(10.2, g + 12.0, station.y)), Paint::Iron);
+        self.solid(Aabb::span(Vec3::new(8.0, g + 12.0, station.y - 1.6), Vec3::new(11.2, g + 12.3, station.y + 0.4)), Paint::Iron);
         for _ in 0..10 {
             let p = Vec2::new(rng.range(-110.0, 110.0), z + rng.range(-14.0, 14.0));
-            if !self.occupied(p, 6.0) && !self.near_road(p, 3.0) && !self.near_base(p, BASE.0, BASE.1) {
+            if !self.occupied(p, 6.0) && !self.near_road(p, 3.0) && !self.in_area(p, 3.0) && !self.near_base(p, BASE.0, BASE.1) {
                 let size = rng.range(1.4, 2.6);
                 self.outcrop(rng, p, size);
             }
         }
     }
 
-    /// The summit: the lodge, the radio station and its mast, a helipad, a lookout.
+    /// The summit: the lodge over its forecourt, the radio station and its mast on the west
+    /// shoulder and the helipad on the east, paths to both from the stairs, lookout towers.
     fn summit(&mut self, rng: &mut Rng) {
         let z = level_mid(4) + 6.0;
-        let lodge = Vec2::new(0.0, z + 8.0);
+        let lodge = Vec2::new(0.0, FORECOURT.1 + 7.0);
         let mut plan = Plan { walls: Some(Paint::Wood), trim: Some(Paint::Dark), roof: Roof::Gable(Paint::Shell), furnish: Furnish::Home, chimney: true, random_doors: false, ..Plan::default() };
         plan.doors[0] = Some((lodge.x - 2.5, 1.7));
         plan.doors[1] = Some((lodge.y, 1.7));
         plan.doors[2] = Some((lodge.y, 1.7));
         let (g, _) = self.building_plan(rng, lodge, Vec2::new(11.0, 7.0), 2, &plan);
         self.porch(rng, lodge, Vec2::new(11.0, 7.0), 0, g);
+        // Cars in the forecourt, nose in to the lodge.
+        for x in [-8.5f32, 8.5] {
+            let p = Vec2::new(x, FORECOURT.1 - 5.0);
+            self.clutter.push(Clutter { kind: ClutterKind::Car, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), turned: false });
+        }
+        // The paths along the shoulders from the stairs.
+        let walk = level_mid(4) + 2.0;
         // The radio station: a concrete hut, a lattice mast (thin) and a dish (solid).
-        let radio = Vec2::new(-46.0, z + 2.0);
-        self.building_plan(rng, radio, Vec2::new(4.5, 3.6), 1, &Plan { walls: Some(Paint::Concrete), roof: Roof::Flat, furnish: Furnish::Plain, ..Plan::default() });
+        let radio = Vec2::new(-46.0, walk + 1.0 + 3.6);
+        let from = self.doors.len();
+        let mut hut = Plan { walls: Some(Paint::Concrete), roof: Roof::Flat, furnish: Furnish::Plain, random_doors: false, ..Plan::default() };
+        hut.doors[0] = Some((radio.x, super::DOOR_WIDTH));
+        self.building_plan(rng, radio, Vec2::new(4.5, 3.6), 1, &hut);
+        let door = self.door_at(from, radio.y - 3.6).unwrap_or(Vec2::new(radio.x, radio.y - 3.6));
+        self.path(Vec2::new(-70.0, walk), Vec2::new(door.x, walk));
+        self.path(Vec2::new(door.x, walk), Vec2::new(door.x, radio.y - 3.8));
         let mast = radio + Vec2::new(-9.0, 4.0);
         let mg = self.height(mast.x, mast.y);
         for (dx, dz) in [(-0.9, -0.9), (0.9, -0.9), (-0.9, 0.9), (0.9, 0.9)] {
@@ -426,17 +611,18 @@ impl World {
             self.decor(Aabb::span(Vec3::new(mast.x - 0.95, y, mast.y + 0.88), Vec3::new(mast.x + 0.95, y + 0.06, mast.y + 0.95)), Paint::Bone);
             y += 2.0;
         }
-        // A cap across the legs' tops, and the beacon on it.
         self.decor(Aabb::span(Vec3::new(mast.x - 0.96, mg + 24.0, mast.y - 0.96), Vec3::new(mast.x + 0.96, mg + 24.06, mast.y + 0.96)), Paint::Coral);
         self.decor(Aabb::new(Vec3::new(mast.x, mg + 24.18, mast.y), Vec3::new(0.12, 0.12, 0.12)), Paint::Red);
-        let dish = radio + Vec2::new(2.0, -8.0);
+        let dish = radio + Vec2::new(10.0, 2.0);
         let dg = self.height(dish.x, dish.y);
         self.solid(Aabb::span(Vec3::new(dish.x - 0.4, dg - 0.2, dish.y - 0.4), Vec3::new(dish.x + 0.4, dg + 1.6, dish.y + 0.4)), Paint::Steel);
         self.solid(Aabb::span(Vec3::new(dish.x - 1.8, dg + 1.6, dish.y - 0.5), Vec3::new(dish.x + 1.8, dg + 4.2, dish.y - 0.2)), Paint::Bone);
-        // The helipad: an H in a ring of lights, with sandbags round it.
-        let pad = Vec2::new(46.0, z + 2.0);
+        // The helipad: an H in a ring of lights, with sandbags round it, the path to its edge.
+        let pad = Vec2::new(46.0, z + 4.0);
         let pg = self.height(pad.x, pad.y) + 0.01;
         self.flat(pad.x - 8.0, pad.x + 8.0, pad.y - 8.0, pad.y + 8.0, pg, Paint::Concrete);
+        self.areas.push(Area { lo: pad - Vec2::splat(8.0), hi: pad + Vec2::splat(8.0), kind: AreaKind::Plaza });
+        self.path(Vec2::new(70.0, walk), Vec2::new(pad.x + 8.0, walk));
         self.flat(pad.x - 2.6, pad.x - 1.8, pad.y - 3.0, pad.y + 3.0, pg + 0.01, Paint::Bone);
         self.flat(pad.x + 1.8, pad.x + 2.6, pad.y - 3.0, pad.y + 3.0, pg + 0.01, Paint::Bone);
         self.flat(pad.x - 1.8, pad.x + 1.8, pad.y - 0.4, pad.y + 0.4, pg + 0.01, Paint::Bone);
@@ -444,15 +630,15 @@ impl World {
             let p = pad + Vec2::from_angle(i as f32 * TAU / 12.0) * 7.2;
             self.decor(Aabb::new(Vec3::new(p.x, pg + 0.05, p.y), Vec3::new(0.15, 0.04, 0.15)), Paint::Glow);
         }
-        for (dx, dz, open) in [(-10.5, 0.0, 2), (10.5, 0.0, 1)] {
+        for (dx, dz, open) in [(-10.5, 4.0, 2), (10.5, 0.0, 1)] {
             self.sandbags(pad + Vec2::new(dx, dz), Vec2::new(1.4, 2.0), open);
         }
-        // A lookout tower at the back for the long shots.
-        self.building_plan(rng, Vec2::new(82.0, z + 10.0), Vec2::new(3.3, 3.0), 4, &Plan { walls: Some(Paint::Wood), roof: Roof::Flat, furnish: Furnish::Plain, ..Plan::default() });
-        self.building_plan(rng, Vec2::new(-82.0, z + 10.0), Vec2::new(3.3, 3.0), 4, &Plan { walls: Some(Paint::Wood), roof: Roof::Flat, furnish: Furnish::Plain, ..Plan::default() });
+        // A lookout tower on each flank for the long shots.
+        self.building_plan(rng, Vec2::new(82.0, z + 12.0), Vec2::new(3.3, 3.0), 4, &Plan { walls: Some(Paint::Wood), roof: Roof::Flat, furnish: Furnish::Plain, ..Plan::default() });
+        self.building_plan(rng, Vec2::new(-82.0, z + 12.0), Vec2::new(3.3, 3.0), 4, &Plan { walls: Some(Paint::Wood), roof: Roof::Flat, furnish: Furnish::Plain, ..Plan::default() });
         for _ in 0..8 {
-            let p = Vec2::new(rng.range(-100.0, 100.0), z + rng.range(-18.0, 20.0));
-            if !self.occupied(p, 7.0) && !self.near_road(p, 3.0) {
+            let p = Vec2::new(rng.range(-100.0, 100.0), z + rng.range(-12.0, 20.0));
+            if !self.occupied(p, 7.0) && !self.near_road(p, 3.0) && !self.in_area(p, 3.0) {
                 let size = rng.range(1.6, 2.8);
                 self.outcrop(rng, p, size);
             }
@@ -470,7 +656,7 @@ impl World {
             let h = self.height(p.x, p.y);
             // Not on the cliffs, the roads or the bases.
             let near_cliff = CLIFFS.iter().any(|b| (p.y - b).abs() < 6.5);
-            if h < 0.8 || near_cliff || self.near_road(p, 2.0) || self.near_base(p, BASE.0, BASE.1) || self.occupied(p, 3.0) {
+            if h < 0.8 || near_cliff || self.near_road(p, 2.0) || self.in_area(p, 2.0) || self.near_base(p, BASE.0, BASE.1) || self.occupied(p, 3.0) {
                 continue;
             }
             let height = rng.range(7.0, 10.5);
@@ -487,7 +673,7 @@ impl World {
                 break;
             }
             let p = Vec2::new(rng.range(-112.0, 112.0), rng.range(-100.0, 96.0));
-            if CLIFFS.iter().any(|b| (p.y - b).abs() < 3.0) || self.occupied(p, 0.9) || self.near_road(p, 0.3) {
+            if CLIFFS.iter().any(|b| (p.y - b).abs() < 3.0) || self.occupied(p, 0.9) || self.near_road(p, 0.8) || self.in_area(p, 0.8) {
                 continue;
             }
             self.props.push(Prop { kind: PropKind::Bush, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: rng.range(0.0, TAU), scale: rng.range(0.7, 1.2) });
@@ -509,7 +695,7 @@ impl World {
         for _ in 0..5200 {
             let p = Vec2::new(rng.range(-120.0, 120.0), rng.range(-110.0, 110.0));
             let h = self.height(p.x, p.y);
-            if h < self.water + 0.5 || self.near_road(p, 0.0) || self.occupied(p, 0.3) {
+            if h < self.water + 0.5 || self.near_road(p, 0.0) || self.in_area(p, 0.0) || self.occupied(p, 0.3) {
                 continue;
             }
             self.grass.push(Vec3::new(p.x, h, p.y));

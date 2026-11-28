@@ -9,7 +9,7 @@ use glam::{Vec2, Vec3};
 
 /// A road as [`World::road`] asked for it, kept until the map is paved.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Lane {
+pub struct Lane {
     pub a: Vec2,
     pub b: Vec2,
     pub width: f32,
@@ -18,19 +18,31 @@ pub(crate) struct Lane {
 }
 
 impl Lane {
-    fn along_x(&self) -> bool {
+    pub fn along_x(&self) -> bool {
         (self.b.x - self.a.x).abs() > (self.b.y - self.a.y).abs()
     }
 
     /// The paved rectangle, (low corner, high corner).
-    fn rect(&self) -> (Vec2, Vec2) {
+    pub fn rect(&self) -> (Vec2, Vec2) {
         let w = if self.along_x() { Vec2::new(0.0, self.width * 0.5) } else { Vec2::new(self.width * 0.5, 0.0) };
         (self.a.min(self.b) - w, self.a.max(self.b) + w)
     }
 
     /// A pavement: a narrow concrete strip, drawn raised a kerb's height.
-    fn pavement(&self) -> bool {
+    pub fn pavement(&self) -> bool {
         self.paint == Paint::Concrete && self.width <= 2.5 && !self.lines
+    }
+
+    /// Wide enough to drive and park on.
+    pub fn carriageway(&self) -> bool {
+        !self.pavement() && self.width >= 4.0
+    }
+
+    /// Does a disc at `p` of radius `r` reach more than `slack` onto it?
+    pub fn covers(&self, p: Vec2, r: f32, slack: f32) -> bool {
+        let (lo, hi) = self.rect();
+        let m = r - slack;
+        p.x > lo.x - m && p.x < hi.x + m && p.y > lo.y - m && p.y < hi.y + m
     }
 }
 
@@ -143,7 +155,7 @@ impl World {
     /// Paves every road laid: asphalt and dirt on the ground, raised pavements, and on
     /// marked roads kerbs, edge lines, centre dashes, patches and manhole covers.
     pub(crate) fn pave(&mut self) {
-        let lanes = std::mem::take(&mut self.lanes);
+        let lanes = self.lanes.clone();
         let mut rng = Rng::new(self.recipe.seed ^ 0x9a7e);
         for (k, lane) in lanes.iter().enumerate() {
             let along_x = lane.along_x();

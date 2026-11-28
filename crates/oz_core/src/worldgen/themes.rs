@@ -247,6 +247,7 @@ impl World {
                 let y = self.ground_at(bulb) + 0.01;
                 self.ground_paint(bulb.x - 8.5, bulb.x + 8.5, bulb.y - 6.0, bulb.y + 6.0, Paint::Dark);
                 self.ground_paint(bulb.x - 6.0, bulb.x + 6.0, bulb.y - 8.5, bulb.y + 8.5, Paint::Dark);
+                self.areas.push(super::Area { lo: bulb - Vec2::new(8.5, 8.5), hi: bulb + Vec2::new(8.5, 8.5), kind: super::AreaKind::Parking });
                 self.boxed(bulb, Vec2::splat(1.3), 0.35, Paint::Concrete);
                 self.props.push(Prop { kind: PropKind::Tree, pos: Vec3::new(bulb.x, y + 0.35, bulb.y), yaw: rng.range(0.0, TAU), scale: rng.range(3.8, 4.8) });
                 for row in [15.0, 37.0] {
@@ -270,7 +271,8 @@ impl World {
         // The middle: a mansion facing the avenue across its fountain, and a park and a second
         // estate on the other side.
         self.mansion(rng, Vec2::new(0.0, 46.0), true);
-        self.road(Vec2::new(0.0, 4.5), Vec2::new(0.0, 16.0), 5.0, Paint::Concrete, false);
+        // The drive up to the fountain in front of the mansion.
+        self.road(Vec2::new(0.0, 4.5), Vec2::new(0.0, 21.0), 5.0, Paint::Concrete, false);
         for s in [-1.0, 1.0] {
             self.hedge(Vec2::new(s * 17.4, 14.0), Vec2::new(s * 17.4, 62.0), rng);
             self.low_wall(Vec2::new(s * 3.5, 12.0), Vec2::new(s * 16.6, 12.0), COVER_HEIGHT, 0.5, Paint::Bone);
@@ -292,17 +294,15 @@ impl World {
         let garage = rng.chance(0.55);
         let half = Vec2::new(rng.range(3.6, 4.2), if garage { rng.range(4.0, 4.6) } else { rng.range(4.2, 5.4) });
         let c = Vec2::new(street_edge - toward * (4.0 + half.x), lot.y + if garage { -2.2 } else { 0.0 });
-        if !garage && rng.chance(0.5) {
-            let east = rng.chance(0.5);
-            self.l_house(rng, c, half, floors, front, east);
-        } else {
-            self.house(rng, c, half, floors, front);
-        }
+        // (An L-shaped house's wing runs east or west: on a street running north-south it would
+        // reach out across the pavement into the road.)
+        self.house(rng, c, half, floors, front);
         if garage {
             let g = Vec2::new(street_edge - toward * 5.6, c.y + half.y + 2.8);
             self.garage(rng, g, front);
             let (a, b) = (street_edge, g.x + toward * 3.3);
             self.ground_paint(a.min(b), a.max(b), g.y - 1.7, g.y + 1.7, Paint::Concrete);
+            self.areas.push(super::Area { lo: Vec2::new(a.min(b), g.y - 1.7), hi: Vec2::new(a.max(b), g.y + 1.7), kind: super::AreaKind::Parking });
             if rng.chance(0.5) {
                 // Parked at the kerb outside.
                 let p = Vec2::new(street_edge + toward * 1.25, g.y);
@@ -312,7 +312,7 @@ impl World {
             }
         }
         // A path to the front door is the street side; a mailbox at the kerb.
-        let m = Vec2::new(street_edge + toward * 0.6, lot.y - 5.0);
+        let m = Vec2::new(street_edge - toward * 0.6, lot.y - 5.0);
         if !self.occupied(m, 0.6) {
             self.clutter.push(Clutter { kind: ClutterKind::Mailbox, pos: Vec3::new(m.x, self.ground_at(m), m.y), turned: false });
         }
@@ -378,8 +378,9 @@ impl World {
     // --- Desert outpost ---------------------------------------------------------------------
 
     fn desert(&mut self, rng: &mut Rng) {
-        self.road(Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0), 6.0, Paint::Concrete, false);
-        self.road(Vec2::new(0.0, -96.0), Vec2::new(0.0, 96.0), 5.0, Paint::Concrete, false);
+        // Narrow enough to pass between the fort's gate piers.
+        self.road(Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0), 4.0, Paint::Concrete, false);
+        self.road(Vec2::new(0.0, -112.0), Vec2::new(0.0, 112.0), 4.2, Paint::Concrete, false);
         self.fort(rng, Vec2::ZERO);
         let sites: Vec<(Vec2, f32)> = self.flats.iter().copied().filter(|(c, r)| *r < 15.0 && *c != OASIS.0).collect();
         for (c, _) in sites {
@@ -406,7 +407,7 @@ impl World {
         }
         for _ in 0..10 {
             let p = Vec2::new(rng.range(-100.0, 100.0), rng.range(-104.0, 104.0));
-            if !self.occupied(p, 6.0) && self.base_clear(p, 6.0) && p.distance(OASIS.0) > OASIS.1 + 6.0 {
+            if !self.occupied(p, 6.0) && !self.near_road(p, 5.0) && self.base_clear(p, 6.0) && p.distance(OASIS.0) > OASIS.1 + 6.0 {
                 let size = rng.range(1.4, 2.6);
                 self.outcrop(rng, p, size);
             }
@@ -589,6 +590,9 @@ impl World {
         let dirt = Paint::Sand;
         self.road(Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0), 6.0, dirt, false);
         self.road(Vec2::new(0.0, 3.0), Vec2::new(0.0, 30.0), 5.0, dirt, false);
+        // The track ends in the farmyard in front of the barn.
+        self.ground_paint(-9.0, 9.0, 28.0, 38.5, dirt);
+        self.areas.push(super::Area { lo: Vec2::new(-9.0, 28.0), hi: Vec2::new(9.0, 38.5), kind: super::AreaKind::Parking });
         // The main farmstead north of the road.
         let flip = if rng.chance(0.5) { 1.0 } else { -1.0 };
         self.barn(rng, Vec2::new(0.0, 46.0), Vec2::new(9.0, 6.5));
@@ -614,6 +618,9 @@ impl World {
         for (s, at) in [(-1.0f32, Vec2::new(-46.0, -44.0)), (1.0, Vec2::new(48.0, -46.0))] {
             let at = at + Vec2::new(rng.range(-4.0, 4.0), rng.range(-4.0, 4.0));
             self.road(Vec2::new(at.x, -3.0), Vec2::new(at.x, at.y + 12.0), 4.0, dirt, false);
+            // Into the farm's yard.
+            self.ground_paint(at.x - 7.0, at.x + 7.0, at.y + 7.0, at.y + 13.0, dirt);
+            self.areas.push(super::Area { lo: Vec2::new(at.x - 7.0, at.y + 7.0), hi: Vec2::new(at.x + 7.0, at.y + 13.0), kind: super::AreaKind::Parking });
             if rng.chance(0.5) {
                 self.barn(rng, at + Vec2::new(-s * 2.0, -6.0), Vec2::new(7.0, 5.0));
             } else {
@@ -864,8 +871,12 @@ impl World {
             let mut x = -86.0 + rng.range(0.0, 10.0);
             while x < 86.0 {
                 let length = rng.range(5.0, 7.5);
-                if rng.chance(0.55) && self.base_clear(Vec2::new(x, tz), 4.0) {
-                    let c = Vec2::new(x + length * 0.5, tz);
+                let c = Vec2::new(x + length * 0.5, tz);
+                let crossing = self.lanes.iter().any(|l| {
+                    let (lo, hi) = l.rect();
+                    lo.x < c.x + length * 0.5 + 1.0 && hi.x > c.x - length * 0.5 - 1.0 && lo.y < tz + 1.3 && hi.y > tz - 1.3
+                });
+                if rng.chance(0.55) && self.base_clear(Vec2::new(x, tz), 4.0) && !crossing {
                     let paint = *rng.pick(&[Paint::Rust, Paint::Teal, Paint::Wood, Paint::Iron]).unwrap_or(&Paint::Rust);
                     let g = self.ground_at(c);
                     self.solid(Aabb::span(Vec3::new(c.x - length * 0.5, g + 0.4, c.y - 1.3), Vec3::new(c.x + length * 0.5, g + 3.1, c.y + 1.3)), paint);
@@ -903,6 +914,9 @@ impl World {
         self.building_plan(rng, tower, Vec2::new(3.3, 3.0), 4, &Plan { walls: Some(Paint::Wood), trim: Some(Paint::Dark), roof: Roof::Flat, furnish: Furnish::Plain, ..Plan::default() });
         // Cabins in the clearings, shelters and a dock by the lake.
         for (c, _) in sites.iter().skip(4) {
+            if self.near_road(*c, 5.5) {
+                continue;
+            }
             let front = if c.y.abs() > c.x.abs() { if c.y > 0.0 { 0 } else { 3 } } else if c.x > 0.0 { 1 } else { 2 };
             if rng.chance(0.25) {
                 self.shelter(*c, Vec2::new(3.2, 2.6), Paint::Rust);

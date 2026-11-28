@@ -15,6 +15,7 @@
 //! silos, towers, fences, furniture), `themes` (the random town per theme),
 //! `office`, `station` and `mountain` (the big fixed maps).
 
+mod audit;
 mod details;
 mod interiors;
 mod mountain;
@@ -26,6 +27,8 @@ mod street;
 mod themes;
 mod zombie_maps;
 
+pub use audit::Finding;
+pub use paving::Lane;
 pub use themes::Theme;
 pub use zombie_maps::{CHALK_FRAME, SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeTrap, HordeWindow, HordeZone, WallBuy, chalk_fit, perk_id};
 use shapes::{Furnish, Plan, Roof};
@@ -600,6 +603,34 @@ pub struct TerrainChunk {
     pub colors: Vec<[f32; 4]>,
 }
 
+/// What an [`Area`] is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AreaKind {
+    /// A square or open court people gather in: roads may end here, furniture may stand here.
+    Plaza,
+    /// A car park, forecourt or driveway: cars park here (lined up with its long side),
+    /// roads end here, furniture keeps off.
+    Parking,
+    /// The landing at the top or foot of a flight of steps, or a ramp: kept clear.
+    Steps,
+    /// A team base's pad.
+    Base,
+}
+
+/// A rectangle of ground set aside for something (see [`AreaKind`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Area {
+    pub lo: Vec2,
+    pub hi: Vec2,
+    pub kind: AreaKind,
+}
+
+impl Area {
+    pub fn contains(&self, p: Vec2, margin: f32) -> bool {
+        p.x > self.lo.x - margin && p.x < self.hi.x + margin && p.y > self.lo.y - margin && p.y < self.hi.y + margin
+    }
+}
+
 pub struct World {
     pub recipe: WorldRecipe,
     pub water: f32,
@@ -645,6 +676,13 @@ pub struct World {
     pub waypoints: Vec<Vec3>,
     /// The random town's theme (`None` on every other layout).
     pub theme: Option<Theme>,
+    /// Open ground with a purpose - squares, car parks, driveways, forecourts, stair landings,
+    /// base pads: where a road may end, where cars may park (car parks and driveways), and
+    /// what street furniture keeps off (landings, driveways).
+    pub areas: Vec<Area>,
+    /// Street furniture laid as dressing (lamp posts, hydrants, signs, planters, bikes,
+    /// bollards, booths, vending machines, billboards, stalls): kind, ground point, radius.
+    pub street_items: Vec<(&'static str, Vec2, f32)>,
     /// Half the side of the square the fighting happens in: bots sweep it, hostiles hold posts
     /// in it, loot lies in it.
     pub arena: f32,
@@ -736,6 +774,8 @@ impl World {
             clutter: Vec::new(),
             waypoints: Vec::new(),
             theme: (recipe.layout == Layout::Town).then(|| Theme::from_seed(recipe.seed)),
+            areas: Vec::new(),
+            street_items: Vec::new(),
             arena: recipe.arena(),
             style: shapes::Style::default(),
             roads: Vec::new(),
@@ -772,6 +812,7 @@ impl World {
         world.set_pieces();
         world.dress_streets();
         world.tidy_clutter();
+        world.settle_street_furniture();
         world.clear_doorways();
         world.check_access();
         world.glaze_cars();
@@ -834,6 +875,21 @@ impl World {
             }
         }
         best
+    }
+
+    /// Every road, path and pavement laid on the map.
+    pub fn lanes(&self) -> &[Lane] {
+        &self.lanes
+    }
+
+    /// Is `p` within `margin` of a set-aside [`Area`]?
+    pub(crate) fn in_area(&self, p: Vec2, margin: f32) -> bool {
+        self.areas.iter().any(|a| a.contains(p, margin))
+    }
+
+    /// Is a disc at `p` (radius `r`) on a road or path (pavements do not count)?
+    pub fn on_lane(&self, p: Vec2, r: f32) -> bool {
+        self.lanes.iter().any(|l| !l.pavement() && l.covers(p, r, 0.05))
     }
 
     /// Ground height, interpolated exactly like the rendered triangles.
@@ -1868,6 +1924,7 @@ impl World {
         self.decor(Aabb::new(o + Vec3::new(0.0, g + 2.12, 0.0), Vec3::new(1.0, 0.03, 1.0)), Paint::Blue);
         self.solid(Aabb::new(o + Vec3::new(0.0, g + 2.5, 0.0), Vec3::new(0.12, 0.4, 0.12)), Paint::Bone);
         self.fountain = Some(o + Vec3::new(0.0, g + 2.95, 0.0));
+        self.areas.push(Area { lo: at - Vec2::splat(9.0), hi: at + Vec2::splat(9.0), kind: AreaKind::Plaza });
         // Lamps around the square.
         for i in 0..6 {
             let a = i as f32 * TAU / 6.0 + 0.3;
@@ -2791,5 +2848,43 @@ mod tests {
         let total: usize = (0..n).flat_map(|z| (0..n).map(move |x| (x, z))).map(|(x, z)| w.chunk(x, z, 32).positions.len()).sum();
         assert_eq!(total, (w.side - 1) * (w.side - 1) * 6);
         assert_eq!(sky_cubemap(&Biome::EmberAtoll.look(), true, 8).len(), 8 * 8 * 6 * 4);
+    }
+
+    /// Every map the placement audit covers: each town theme, the street-grid towns and the
+    /// mountain over `seeds`, and every fixed and horde map.
+    fn audited_maps(seeds: &[u64]) -> Vec<(String, World)> {
+        let mut maps: Vec<(String, World)> = Vec::new();
+        for &seed in seeds {
+            maps.extend(Theme::ALL.into_iter().map(|t| (format!("{t:?} {seed}"), World::generate(WorldRecipe::themed(seed, Biome::IronShoals, t)))));
+            maps.extend(grid_towns(seed));
+            let mountain = WorldRecipe { seed, ..WorldRecipe::preset(Layout::Mountainside, Biome::IronShoals, Weather::Clear) };
+            maps.push((format!("Mountainside {seed}"), World::generate(mountain)));
+        }
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town && !l.is_grid_town()).chain(Layout::HORDE) {
+            let recipe = if layout.is_horde() { WorldRecipe::horde(layout) } else { WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear) };
+            maps.push((format!("{layout:?}"), World::generate(recipe)));
+        }
+        maps
+    }
+
+    #[test]
+    fn everything_stands_where_it_should() {
+        let maps = audited_maps(&[1, 2, 3, 5, 8, 9, 13, 21]);
+        let mut total = 0;
+        for (what, w) in &maps {
+            let found = w.audit();
+            let mut by_rule: std::collections::BTreeMap<&str, usize> = Default::default();
+            for f in &found {
+                *by_rule.entry(f.rule).or_default() += 1;
+            }
+            if !found.is_empty() {
+                eprintln!("{what}: {by_rule:?}");
+                for f in found.iter().take(6) {
+                    eprintln!("    {} at ({:.1}, {:.1}): {}", f.rule, f.at.x, f.at.y, f.what);
+                }
+            }
+            total += found.len();
+        }
+        assert_eq!(total, 0, "{total} misplaced things");
     }
 }

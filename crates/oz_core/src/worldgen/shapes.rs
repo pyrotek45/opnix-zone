@@ -691,6 +691,7 @@ impl World {
         let along_x = (b.x - a.x).abs() > (b.y - a.y).abs();
         let w = if along_x { Vec2::new(0.0, width * 0.5) } else { Vec2::new(width * 0.5, 0.0) };
         let (lo, hi) = (a.min(b) - w, a.max(b) + w);
+        self.areas.push(super::Area { lo, hi, kind: super::AreaKind::Steps });
         self.solid(Aabb::span(Vec3::new(lo.x, y - 0.3, lo.y), Vec3::new(hi.x, y, hi.y)), Paint::Wood);
         // Stone under the deck down to the bed: nobody wades in under the planks.
         let bed = self.lowest((lo + hi) * 0.5, (hi - lo) * 0.5).min(self.water - 1.0);
@@ -776,6 +777,7 @@ impl World {
 
     /// An L-shaped house: a main block and a one-storey wing off its east or west end, joined
     /// through a doorway, with flush outside corners.
+    #[allow(dead_code)]
     pub(crate) fn l_house(&mut self, rng: &mut Rng, c: Vec2, half: Vec2, floors: u32, front: usize, wing_east: bool) {
         let (x0, x1, z0, z1) = (c.x - half.x, c.x + half.x, c.y - half.y, c.y + half.y);
         let wing = Vec2::new(rng.range(2.8, 3.6), (half.y * rng.range(0.55, 0.75)).max(2.9));
