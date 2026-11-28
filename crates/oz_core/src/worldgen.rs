@@ -22,6 +22,7 @@ mod office;
 mod paving;
 mod shapes;
 mod station;
+mod street;
 mod themes;
 mod zombie_maps;
 
@@ -664,6 +665,8 @@ pub struct World {
     furniture_dressing: Vec<std::ops::Range<usize>>,
     /// Every room's (floor, wall) paints, to keep them telling apart.
     rooms: Vec<(Paint, Paint)>,
+    /// Where street furniture already stands (see `street`).
+    street_spots: Vec<Vec2>,
     side: usize,
     heights: Vec<f32>,
 }
@@ -743,6 +746,7 @@ impl World {
             furniture_dressing: Vec::new(),
             rooms: Vec::new(),
             dressing: Vec::new(),
+            street_spots: Vec::new(),
         };
         if let Some(theme) = world.theme {
             world.style = theme.style();
@@ -763,6 +767,8 @@ impl World {
             _ => world.build_town(&mut rng.fork()),
         }
         world.pave();
+        world.set_pieces();
+        world.dress_streets();
         world.tidy_clutter();
         world.clear_doorways();
         world.check_access();
@@ -1582,6 +1588,9 @@ impl World {
             };
             self.stoop(p, out, width + 0.4, g);
             self.thresholds.push((Vec3::new(p.x, g, p.y), open[side]));
+            if width <= DOOR_WIDTH + 0.05 && !open[side] {
+                self.dress_door(p, out, width, g, plan.furnish, paint);
+            }
         }
 
         // Stairs: flight k climbs from floor k to k+1. Flights alternate between a lane along the
@@ -1789,6 +1798,7 @@ impl World {
                 // Parapets along two sides: a ledge to crouch behind up there (the ladders come up the other sides).
                 self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y + 0.3, z0 - 0.15), Vec3::new(x1 + 0.15, roof_y + 0.3 + COVER_HEIGHT, z0 + 0.1)), paint);
                 self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y + 0.3, z1 - 0.1), Vec3::new(x1 + 0.15, roof_y + 0.3 + COVER_HEIGHT, z1 + 0.15)), paint);
+                self.dress_roof(c, half - Vec2::splat(0.4), roof_y + 0.3);
                 let unit = Vec2::new(rng.range(x0 + 1.0, x1 - 1.0), rng.range(z0 + 1.0, z1 - 1.0));
                 // The rule for scenery: anything you could hide behind is solid (this air-conditioning
                 // unit is rooftop cover); anything too thin to hide behind - masts, poles, wires - you walk through.
@@ -2431,6 +2441,35 @@ mod tests {
         assert!(checked >= 30, "only {checked} car windows");
     }
 
+    /// Silos and water towers are drawn as true cylinders (many-sided solids), over hidden
+    /// collision that fills them.
+    #[test]
+    fn silos_and_tanks_are_round() {
+        for (what, w, wanted) in [
+            ("Farmland", World::generate(WorldRecipe::themed(9, Biome::IronShoals, Theme::Farmland)), 3),
+            ("Industrial", World::generate(WorldRecipe::themed(9, Biome::IronShoals, Theme::Industrial)), 1),
+        ] {
+            let mut round = 0;
+            for hull in &w.roofs {
+                let n = hull.points.len() as f32;
+                let c = hull.points.iter().copied().sum::<Vec3>() / n;
+                let (lo, hi) = hull.points.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+                let radii: Vec<f32> = hull.points.iter().map(|p| Vec2::new(p.x - c.x, p.z - c.z).length()).collect();
+                let mean = radii.iter().sum::<f32>() / n;
+                let spread = radii.iter().map(|r| (r - mean).abs()).fold(0.0, f32::max);
+                // A tall smooth drum: twenty sides or more, every point the same distance out.
+                if hull.points.len() >= 40 && hi - lo > 5.0 && mean > 1.5 && spread < 0.02 {
+                    assert!(crate::model::convex_hull(&hull.points).len() >= 80, "{what}: a round tower drawn with too few faces");
+                    // Something solid (hidden) fills it, so it is cover and you cannot walk in.
+                    let core = w.blocks.iter().any(|b| b.solid && b.hidden && Vec2::new(b.aabb.center.x - c.x, b.aabb.center.z - c.z).length() < 0.1 && b.aabb.half.x.max(b.aabb.half.z) > mean * 0.9);
+                    assert!(core, "{what}: a round tower at {c:?} has no collision");
+                    round += 1;
+                }
+            }
+            assert!(round >= wanted, "{what}: {round} round towers");
+        }
+    }
+
     #[test]
     fn doorway_steps_lead_to_doors() {
         for seed in [1, 3, 9, 10, 17, 22] {
@@ -2686,8 +2725,15 @@ mod tests {
             let drawn = w.blocks.iter().filter(|b| !b.hidden).count();
             let solid = w.blocks.iter().filter(|b| b.solid).count();
             let hull_tris: usize = w.roofs.iter().map(|h| crate::model::convex_hull(&h.points).len()).sum();
-            let tris = drawn * 12 + hull_tris + w.paving.len();
-            println!("GEOMETRY {what:>14}: blocks {:5} (solid {:5}, drawn {:5}) hulls {:4} props {:4} clutter {:3} windows {:3} ~triangles {tris}", w.blocks.len(), solid, drawn, w.roofs.len(), w.props.len(), w.clutter.len(), w.windows.len());
+            let dressing_tris: usize = w.dressing.iter().map(|p| match p.shape { crate::model::Shape::Cube => 12, crate::model::Shape::Cylinder => 40, crate::model::Shape::Cone => 16, crate::model::Shape::Shard => 20 }).sum();
+            let tris = drawn * 12 + hull_tris + w.paving.len() + dressing_tris;
+            // The static meshes are merged per 64 m region, lit and unlit: their count is the draw calls.
+            let key = |p: Vec3| ((p.x / 64.0).floor() as i32, (p.z / 64.0).floor() as i32);
+            let mut regions: std::collections::HashSet<(i32, i32, bool)> = Default::default();
+            regions.extend(w.blocks.iter().filter(|b| !b.hidden).map(|b| { let k = key(b.aabb.center); (k.0, k.1, b.paint.unlit()) }));
+            regions.extend(w.dressing.iter().map(|d| { let k = key(d.pos); (k.0, k.1, d.paint.unlit()) }));
+            regions.extend(w.roofs.iter().map(|h| { let k = key(h.points[0]); (k.0, k.1, h.paint.unlit()) }));
+            println!("GEOMETRY {what:>14}: blocks {:5} (solid {:5}, drawn {:5}) hulls {:4} dressing {:5} props {:4} clutter {:3} windows {:3} ~triangles {tris} static meshes {}", w.blocks.len(), solid, drawn, w.roofs.len(), w.dressing.len(), w.props.len(), w.clutter.len(), w.windows.len(), regions.len());
         }
     }
 

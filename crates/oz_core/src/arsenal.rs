@@ -1495,6 +1495,55 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
     if let (4, Some((y, z, tall))) = (v(slot::STOCK), pad) {
         m = marksman_stock(m, f.furniture, w, y + tall * 0.5 + 0.015, BACK + z - 0.13, y - tall * 0.5, BACK + z - 0.06);
     }
+    fine_detail(m, &f, def.class, (w, h, r, mid, top, deck, gy), revolver, slide, bullpup)
+}
+
+/// The small things that make a gun read as machined rather than blocky: an ejection port
+/// and its dust cover, a forward assist on long guns, cross pins through the receiver,
+/// cross-slots along the top rail, and grooves round a pistol grip. All of it lies on or
+/// just off surfaces already there, below the sight line: no part moves, no sight moves.
+#[allow(clippy::too_many_arguments)]
+fn fine_detail(mut m: BlockModel, f: &GunFrame, class: GunClass, (w, h, r, mid, top, deck, gy): (f32, f32, f32, f32, f32, f32, f32), revolver: bool, slide: bool, bullpup: bool) -> BlockModel {
+    if revolver {
+        // Flutes round the cylinder's middle: thin dark bands, and the hammer spur.
+        return m.cube(Paint::Dark, [0.0, -h * 0.05, mid], [w * 0.82, 0.006, r * 0.5]);
+    }
+    let right = w * 0.5 + 0.005;
+    if !slide {
+        // Ejection port with its dust cover, over the magazine well on the right.
+        let zp = if bullpup { BACK + BUTT * 0.2 } else { mid - r * 0.12 };
+        m = m
+            .cube(Paint::Dark, [right, h * 0.14, zp], [0.006, h * 0.24, r * 0.22])
+            .cube(Paint::Steel, [right + 0.002, h * 0.02, zp], [0.006, h * 0.05, r * 0.24]);
+        // Cross pins, left side.
+        for z in [mid - r * 0.32, mid + r * 0.3] {
+            m = m.cylinder(Paint::Metal, [-w * 0.5 - 0.003, -h * 0.28, z], [0.014, 0.008, 0.014]).rotated([0.0, 0.0, 90.0]);
+        }
+        if matches!(class, GunClass::Rifle | GunClass::Lmg | GunClass::Smg) {
+            // A forward assist plunger behind the port.
+            m = m.cylinder(Paint::Dark, [right + 0.008, h * 0.22, BACK - 0.035 + if bullpup { BUTT * 0.5 } else { 0.0 }], [0.022, 0.018, 0.022]).rotated([0.0, 0.0, 90.0]);
+        }
+        // Cross-slots along the top deck, under any optic's mount.
+        if !f.carry && f.mag != MagShape::Top {
+            for i in 0..6 {
+                let z = mid + r * 0.35 - i as f32 * r * 0.14;
+                m = m.cube(Paint::Steel, [0.0, deck + 0.003, z], [w * 0.5, 0.004, 0.006]);
+            }
+        }
+    } else {
+        // A pistol: the slide's front serrations and a lanyard loop at the heel.
+        for i in 0..3 {
+            m = m.cube(Paint::Dark, [0.0, top - h * 0.16, BACK - r + 0.03 + i as f32 * 0.014, ], [w * 1.08, h * 0.26, 0.004]).anim(Anim::Slide);
+        }
+    }
+    if f.grip == GripShape::Pistol {
+        // Grooves round the grip, following its rake.
+        for k in 0..3 {
+            let y = gy + 0.05 - k as f32 * 0.04;
+            let z = 0.02 + (gy - y) * 14f32.to_radians().tan();
+            m = m.cube(Paint::Dark, [0.0, y, z], [w * 0.77, 0.006, 0.102]).rotated([-14.0, 0.0, 0.0]);
+        }
+    }
     m
 }
 

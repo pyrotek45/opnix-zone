@@ -360,6 +360,9 @@ impl World {
             self.decor(Aabb::span(Vec3::new(x - 0.03, y, pg.y + 2.4), Vec3::new(x + 0.03, y + 2.2, pg.y + 2.46)), Paint::Teal);
         }
         self.decor(Aabb::span(Vec3::new(pg.x + 1.1, y + 2.2, pg.y + 2.38), Vec3::new(pg.x + 3.7, y + 2.27, pg.y + 2.48)), Paint::Teal);
+        self.playground_rides(pg, y);
+        // The slide's chute, down from the tower top.
+        self.trim_part(crate::model::Shape::Cube, Paint::Mustard, Vec3::new(pg.x - 3.9, (tower + y) * 0.5, pg.y), Vec3::new(2.4, 0.06, 0.7), glam::Quat::from_rotation_z(((tower - y) / 2.0).atan()));
         for (dx, dz) in [(-6.0, 3.0), (6.0, -3.0), (-3.0, -14.0), (3.0, 14.0)] {
             let p = c + Vec2::new(dx, dz);
             self.clutter.push(Clutter { kind: ClutterKind::Bench, pos: Vec3::new(p.x, self.ground_at(p), p.y), turned: dx.abs() < 4.0 });

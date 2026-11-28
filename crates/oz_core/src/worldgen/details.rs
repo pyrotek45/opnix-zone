@@ -58,7 +58,9 @@ impl World {
     pub(crate) fn trim_rod(&mut self, a: Vec3, b: Vec3, radius: f32, paint: Paint) {
         let span = b - a;
         let length = span.length().max(1e-4);
-        self.trim_part(Shape::Cylinder, paint, a + span * 0.5, Vec3::new(radius * 2.0, length, radius * 2.0), Quat::from_rotation_arc(Vec3::Y, span / length));
+        // Thin ones (wires, chains, rails) are square: at that size nobody can tell, and a box is a quarter the triangles.
+        let shape = if radius < 0.05 { Shape::Cube } else { Shape::Cylinder };
+        self.trim_part(shape, paint, a + span * 0.5, Vec3::new(radius * 2.0, length, radius * 2.0), Quat::from_rotation_arc(Vec3::Y, span / length));
     }
 
     /// A sagging wire between two points, in a few straight runs.
