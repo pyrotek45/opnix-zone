@@ -1918,7 +1918,7 @@ impl World {
             self.solid(Aabb::new(o + Vec3::new(cx, g + 0.35, cz), Vec3::new(hx, 0.45, hz)), Paint::Concrete);
             self.decor(Aabb::new(o + Vec3::new(cx, g + 0.83, cz), Vec3::new(hx + 0.05, 0.04, hz + 0.05)), Paint::Bone);
         }
-        self.decor(Aabb::new(o + Vec3::new(0.0, g + 0.45, 0.0), Vec3::new(r - wall, 0.05, r - wall)), Paint::Blue);
+        self.decor(Aabb::new(o + Vec3::new(0.0, g + 0.45, 0.0), Vec3::new(r - wall, 0.045, r - wall)), Paint::Blue);
         self.solid(Aabb::new(o + Vec3::new(0.0, g + 1.0, 0.0), Vec3::new(0.45, 1.0, 0.45)), Paint::Bone);
         self.solid(Aabb::new(o + Vec3::new(0.0, g + 2.05, 0.0), Vec3::new(1.2, 0.08, 1.2)), Paint::Concrete);
         self.decor(Aabb::new(o + Vec3::new(0.0, g + 2.12, 0.0), Vec3::new(1.0, 0.03, 1.0)), Paint::Blue);
