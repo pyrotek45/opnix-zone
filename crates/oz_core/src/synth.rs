@@ -217,7 +217,8 @@ impl Sfx {
     /// How many differently seeded takes to render, so repeats never sound identical.
     pub fn variants(self) -> u32 {
         match self {
-            Sfx::Shot(_) | Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy | Sfx::StepWood | Sfx::Crawl | Sfx::ImpactDirt | Sfx::ImpactConcrete | Sfx::ImpactMetal | Sfx::Whizz | Sfx::Shell => 3,
+            Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy | Sfx::StepWood => 6,
+            Sfx::Shot(_) | Sfx::Crawl | Sfx::ImpactDirt | Sfx::ImpactConcrete | Sfx::ImpactMetal | Sfx::Whizz | Sfx::Shell => 3,
             Sfx::Explosion | Sfx::Ricochet | Sfx::Debris | Sfx::Thunder | Sfx::HitTick | Sfx::Rumble | Sfx::Crack | Sfx::BodyFall => 2,
             Sfx::Clink => 3,
             _ => 1,
@@ -522,18 +523,23 @@ fn modeled(sfx: Sfx, take: u32) -> Option<Vec<f32>> {
             burst(&mut out, &mut rng, 0.0, 0.05, 0.25, &[Biquad::bandpass(900.0 * tone, 0.6)], 1.4);
             burst(&mut out, &mut rng, 0.0, 0.002, 0.04, &[Biquad::lowpass(1500.0)], 0.9);
         }
-        // Footsteps: heel then toe, with what the ground sounds like.
+        // Footsteps: a soft heel, a rolled toe and a scuff of grit, each take placed and
+        // weighted a little differently, like real feet (no pitched thump: that drums).
         Sfx::Step | Sfx::StepSoft | Sfx::StepHeavy => {
             let (weight, grit) = match sfx {
-                Sfx::StepSoft => (0.45, 0.25),
-                Sfx::StepHeavy => (1.25, 1.2),
-                _ => (0.85, 0.8),
+                Sfx::StepSoft => (0.4, 0.25),
+                Sfx::StepHeavy => (1.0, 1.0),
+                _ => (0.7, 0.7),
             };
-            for (at, part) in [(0.0, 1.0), (0.055 * tone, 0.55)] {
-                burst(&mut out, &mut rng, at, 0.003, 0.018, &[Biquad::lowpass(380.0 * tone), Biquad::highpass(60.0)], 1.5 * weight * part);
-                thump(&mut out, at, 110.0 * tone, 70.0, 0.018, 0.35 * weight * part);
-                grains(&mut out, &mut rng, at, 0.06, (14.0 * grit) as usize, (2500.0, 7000.0), 0.22 * grit * part);
+            let roll = 0.04 + 0.006 * (take % 4) as f32;
+            let toe = 0.4 + 0.07 * ((take * 3) % 5) as f32;
+            let body = 300.0 + 45.0 * ((take * 7) % 6) as f32;
+            for (at, part) in [(0.0, 1.0), (roll, toe)] {
+                burst(&mut out, &mut rng, at, 0.006, 0.03, &[Biquad::lowpass(body), Biquad::highpass(80.0)], 1.1 * weight * part);
+                grains(&mut out, &mut rng, at, 0.07, (10.0 * grit) as usize, (2000.0, 6000.0), 0.16 * grit * part);
             }
+            // The scuff as the foot leaves the ground.
+            burst(&mut out, &mut rng, roll + 0.02, 0.02, 0.05, &[Biquad::bandpass(1400.0 + 150.0 * (take % 3) as f32, 0.7)], 0.12 * grit);
             if sfx == Sfx::StepHeavy {
                 // Kit bouncing on a running body.
                 grains(&mut out, &mut rng, 0.02, 0.05, 4, (1800.0, 3200.0), 0.18);
@@ -541,9 +547,10 @@ fn modeled(sfx: Sfx, take: u32) -> Option<Vec<f32>> {
         }
         // Wooden floors: a hollow knock that rings briefly.
         Sfx::StepWood => {
-            for (at, part) in [(0.0, 1.0), (0.05 * tone, 0.6)] {
-                burst(&mut out, &mut rng, at, 0.001, 0.03, &[Biquad::bandpass(185.0 * tone, 5.0)], 3.5 * part);
-                burst(&mut out, &mut rng, at, 0.001, 0.02, &[Biquad::bandpass(430.0 * tone, 6.0)], 2.2 * part);
+            let roll = 0.04 + 0.006 * (take % 4) as f32;
+            for (at, part) in [(0.0, 1.0), (roll, 0.5 + 0.05 * (take % 3) as f32)] {
+                burst(&mut out, &mut rng, at, 0.002, 0.03, &[Biquad::bandpass(185.0 * tone, 3.0)], 2.2 * part);
+                burst(&mut out, &mut rng, at, 0.002, 0.02, &[Biquad::bandpass(430.0 * tone, 4.0)], 1.3 * part);
                 burst(&mut out, &mut rng, at, 0.0005, 0.004, &[Biquad::highpass(2000.0)], 0.25 * part);
             }
         }

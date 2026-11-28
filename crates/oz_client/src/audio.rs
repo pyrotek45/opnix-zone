@@ -215,15 +215,24 @@ fn play(
         let muffle = if occluded { 0.55 } else { 1.0 };
         // Nothing plays at exactly the same level twice.
         let musical = matches!(event.sfx, Sfx::UiMove | Sfx::UiAccept | Sfx::UiDeny | Sfx::Buy | Sfx::Dawn | Sfx::Horn | Sfx::Kill | Sfx::Streak | Sfx::Medal | Sfx::Headshot);
-        let jitter = ((*seed >> 4) & 0xfff) as f32 / 4096.0 - 0.5;
-        let level = if musical { 1.0 } else { 1.0 + jitter * if footstep(event.sfx) { 0.5 } else { 0.25 } };
+        // Level and pitch from their own scrambles of the seed, so they never move together.
+        let mix = |salt: u32| {
+            let mut x = seed.wrapping_add(salt).wrapping_mul(0x9e37_79b9);
+            x ^= x >> 15;
+            x = x.wrapping_mul(0x85eb_ca6b);
+            x ^= x >> 13;
+            (x & 0xffff) as f32 / 65536.0 - 0.5
+        };
+        let jitter = mix(0x51ed);
+        // Feet are quieter than they were, and no two land alike.
+        let level = if musical { 1.0 } else if footstep(event.sfx) { 0.6 * (1.0 + jitter * 0.6) } else { 1.0 + jitter * 0.25 };
         // 0.7 of headroom so a firefight's many layers do not clip when they stack.
         let gain = 0.7 * event.volume * level * settings.volume * muffle * (1.0 - deafened * 0.85);
         if gain < 0.01 {
             continue;
         }
         // A little random pitch stops repeated sounds from feeling machine-stamped.
-        let wobble = (*seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5;
+        let wobble = mix(0xa3c5);
         let speed = event.pitch * if musical { 1.0 } else { 1.0 + wobble * if footstep(event.sfx) { 0.22 } else { 0.12 } };
         let playback = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(gain)).with_speed(speed);
         match event.at {
