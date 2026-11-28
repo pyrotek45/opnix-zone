@@ -296,3 +296,296 @@ fn soak_space_station() {
 fn soak_mountainside() {
     soak_fixed(Layout::Mountainside);
 }
+
+/// What the bots did over a match, for judging how well they play each mode.
+#[derive(Default, Debug)]
+struct Behaviour {
+    /// Bot-seconds alive, and of those: standing about (no headway, no shooting, not planting
+    /// or defusing) for more than a few seconds; holding only the starting sidearm; holding a
+    /// gun with nothing left in it or behind it.
+    alive: f32,
+    idle: f32,
+    sidearm_only: f32,
+    dry: f32,
+    shots: u32,
+    kills: u32,
+    deaths: u32,
+    /// Objective work: points taken, bombs picked up / planted / defused, loot taken, things
+    /// bought, teammates revived.
+    captures: u32,
+    bomb_pickups: u32,
+    plants: u32,
+    defuses: u32,
+    loot: u32,
+    buys: u32,
+    revives: u32,
+}
+
+impl Behaviour {
+    fn idle_pct(&self) -> f32 {
+        100.0 * self.idle / self.alive.max(1.0)
+    }
+    fn per_minute(&self, n: u32) -> f32 {
+        n as f32 / (self.alive.max(1.0) / 60.0)
+    }
+    fn line(&self, name: &str) -> String {
+        format!(
+            "{name:<11} idle {:>5.1}%  shots/bot-min {:>6.1}  kills/bot-min {:>4.2}  deaths {:>3}  sidearm-only {:>5.1}%  dry {:>4.1}%  captures {}  bomb pickups {} plants {} defuses {}  loot {}  buys/stims {}  revives {}",
+            self.idle_pct(),
+            self.per_minute(self.shots),
+            self.per_minute(self.kills),
+            self.deaths,
+            100.0 * self.sidearm_only / self.alive.max(1.0),
+            100.0 * self.dry / self.alive.max(1.0),
+            self.captures,
+            self.bomb_pickups,
+            self.plants,
+            self.defuses,
+            self.loot,
+            self.buys,
+            self.revives
+        )
+    }
+}
+
+/// Seconds without headway or a shot before a bot counts as standing about.
+const IDLE_AFTER: f32 = 4.0;
+
+/// Plays a mode for `seconds` (bots only unless `human`, who then just stands about,
+/// unhurt) and measures what the bots do. Hunt hostiles (sentries) are left out: they hold
+/// posts on purpose; so is planting and defusing.
+fn behaviour(rules: Rules, human: bool, seconds: f32) -> Behaviour {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, StatesPlugin, SimPlugin, IronTownPlugin));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(FRAME)));
+    let horde = rules.horde;
+    let setup = MatchSetup::offline(rules, "SOAK");
+    let setup = if human { setup } else { MatchSetup { local_player: None, ..setup } };
+    app.world_mut().resource_mut::<PendingMatch>().0 = Some(setup);
+    for _ in 0..20 {
+        app.update();
+    }
+    if !horde {
+        app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Lobby(LobbyAction::Start) });
+        for _ in 0..(6.5 / FRAME) as usize {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<MatchState>().phase, Phase::Live);
+    }
+    let content = app.world().resource::<Content>().clone();
+    let pistol = content.weapons.iter().position(|w| w.frame.is_some()).unwrap_or(0);
+    let mut cursor = app.world().resource::<Events<FxEvent>>().get_cursor();
+    let mut out = Behaviour::default();
+    // Per bot: where it last made headway and when, and when it last fired.
+    let mut track: HashMap<u8, (Vec3, f32, f32)> = HashMap::new();
+    let mut last_obj = app.world().resource::<MatchState>().obj.clone();
+    let first_bot = oz_sim::bots::FIRST_BOT_ID;
+    let mut debug_store: HashMap<u8, String> = HashMap::new();
+    let mut elapsed = 0.0;
+    while elapsed < seconds {
+        if human {
+            let world = app.world_mut();
+            if let Ok((mut health, mut input)) = world.query_filtered::<(&mut Health, &mut PlayerInput), With<LocalPlayer>>().single_mut(world) {
+                health.hp = health.max.max(100.0);
+                input.movement = Vec2::ZERO;
+                input.buttons = 0;
+            }
+        }
+        app.update();
+        elapsed += FRAME;
+        let state = app.world().resource::<MatchState>().clone();
+        let prev_arms = std::mem::take(&mut debug_store);
+        let debug_arms: HashMap<u8, String> = if std::env::var_os("BEHAVIOUR_DEBUG").is_some() {
+            app.world_mut()
+                .query::<(&Player, &Arsenal, &Transform)>()
+                .iter(app.world())
+                .map(|(p, a, t)| (p.id, format!("{:?} cur {} at {:.1}", (0..a.weapons.len()).filter(|i| a.owns(*i)).map(|i| (content.weapons[i].name, a.weapons[i].ammo, a.weapons[i].reserve)).collect::<Vec<_>>(), a.current, t.translation)))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        debug_store = debug_arms.clone();
+        let events = app.world().resource::<Events<FxEvent>>();
+        let mut fired: Vec<u8> = Vec::new();
+        for event in cursor.read(events) {
+            match event {
+                FxEvent::Shot { by, .. } if *by >= first_bot && *by != 255 => {
+                    out.shots += 1;
+                    fired.push(*by);
+                }
+                FxEvent::Killed { victim, by, .. } => {
+                    if *by >= first_bot && *by != 255 && by != victim {
+                        out.kills += 1;
+                    }
+                    if *victim >= first_bot {
+                        out.deaths += 1;
+                    }
+                }
+                FxEvent::Notice { to, text } if *to >= first_bot && *to != 255 && text.starts_with("+ ") => {
+                    out.loot += 1;
+                    if std::env::var_os("BEHAVIOUR_DEBUG").is_some() {
+                        println!("{elapsed:.1} bot {to} {text} {:?} <- {:?}", debug_arms.get(to), prev_arms.get(to));
+                    }
+                }
+                FxEvent::Cue { to, sfx } if *to >= first_bot && *sfx == oz_core::synth::Sfx::Buy => out.buys += 1,
+                _ => {}
+            }
+        }
+        // Objectives.
+        let obj = &state.obj;
+        for (a, b) in last_obj.points.iter().zip(&obj.points) {
+            if a.owner != b.owner && b.owner != oz_sim::objective::NEUTRAL {
+                out.captures += 1;
+            }
+        }
+        use oz_sim::objective::bomb;
+        if obj.bomb == bomb::CARRIED && last_obj.bomb != bomb::CARRIED {
+            out.bomb_pickups += 1;
+        }
+        if obj.bomb == bomb::PLANTED && last_obj.bomb != bomb::PLANTED {
+            out.plants += 1;
+        }
+        if obj.last_reason == "BOMB DEFUSED" && last_obj.last_reason != "BOMB DEFUSED" {
+            out.defuses += 1;
+        }
+        if std::env::var_os("BEHAVIOUR_DEBUG").is_some() && (obj.stage != last_obj.stage || obj.bomb != last_obj.bomb) {
+            println!("{elapsed:.1} round {} stage {} bomb {} carrier {} at {:.1} site {} {}", obj.round, obj.stage, obj.bomb, obj.carrier, obj.bomb_at, obj.site, obj.last_reason);
+        }
+        if std::env::var_os("BEHAVIOUR_DEBUG").is_some() && obj.bomb == bomb::CARRIED && (elapsed * 30.0) as u32 % 90 == 0 {
+            let world = app.world_mut();
+            for (p, t, b) in world.query::<(&Player, &Transform, &Bot)>().iter(world) {
+                if p.id == obj.carrier {
+                    println!("{elapsed:.1} carrier at {:.1}: {}", t.translation, b.describe());
+                }
+            }
+        }
+        last_obj = obj.clone();
+        let revives: u32 = state.horde.survivors.iter().filter(|s| s.id >= first_bot).map(|s| s.revives as u32).sum();
+        out.revives = out.revives.max(revives);
+        if horde {
+            // Husks scrapped (they are not players, so no kill feed).
+            out.kills = state.horde.survivors.iter().filter(|s| s.id >= first_bot).map(|s| s.kills as u32).sum();
+        }
+        if (state.phase != Phase::Live && !horde) || (obj.kind == oz_sim::objective::kind::BOMB && obj.stage != oz_sim::objective::stage::PLAYING) {
+            continue;
+        }
+        let bots: Vec<(u8, Vec3, bool, bool, bool, bool)> = app
+            .world_mut()
+            .query::<(&Player, &Transform, &Health, &Bot, &Arsenal)>()
+            .iter(app.world())
+            .map(|(p, t, h, b, a)| {
+                let owned = (0..a.weapons.len()).filter(|i| a.owns(*i)).count();
+                let dry = a.state().is_some_and(|w| w.ammo == 0 && w.reserve == 0);
+                (p.id, t.translation, h.alive() && !state.horde.is_down(p.id), b.sentry || b.hold_use, owned == 1 && a.owns(pistol), dry)
+            })
+            .collect();
+        for (id, feet, alive, exempt, sidearm, dry) in bots {
+            let entry = track.entry(id).or_insert((feet, elapsed, elapsed));
+            if !alive || exempt {
+                *entry = (feet, elapsed, elapsed);
+                continue;
+            }
+            out.alive += FRAME;
+            if fired.contains(&id) {
+                entry.2 = elapsed;
+            }
+            if feet.distance(entry.0) > 1.5 {
+                entry.0 = feet;
+                entry.1 = elapsed;
+            }
+            if elapsed - entry.1 > IDLE_AFTER && elapsed - entry.2 > IDLE_AFTER {
+                out.idle += FRAME;
+                if std::env::var_os("BEHAVIOUR_DEBUG").is_some() && (elapsed * 30.0) as u32 % 30 == 0 {
+                    let world = app.world_mut();
+                    if let Some(b) = world.query::<(&Player, &Bot)>().iter(world).find(|(p, _)| p.id == id).map(|(_, b)| b.describe()) {
+                        println!("{elapsed:.1} idle bot {id} at {feet:.1}: {b}");
+                    }
+                }
+            }
+            if sidearm {
+                out.sidearm_only += FRAME;
+                if std::env::var_os("BEHAVIOUR_DEBUG").is_some() && (elapsed * 30.0) as u32 % 150 == 0 {
+                    let world = app.world_mut();
+                    let gun = world.query::<(&Transform, &oz_sim::loot::Pickup)>().iter(world).filter(|(_, p)| matches!(p.loot, oz_sim::loot::Loot::Weapon { .. })).map(|(t, _)| t.translation.distance(feet)).fold(f32::MAX, f32::min);
+                    if let Some(b) = world.query::<(&Player, &Bot)>().iter(world).find(|(p, _)| p.id == id).map(|(_, b)| b.describe()) {
+                        println!("{elapsed:.1} pistol bot {id} at {feet:.1}, nearest gun {gun:.1} m: {b}");
+                    }
+                }
+            }
+            if dry {
+                out.dry += FRAME;
+            }
+        }
+        if state.phase == Phase::Won && !horde {
+            // Decided early: play on.
+            app.world_mut().resource_mut::<MatchState>().phase = Phase::Live;
+        }
+    }
+    out
+}
+
+fn mode_seconds() -> f32 {
+    std::env::var("MODE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(150.0)
+}
+
+/// Bots play every mode; how much they stand about, fight and play the objective is
+/// measured and held to sane limits (run with --nocapture to see the numbers).
+#[test]
+fn soak_bot_behaviour_by_mode() {
+    let seconds = mode_seconds();
+    let mut tdm = deathmatch_rules(4);
+    tdm.team_size = 4;
+    tdm.score_limit = 0;
+    let mut duel = deathmatch_rules(6);
+    duel.team_size = 1;
+    duel.score_limit = 0;
+    let mut scavenge = iron_town::scavenge_rules(5);
+    scavenge.score_limit = 0;
+    let mut domination = iron_town::domination_rules(5);
+    domination.team_size = 3;
+    domination.score_limit = 0;
+    let mut search = iron_town::search_rules(9);
+    search.team_size = 3;
+    let mut hunt = iron_town::hunt_rules(9);
+    hunt.team_size = 3;
+    let mut horde = iron_town::horde_rules(1);
+    horde.team_size = 4;
+    let only = std::env::var("MODES").ok();
+    let mut lines = Vec::new();
+    let mut results = Vec::new();
+    for (name, rules, human) in [("tdm", tdm, false), ("duel", duel, false), ("scavenge", scavenge, false), ("domination", domination, false), ("search", search, false), ("hunt", hunt, false), ("horde", horde, true)] {
+        if only.as_ref().is_some_and(|o| !o.split(',').any(|m| m == name)) {
+            continue;
+        }
+        let b = behaviour(rules, human, seconds);
+        let line = b.line(name);
+        println!("{line}");
+        lines.push(line);
+        results.push((name, b));
+    }
+    let report = lines.join("\n");
+    let get = |n: &str| results.iter().find(|(name, _)| *name == n).map(|(_, b)| b);
+    for (name, b) in &results {
+        // Horde squads wait on the (here motionless) human between waves.
+        let limit = if *name == "horde" { 55.0 } else { 25.0 };
+        assert!(b.idle_pct() < limit, "{name}: bots stood about {:.1}% of the time\n{report}", b.idle_pct());
+        assert!(b.shots > 20, "{name}: the bots hardly fought\n{report}");
+        assert!(100.0 * b.dry / b.alive.max(1.0) < 10.0, "{name}: bots stood about with empty guns\n{report}");
+    }
+    if let Some(b) = get("scavenge") {
+        assert!(100.0 * b.sidearm_only / b.alive < 35.0, "scavenge bots stayed on the pistol\n{report}");
+        assert!(b.loot >= 6, "scavenge bots hardly looted\n{report}");
+    }
+    if let Some(b) = get("domination") {
+        assert!(b.captures >= 3, "domination bots hardly took points\n{report}");
+    }
+    if let Some(b) = get("search") {
+        assert!(b.bomb_pickups >= 1 && b.plants + b.defuses >= 1, "search bots never played the bomb\n{report}");
+    }
+    if let Some(b) = get("hunt") {
+        assert!(b.kills >= 2, "the hunt squad hardly fought\n{report}");
+    }
+    if let Some(b) = get("horde") {
+        assert!(b.buys >= 1, "horde bots never bought anything\n{report}");
+    }
+}

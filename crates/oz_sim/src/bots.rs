@@ -14,7 +14,7 @@ use crate::{
     session::{Content, Map, Statics, player_bundle},
     sim_dt,
     objective::Objective,
-    state::{FxEvent, MatchState, Phase, Rules, SimRng},
+    state::{CommandEvent, FxEvent, MatchState, Phase, PlayerCommand, Rules, SimRng},
     structures::Structure,
     weapons::obstruction,
 };
@@ -117,6 +117,207 @@ pub struct Bot {
     /// In a narrow passage (doorway, alley, gap); `glance` sweeps the view across its corners.
     choke: bool,
     glance: f32,
+    /// When it last came under fire (a hit, or a round cracking past), and who fired.
+    shot_at: Option<f32>,
+    shooter: Option<u8>,
+    /// Death memory: where it went down lately, where the killer stood, and when.
+    deaths: Vec<(Vec3, Vec3, f32)>,
+    dead_noted: bool,
+    /// A way round a spot it keeps dying to: the waypoint, the goal behind it, and until
+    /// when detours are off (it has just taken one).
+    detour: Option<(Vec3, Vec3)>,
+    detour_off: f32,
+    /// Seconds with no headway, no fight and nothing to hold on purpose: doing nothing.
+    idle: f32,
+    idle_from: Vec3,
+    /// Times it has had to shake itself out of doing nothing (shifts where it holds).
+    shifts: u8,
+    /// Throwing gear: seconds left holding the button, where at, and the wait before another.
+    throw: f32,
+    throw_at: Vec3,
+    gear_wait: f32,
+    /// Loot it is going for: where, and whether it means swapping the gun in hand for it.
+    loot: Option<(Vec3, bool)>,
+    swap_wait: f32,
+    /// Seconds spent tucked in under fire from someone it cannot see: past a few, it stops
+    /// hiding and goes after them.
+    pinned: f32,
+    /// Loot it could not get to (a roof with no way up, say): where, and until when to leave it.
+    loot_skip: Vec<(Vec3, f32)>,
+    /// When it started going for the loot it is after.
+    loot_since: f32,
+    /// A better gun close enough to grab in the middle of a fight.
+    grab: Option<Vec3>,
+}
+
+/// What the bot fears from a spot it has died to more than once: (where the killers
+/// stood, how many deaths).
+impl Bot {
+    pub fn danger(&self, now: f32) -> Option<(Vec3, usize)> {
+        let recent: Vec<Vec3> = self.deaths.iter().filter(|(.., t)| now - t < 150.0).map(|(_, killer, _)| *killer).collect();
+        recent
+            .iter()
+            .map(|k| {
+                let near: Vec<Vec3> = recent.iter().copied().filter(|o| o.distance(*k) < 15.0).collect();
+                (near.iter().fold(Vec3::ZERO, |a, b| a + *b) / near.len() as f32, near.len())
+            })
+            .filter(|(_, n)| *n >= 2)
+            .max_by_key(|(_, n)| *n)
+    }
+
+    /// A one-line account of what the bot is up to, for debugging tests.
+    pub fn describe(&self) -> String {
+        format!(
+            "plan {:?} goal {:.1} path {} target {} cover {} engaged_until {:.1} shot_at {:?} threat {:?} idle {:.1} loot {:?} detour {:?} hold_use {} stuck {:.1}",
+            self.plan,
+            self.goal,
+            self.path.len(),
+            self.target.is_some(),
+            self.cover.is_some(),
+            self.engaged_until,
+            self.shot_at,
+            self.threat.map(|(p, _)| p),
+            self.idle,
+            self.loot,
+            self.detour,
+            self.hold_use,
+            self.stuck
+        )
+    }
+
+    /// Under fire within the last `seconds`.
+    pub fn under_fire(&self, now: f32, seconds: f32) -> bool {
+        self.shot_at.is_some_and(|t| now - t < seconds)
+    }
+
+    /// The spot it believes it was last shot from, if recent.
+    pub fn threat_at(&self, now: f32, seconds: f32) -> Option<Vec3> {
+        self.threat.filter(|_| self.under_fire(now, seconds)).map(|(p, _)| p)
+    }
+}
+
+/// Distance from `point` to the segment `a`-`b`, on the ground plane.
+fn off_line(point: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let (p, a, b) = (point.xz(), a.xz(), b.xz());
+    let t = ((p - a).dot(b - a) / (b - a).length_squared().max(1e-4)).clamp(0.0, 1.0);
+    (a + (b - a) * t).distance(p)
+}
+
+/// Where to go on the way to `at` so as not to walk into a spot the bot keeps dying to:
+/// out to one side of it, then in. `at` itself when nothing is in the way.
+fn route_round(bot: &mut Bot, feet: Vec3, at: Vec3, now: f32, ground: impl Fn(f32, f32) -> Option<f32>) -> Vec3 {
+    let Some((danger, deaths)) = bot.danger(now) else { return at };
+    if now < bot.detour_off {
+        return at;
+    }
+    if let Some((via, goal)) = bot.detour
+        && goal.distance(at) < 6.0
+    {
+        if via.xz().distance(feet.xz()) < 4.0 {
+            // Round the side: straight in from here, no more detours for a while.
+            bot.detour = None;
+            bot.detour_off = now + 20.0;
+            return at;
+        }
+        return via;
+    }
+    // Only when the way there runs past the danger (or ends in it).
+    if off_line(danger, feet, at) > 14.0 || danger.xz().distance(feet.xz()) < 8.0 {
+        return at;
+    }
+    let side = if (deaths + bot.shifts as usize) % 2 == 0 { 1.0 } else { -1.0 };
+    let across = (danger - feet).xz().normalize_or(Vec2::X).perp() * side * 22.0;
+    let halfway = feet.lerp(danger, 0.6);
+    let (x, z) = (halfway.x + across.x, halfway.z + across.y);
+    let (x, z) = if ground(x, z).is_some() { (x, z) } else { (halfway.x - across.x, halfway.z - across.y) };
+    let Some(y) = ground(x, z) else { return at };
+    let via = Vec3::new(x, y, z);
+    bot.detour = Some((via, at));
+    via
+}
+
+/// How much use a gun of this class is in a fight (sidearm 1).
+pub fn gun_value(class: GunClass) -> f32 {
+    match class {
+        GunClass::Pistol => 1.0,
+        GunClass::Smg => 3.0,
+        GunClass::Shotgun => 2.7,
+        GunClass::Rifle => 3.6,
+        GunClass::Lmg => 3.4,
+        GunClass::Sniper => 3.1,
+        GunClass::Launcher => 2.0,
+        GunClass::Tool => 0.2,
+    }
+}
+
+/// Does a carried gun have anything left to shoot?
+fn has_rounds(def: &oz_core::arsenal::WeaponDef, weapon: &oz_core::arsenal::WeaponState) -> bool {
+    weapon.ammo > 0 || weapon.reserve > 0 || def.infinite_reserve
+}
+
+/// The best gun carried that still has rounds.
+fn best_gun(content: &Content, arsenal: &Arsenal) -> Option<u8> {
+    (0..arsenal.weapons.len())
+        .filter(|i| arsenal.owns(*i))
+        .filter(|i| content.weapons.get(*i).is_some_and(|d| has_rounds(d, &arsenal.weapons[*i])))
+        .max_by(|a, b| gun_value(content.weapons[*a].class).total_cmp(&gun_value(content.weapons[*b].class)))
+        .map(|i| i as u8)
+}
+
+/// What a bot would most like to pick up of what lies about, and how much it wants it:
+/// ammo when running dry, a better gun when holding a weak one, armour, gear. Returns
+/// (where, value less the walk, whether it means swapping the gun in hand for it).
+pub fn loot_wish(content: &Content, player: &Player, health: &Health, arsenal: &Arsenal, feet: Vec3, pickups: &[(Vec3, crate::loot::Loot)], reach: f32) -> Option<(Vec3, f32, bool)> {
+    use crate::loot::Loot;
+    let owned: Vec<usize> = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i) && *i < content.weapons.len()).collect();
+    let value_of = |i: usize| if has_rounds(&content.weapons[i], &arsenal.weapons[i]) { gun_value(content.weapons[i].class) } else { 0.3 };
+    let best = owned.iter().map(|i| value_of(*i)).fold(0.0f32, f32::max);
+    let worst = owned.iter().map(|i| value_of(*i)).fold(f32::MAX, f32::min);
+    let cap = |i: usize| content.weapons[i].reserve.max(content.weapons[i].mag * 4);
+    let finite: Vec<usize> = owned.iter().copied().filter(|i| !content.weapons[*i].infinite_reserve && content.weapons[*i].mag > 0).collect();
+    let dry = !finite.is_empty() && finite.iter().all(|i| arsenal.weapons[*i].reserve < content.weapons[*i].mag);
+    let low = crate::loot::low_on_ammo(content, arsenal);
+    let roomy = finite.iter().any(|i| arsenal.weapons[*i].reserve < cap(*i) / 2);
+    pickups
+        .iter()
+        .filter_map(|(at, loot)| {
+            let distance = at.distance(feet);
+            if distance > reach {
+                return None;
+            }
+            let (value, swap) = match *loot {
+                Loot::Ammo if dry => (4.0, false),
+                Loot::Ammo if low => (2.6, false),
+                Loot::Ammo if roomy => (0.8, false),
+                Loot::Weapon { index, ammo, reserve, .. } => {
+                    let i = index as usize;
+                    let def = content.weapons.get(i)?;
+                    if owned.contains(&i) {
+                        let short = arsenal.weapons[i].reserve < cap(i) / 2;
+                        if short && ammo + reserve > 0 { (if low { 2.4 } else { 0.7 }, false) } else { return None }
+                    } else if ammo + reserve == 0 {
+                        return None;
+                    } else if owned.len() < 2 {
+                        ((gun_value(def.class) - best).max(0.0) + if best < 1.5 { 1.0 } else { 0.3 }, false)
+                    } else {
+                        let gain = gun_value(def.class) - worst;
+                        if gain < 0.8 { return None } else { (gain, true) }
+                    }
+                }
+                Loot::Armor if health.max < crate::loot::ARMORED => (if health.hp < health.max * 0.6 { 2.6 } else { 1.8 }, false),
+                Loot::Gear(_) if player.gear_left == 0 => (1.0, false),
+                _ => return None,
+            };
+            let score = value - distance / 14.0;
+            (score > 0.0).then_some((*at, score, swap))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// Pitch to lob a thrown grenade `range` metres (they leave the hand at about 19 m/s, a
+/// little upward).
+fn lob_pitch(range: f32) -> f32 {
+    ((range - 13.0) / 50.0).clamp(-0.25, 0.55)
 }
 
 /// Where to fight or hold from. Fighting, `spot` is tucked in (crouched) and `peek` is
@@ -453,8 +654,10 @@ struct Body {
 
 /// Chooses (or keeps) a versus bot's plan while it has no target, and sets its goal.
 #[allow(clippy::too_many_arguments)]
-fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rng: &mut SimRng, bodies: &[Body], intel: Option<(Vec3, f32)>, now: f32) {
+fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, long: bool, map: &Map, rng: &mut SimRng, bodies: &[Body], intel: Option<(Vec3, f32)>, now: f32) {
     let go = |bot: &mut Bot, at: Vec3| {
+        // Not the way it keeps getting killed: round the side.
+        let at = route_round(bot, feet, at, now, |x, z| map.in_bounds(x, z).then(|| map.height(x, z)));
         // Never into the enemy base: stop at its edge.
         let at = match crate::player::base_centre(map, 1 - me.team.min(1)) {
             Some(c) if crate::player::in_enemy_base(map, me.team, at) => {
@@ -505,7 +708,13 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
     {
         bot.threat = Some((from, at - 10.0));
         let far = from.distance(feet) > 35.0;
-        if far || rng.0.chance(0.55) {
+        if far && long {
+            // A long gun against a far shooter: hold a concealed spot on that line and trade.
+            bot.plan = Plan::Camp { face: yaw_to((from - feet).xz()) };
+            bot.plan_until = now + rng.0.range(4.0, 6.0);
+            bot.camp_spot = None;
+            go(bot, feet);
+        } else if far || rng.0.chance(0.55) {
             let side = if rng.0.chance(0.5) { 1.0 } else { -1.0 };
             let across = (from - feet).xz().normalize_or_zero().perp() * side * 16.0;
             let wide = from + Vec3::new(across.x, 0.0, across.y);
@@ -640,13 +849,15 @@ fn plan_versus(bot: &mut Bot, me: &Player, feet: Vec3, hurt: bool, map: &Map, rn
 /// still come first: this only runs with no one in sight). Returns false when there is
 /// no objective, and the usual plans take over.
 #[allow(clippy::too_many_arguments)]
-fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, rng: &mut SimRng, bodies: &[Body], intel: Option<(Vec3, f32)>, now: f32) -> bool {
+fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, map: &Map, rng: &mut SimRng, bodies: &[Body], claims: &[u8], intel: Option<(Vec3, f32)>, now: f32) -> bool {
     use crate::objective::{DEFUSE_REACH, NEUTRAL, POINT_RADIUS, bomb, kind};
     bot.hold_use = false;
     if obj.kind == kind::NONE || obj.points.is_empty() || bot.sentry {
         return false;
     }
     let go = |bot: &mut Bot, at: Vec3, slack: f32| {
+        // Far from it, come round the side of a spot it keeps dying to.
+        let at = if at.distance(feet) > 25.0 { route_round(bot, feet, at, now, |x, z| map.in_bounds(x, z).then(|| map.height(x, z))) } else { at };
         if bot.goal.distance(at) > slack || (bot.path.is_empty() && bot.goal.xz().distance(feet.xz()) > 1.0) {
             bot.goal = at;
             bot.path.clear();
@@ -654,8 +865,10 @@ fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, rng: 
         }
     };
     // Spread round a spot so a squad does not stand in one heap.
+    // Each time it has had to shake itself out of standing about, somewhere else round it.
+    let shifts = bot.shifts;
     let around = |at: Vec3, radius: f32| {
-        let angle = me.id as f32 * 2.4;
+        let angle = me.id as f32 * 2.4 + shifts as f32 * 1.3;
         Vec3::new(at.x + angle.cos() * radius, at.y, at.z + angle.sin() * radius)
     };
     let watch = |from: Vec3, at: Vec3| yaw_to((at - from).xz());
@@ -677,14 +890,23 @@ fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, rng: 
             Some(o) => (o.0 as usize, o.1),
             None => {
                 let nearest_ours = ours.iter().copied().min_by(|a, b| distance(points[*a].at).total_cmp(&distance(points[*b].at)));
+                let claimed = |i: usize| claims.get(i).copied().unwrap_or(0) as f32;
+                // Split the team: a point others are already going for counts as further off.
+                let attack = theirs.iter().copied().min_by(|a, b| (distance(points[*a].at) + claimed(*a) * 28.0).total_cmp(&(distance(points[*b].at) + claimed(*b) * 28.0)));
+                let second = theirs.iter().copied().filter(|i| Some(*i) != attack).min_by(|a, b| (distance(points[*a].at) + claimed(*a) * 28.0).total_cmp(&(distance(points[*b].at) + claimed(*b) * 28.0)));
                 let choice = match (bot.role, threatened, nearest_ours) {
-                    (_, Some(i), _) if rng.0.chance(0.6) => (i, true),
-                    // Anchors hold what the team has.
-                    (Role::Anchor, _, Some(i)) if rng.0.chance(0.7) => (i, true),
-                    // Flankers go for the second-closest point the team does not hold.
-                    (Role::Flanker, ..) if theirs.len() > 1 => (theirs[1], false),
-                    _ if !theirs.is_empty() => (theirs[0], false),
-                    _ => (ours[me.id as usize % ours.len().max(1)], true),
+                    // A point being taken: go and hold it, unless two are on it already.
+                    (_, Some(i), _) if claimed(i) < 2.0 && rng.0.chance(0.75) => (i, true),
+                    // Anchors hold what the team has (one each is plenty).
+                    (Role::Anchor, _, Some(i)) if claimed(i) < 1.0 && rng.0.chance(0.75) => (i, true),
+                    // Flankers go for another point than the rest.
+                    (Role::Flanker, ..) if second.is_some() && rng.0.chance(0.6) => (second.unwrap_or(0), false),
+                    _ if attack.is_some() => (attack.unwrap_or(0), false),
+                    _ => {
+                        // Everything held: defend the least guarded.
+                        let i = ours.iter().copied().min_by(|a, b| (claimed(*a) * 30.0 + distance(points[*a].at)).total_cmp(&(claimed(*b) * 30.0 + distance(points[*b].at)))).unwrap_or(0);
+                        (i, true)
+                    }
                 };
                 bot.objective = Some((choice.0 as u8, choice.1));
                 bot.plan_until = now + rng.0.range(9.0, 16.0);
@@ -731,6 +953,11 @@ fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, rng: 
                 go(bot, around(obj.bomb_at, 5.0), 4.0);
             }
         }
+        (true, bomb::CARRIED) if bot.role == Role::Flanker => {
+            // Not everyone in one bunch: the flanker goes on ahead to clear the site.
+            bot.plan = Plan::Hunt;
+            go(bot, around(site_at(obj.site), 7.0), 3.0);
+        }
         (true, bomb::CARRIED) => {
             // Escort: a few steps ahead of the carrier, toward the site.
             let carrier = bodies.iter().find(|b| b.id == obj.carrier).map_or(obj.bomb_at, |b| b.at);
@@ -764,8 +991,16 @@ fn plan_objective(bot: &mut Bot, me: &Player, feet: Vec3, obj: &Objective, rng: 
             let mut ids: Vec<u8> = mates.iter().map(|b| b.id).collect();
             ids.sort();
             let slot = ids.iter().position(|id| *id == me.id).unwrap_or(me.id as usize);
-            let site = site_at((slot % obj.points.len()) as u8);
+            let mut site = site_at((slot % obj.points.len()) as u8);
             let fresh = intel.filter(|(_, t)| now - t < 6.0).map(|(p, _)| p);
+            // Rotate: attackers seen closing on the other site pull all but the anchors over.
+            if let Some(p) = fresh
+                && bot.role != Role::Anchor
+                && let Some(other) = obj.points.iter().map(|s| s.at).min_by(|a, b| a.distance(p).total_cmp(&b.distance(p)))
+                && other.distance(p) < 30.0
+            {
+                site = other;
+            }
             match fresh.filter(|p| bot.role == Role::Rusher && p.distance(site) < 35.0) {
                 Some(contact) => {
                     bot.plan = Plan::Hunt;
@@ -798,7 +1033,7 @@ pub fn drive_bots(
     mut players: Query<(Entity, Option<&mut Bot>, &Player, &Transform, &mut PlayerInput, &Health, &Arsenal, Option<&mut crate::combat::Stunned>, &crate::player::Mover)>,
     mut noises: ResMut<Noises>,
     solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<Player>)>,
-    (smokes, pickups, mut shots): (Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>, Query<(&Transform, &crate::loot::Pickup), Without<Player>>, EventReader<FxEvent>),
+    (smokes, pickups, mut shots, mut orders): (Query<(&Transform, &crate::combat::SmokeCloud), Without<Player>>, Query<(&Transform, &crate::loot::Pickup), Without<Player>>, EventReader<FxEvent>, EventWriter<CommandEvent>),
     mut leaves: Local<(u64, Vec<(Vec3, f32)>)>,
     mut intel: Local<TeamIntel>,
 ) {
@@ -845,13 +1080,30 @@ pub fn drive_bots(
     let mut shouts: Vec<Noise> = Vec::new();
     // Rounds fired this frame (who by, from where, to where): sentries notice fire aimed at them.
     let teams: Vec<(u8, u8)> = players.iter().map(|(_, _, p, ..)| (p.id, p.team)).collect();
-    let fired: Vec<(u8, Vec3, Vec3)> = shots
-        .read()
-        .filter_map(|e| match e {
-            FxEvent::Shot { by, from, to, .. } => teams.iter().find(|(id, _)| id == by).map(|(_, team)| (*team, *from, *to)),
-            _ => None,
-        })
-        .collect();
+    let spots: Vec<(u8, Vec3)> = players.iter().map(|(_, _, p, t, ..)| (p.id, t.translation)).collect();
+    // (who fired, their team, from, to), and who killed whom.
+    let mut fired: Vec<(u8, u8, Vec3, Vec3)> = Vec::new();
+    let mut killed: Vec<(u8, u8)> = Vec::new();
+    for event in shots.read() {
+        match event {
+            FxEvent::Shot { by, from, to, .. } => {
+                if let Some((_, team)) = teams.iter().find(|(id, _)| id == by) {
+                    fired.push((*by, *team, *from, *to));
+                }
+            }
+            FxEvent::Killed { victim, by, .. } => killed.push((*victim, *by)),
+            _ => {}
+        }
+    }
+    // Loot lying about, for bots to weigh up.
+    let loot: Vec<(Vec3, crate::loot::Loot)> = pickups.iter().filter(|(_, p)| !matches!(p.loot, crate::loot::Loot::Supply { .. })).map(|(t, p)| (t.translation, p.loot)).collect();
+    // Which point each team's bots are going for (domination), to split up.
+    let mut claims = [[0u8; 8]; 2];
+    for (_, bot, p, ..) in players.iter() {
+        if let Some((index, _)) = bot.and_then(|b| b.objective) {
+            claims[(p.team as usize).min(1)][(index as usize).min(7)] += 1;
+        }
+    }
     // Gunfire gives the shooter away to the other team.
     for noise in heard_now.iter().filter(|n| !n.shout && n.radius > 40.0) {
         intel.0[(1 - noise.team.min(1)) as usize] = Some((noise.at, now));
@@ -861,76 +1113,108 @@ pub fn drive_bots(
     let ladders: Vec<Vec3> = map.ladders.iter().flat_map(|l| [l.foot, Vec3::new(l.foot.x, l.top, l.foot.z)]).collect();
     for (_, bot, me, transform, mut input, health, arsenal, stunned, mover) in &mut players {
         let Some(mut bot) = bot else { continue };
-        if bot.sentry && health.alive() {
-            bot.alert = (bot.alert - dt).max(0.0);
-            bot.suppress -= dt;
+        let team = (me.team as usize).min(1);
+        if health.alive() {
+            bot.dead_noted = false;
             let feet = transform.translation;
-            let base = crate::versus::hunt_base(&map);
-            for noise in &heard_now {
-                let ours = noise.team == me.team;
-                if noise.shout != ours || noise.at.distance(feet) > noise.radius || noise.at.xz().distance(base) < crate::versus::HUNT_SAFE {
-                    continue;
-                }
-                bot.heard = Some(noise.at);
-                bot.alert = 15.0;
-                // Gunfire close by: fire back toward it if there is a line to it.
-                let distance = noise.at.distance(feet);
-                if !noise.shout && noise.radius > 40.0 && distance < 45.0 && bot.target.is_none() {
-                    let eye = feet + Vec3::Y * input.eye();
-                    let dir = (noise.at - eye) / distance.max(1e-3);
-                    if obstruction(&map, &statics, &solids, eye, dir, distance) > distance * 0.85 {
-                        bot.suppress = rng.0.range(0.6, 1.2);
-                        bot.suppress_at = noise.at + Vec3::Y * 0.2;
+            if bot.sentry {
+                bot.alert = (bot.alert - dt).max(0.0);
+                let base = crate::versus::hunt_base(&map);
+                for noise in &heard_now {
+                    let ours = noise.team == me.team;
+                    if noise.shout != ours || noise.at.distance(feet) > noise.radius || noise.at.xz().distance(base) < crate::versus::HUNT_SAFE {
+                        continue;
+                    }
+                    bot.heard = Some(noise.at);
+                    bot.alert = 15.0;
+                    // Gunfire close by: fire back toward it if there is a line to it.
+                    let distance = noise.at.distance(feet);
+                    if !noise.shout && noise.radius > 40.0 && distance < 45.0 && bot.target.is_none() {
+                        let eye = feet + Vec3::Y * input.eye();
+                        let dir = (noise.at - eye) / distance.max(1e-3);
+                        if obstruction(&map, &statics, &solids, eye, dir, distance) > distance * 0.85 {
+                            bot.suppress = rng.0.range(0.6, 1.2);
+                            bot.suppress_at = noise.at + Vec3::Y * 0.2;
+                        }
                     }
                 }
             }
-            // Shot at: a round cracking past or smacking in close gives the shooter away.
+            bot.suppress -= dt;
+            // Under fire: a hit, or a round cracking past or smacking in within a few metres,
+            // gives away where it came from - exactly, for a round it saw go by.
             let chest = feet + Vec3::Y * 1.1;
-            let near_miss = fired.iter().filter(|(team, ..)| *team != me.team).find(|(_, from, to)| {
-                let span = *to - *from;
-                let along = ((chest - *from).dot(span) / span.length_squared().max(1e-4)).clamp(0.0, 1.0);
-                (*from + span * along).distance(chest) < 3.0
-            });
+            let incoming = fired
+                .iter()
+                .filter(|(_, team, ..)| *team != me.team)
+                .filter(|(_, _, from, to)| {
+                    let span = *to - *from;
+                    let along = ((chest - *from).dot(span) / span.length_squared().max(1e-4)).clamp(0.0, 1.0);
+                    (*from + span * along).distance(chest) < 3.5
+                })
+                .min_by(|a, b| a.2.distance(feet).total_cmp(&b.2.distance(feet)));
             let hit = health.hp < bot.last_hp - 0.5;
-            // Hit by someone it never saw: it knows roughly where from (the nearest enemy).
-            let source = near_miss.map(|(_, from, _)| *from).or_else(|| {
-                hit.then(|| fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet)))).flatten()
-            });
-            if let Some(from) = source {
-                let fresh = bot.alert <= 0.0 || bot.heard.is_none();
-                bot.alert = 15.0;
-                bot.heard = Some(from);
-                bot.patrol = 0.0;
-                // It calls for help, now and then: friends within earshot come hunting too.
-                if fresh && rng.0.chance(0.6) {
-                    shouts.push(Noise { at: from, radius: 35.0, team: me.team, shout: true });
-                }
-            }
             bot.last_hp = health.hp;
-        } else if health.alive() {
-            // Versus bots notice fire too: a round past the head or a hit gives the shooter's
-            // rough position to the whole team, and the bot stops whatever it was doing.
-            let feet = transform.translation;
-            let chest = feet + Vec3::Y * 1.1;
-            let near_miss = fired.iter().filter(|(team, ..)| *team != me.team).find(|(_, from, to)| {
-                let span = *to - *from;
-                let along = ((chest - *from).dot(span) / span.length_squared().max(1e-4)).clamp(0.0, 1.0);
-                (*from + span * along).distance(chest) < 3.0
+            // Hit by something it never saw come (a blast, a blade): roughly, the nearest enemy.
+            let source = incoming.map(|(by, _, from, _)| (*from, Some(*by))).or_else(|| {
+                hit.then(|| fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet))))
+                    .flatten()
+                    .map(|at| (at + Vec3::Y * 1.2, None))
             });
-            let hit = health.hp < bot.last_hp - 0.5;
-            let source = near_miss.map(|(_, from, _)| *from).or_else(|| {
-                hit.then(|| fighters.iter().filter(|(_, team, ..)| *team != me.team).map(|(_, _, at, _)| *at).min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet)))).flatten()
-            });
-            if let Some(from) = source {
-                let fresh = bot.threat.is_none_or(|(_, at)| now - at > 3.0);
+            if let Some((from, by)) = source {
+                let fresh = !bot.under_fire(now, 2.5);
                 bot.threat = Some((from, now));
-                intel.0[(me.team as usize).min(1)] = Some((from, now));
-                if fresh && bot.target.is_none() {
-                    bot.plan_until = 0.0;
-                    bot.think = 0.0;
+                bot.shot_at = Some(now);
+                if by.is_some() {
+                    bot.shooter = by;
+                }
+                intel.0[team] = Some((from, now));
+                let class = content.weapons.get(arsenal.current as usize).map_or(GunClass::Rifle, |w| w.class);
+                if bot.sentry {
+                    bot.alert = 15.0;
+                    bot.patrol = 0.0;
+                    // Go after them - from the side when they are far off and it has no gun to answer with.
+                    let far = from.distance(feet) > 40.0 && !matches!(class, GunClass::Rifle | GunClass::Sniper | GunClass::Lmg);
+                    let side = if me.id % 2 == 0 { 1.0 } else { -1.0 };
+                    let across = (from - feet).xz().normalize_or_zero().perp() * side * 18.0;
+                    let (x, z) = (from.x + across.x, from.z + across.y);
+                    bot.heard = Some(if far && map.in_bounds(x, z) { Vec3::new(x, map.height(x, z), z) } else { from });
+                }
+                if fresh {
+                    // React now, not at the next leisurely look round.
+                    bot.think = bot.think.min(rng.0.range(0.03, 0.12));
+                    bot.cover_time = 0.0;
+                    if bot.target.is_none() {
+                        bot.plan_until = 0.0;
+                    }
+                    // Call it out: friends within earshot come to help.
+                    shouts.push(Noise { at: from, radius: 50.0, team: me.team, shout: true });
+                    // Fire straight back at where it came from, given a line to it and a gun that carries.
+                    let eye = feet + Vec3::Y * input.eye();
+                    let distance = from.distance(eye);
+                    let carries = distance < engagement(class).1 * 1.6 || matches!(class, GunClass::Rifle | GunClass::Sniper | GunClass::Lmg);
+                    if carries && bot.target.is_none() && obstruction(&map, &statics, &solids, eye, (from - eye) / distance.max(1e-3), distance) > distance * 0.9 {
+                        bot.suppress = rng.0.range(0.7, 1.3);
+                        bot.suppress_at = from;
+                    }
                 }
             }
-            bot.last_hp = health.hp;
+        } else if !bot.dead_noted {
+            // Down: remember where, and where the killer stood, so as not to walk into it again.
+            bot.dead_noted = true;
+            let killer = killed
+                .iter()
+                .find(|(victim, by)| *victim == me.id && by != victim)
+                .and_then(|(_, by)| spots.iter().find(|(id, _)| id == by))
+                .map(|(_, at)| *at)
+                .or_else(|| bot.threat.filter(|(_, t)| now - t < 6.0).map(|(p, _)| p))
+                .or_else(|| (now < bot.engaged_until + 2.0).then_some(bot.foe));
+            if let Some(killer) = killer {
+                bot.deaths.push((transform.translation, killer, now));
+                if bot.deaths.len() > 6 {
+                    bot.deaths.remove(0);
+                }
+            }
+            bot.detour = None;
         }
         // Flashed: stumble about blind until it wears off.
         if let Some(mut stunned) = stunned
@@ -981,7 +1265,9 @@ pub fn drive_bots(
             // The nearest enemy we can actually see, upright or leaning out of cover.
             let upright = PlayerInput { lean: 0, ..*input };
             // Under fire, it scans hard and far for whoever is shooting.
-            let sight = if bot.threat.is_some_and(|(_, at)| now - at < 6.0) { 120.0 } else { 85.0 };
+            // (Rifles reach a long way: being shot from far off must never go unanswered.)
+            let threat_spot = bot.threat_at(now, 6.0);
+            let sight = if threat_spot.is_some() { 220.0 } else { 85.0 };
             let sees = |from: Vec3, chest: Vec3| {
                 let distance = chest.distance(from);
                 distance < sight
@@ -996,9 +1282,13 @@ pub fn drive_bots(
                 if !sentry {
                     return true;
                 }
+                // Whoever just shot at it: it is looking for them, wherever they are.
+                if threat_spot.is_some_and(|t| t.distance(at + Vec3::Y * 1.2) < 14.0) {
+                    return true;
+                }
                 let to = at - feet;
                 let distance = to.length();
-                let range: f32 = if alert { 70.0 } else { 40.0 * [1.0, 0.7, 0.45][(enemy_stance as usize).min(2)] };
+                let range: f32 = if alert { 90.0 } else { 40.0 * [1.0, 0.7, 0.45][(enemy_stance as usize).min(2)] };
                 // A lit torch in the dark shows from much further, and catches the eye off to the side.
                 let (range, cone) = if torch { (range.max(40.0) * 1.8, -0.1) } else { (range, if alert { -0.3 } else { 0.4 }) };
                 distance < 2.5 || (distance < range && to.xz().normalize_or_zero().dot(facing_dir) > cone)
@@ -1011,11 +1301,22 @@ pub fn drive_bots(
             let on_bomb_duty = obj.kind == crate::objective::kind::BOMB
                 && ((obj.bomb == crate::objective::bomb::CARRIED && obj.carrier == me.id)
                     || (obj.bomb == crate::objective::bomb::PLANTED && me.team.min(1) != obj.attackers && obj.bomb_at.distance(feet) < 9.0));
+            // Scavenging with only a sidearm: no long-range duels it cannot win - a real gun first.
+            let sidearm_only = best_gun(&content, arsenal).is_none_or(|b| gun_value(content.weapons[b as usize].class) < 1.5);
+            let pistol_reach = if !rules.loot || !sidearm_only {
+                f32::MAX
+            } else if threat_spot.is_some() {
+                30.0
+            } else {
+                20.0
+            };
             let found = fighters
                 .iter()
                 .filter(|(_, team, ..)| *team != me.team)
+                .filter(|(_, _, at, _)| at.distance(feet) < pistol_reach)
                 .filter(|(_, _, at, _)| !safe(*at))
-                .filter(|(_, _, at, _)| !on_bomb_duty || at.distance(feet) < 10.0)
+                // (Shot at on the way, it answers whoever is doing it.)
+                .filter(|(_, _, at, _)| !on_bomb_duty || at.distance(feet) < 10.0 || threat_spot.is_some_and(|t| t.distance(*at + Vec3::Y * 1.2) < 6.0 && t.distance(feet) < 30.0))
                 .filter(|(entity, _, at, enemy_stance)| noticed(*at, *enemy_stance, lit.contains(entity)))
                 .filter_map(|(entity, _, at, enemy_stance)| {
                     let chest = *at + Vec3::Y * (stance::eye(*enemy_stance) - 0.4);
@@ -1043,8 +1344,104 @@ pub fn drive_bots(
                 bot.glance = 1.0;
             }
             bot.choke = choke;
-            let miss = 0.07 / rules.difficulty.max(0.25);
+            // Settles its aim on a far target the longer it tracks it.
+            let far_off = found.is_some_and(|(_, chest, _)| chest.distance(eye) > 30.0);
+            let focus = if far_off && target == bot.target { (1.0 - bot.seen.max(0.0) * 0.4).clamp(0.35, 1.0) } else { 1.0 };
+            let miss = 0.07 / rules.difficulty.max(0.25) * focus;
             bot.aim_error = Vec2::new(rng.0.range(-miss, miss), rng.0.range(-miss, miss) * 0.6);
+            // The gun in hand: never stand there clicking an empty one, and out of a fight
+            // hold the best gun carried.
+            let current = arsenal.current as usize;
+            let loaded = content.weapons.get(current).zip(arsenal.weapons.get(current)).is_some_and(|(d, w)| has_rounds(d, w));
+            if let Some(best) = best_gun(&content, arsenal)
+                && arsenal.reload <= 0.0
+                && best != arsenal.current
+                && (!loaded || (bot.target.is_none() && gun_value(content.weapons[best as usize].class) > gun_value(class) + 0.2))
+            {
+                input.weapon = best;
+            }
+            // Loot worth the walk: always in scavenge; elsewhere when short of ammo or close by.
+            // Never while carrying or working the bomb.
+            let leader = humans.iter().filter(|(t, _)| *t == me.team).map(|(_, at)| *at).min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet)));
+            let squad = rules.hunt && me.team == 0;
+            let carrying = obj.kind == crate::objective::kind::BOMB && obj.bomb == crate::objective::bomb::CARRIED && obj.carrier == me.id;
+            bot.swap_wait -= 0.3;
+            // Loot it has been trying to reach for a long while is out of reach: leave it be.
+            bot.loot_skip.retain(|(_, until)| now < *until);
+            if let Some((at, _)) = bot.loot
+                && now - bot.loot_since > 6.0 + at.distance(feet) * 0.4
+            {
+                bot.loot_skip.push((at, now + 60.0));
+            }
+            let reachable: Vec<(Vec3, crate::loot::Loot)> = loot.iter().copied().filter(|(at, _)| !bot.loot_skip.iter().any(|(s, _)| s.distance(*at) < 0.5)).collect();
+            let wish_loot = if bot.sentry || bot.target.is_some() || on_bomb_duty || carrying || bot.hold_use {
+                None
+            } else {
+                loot_wish(&content, me, health, arsenal, feet, &reachable, if rules.loot { 60.0 } else { 35.0 })
+                    .filter(|(at, score, _)| rules.loot || *score > 1.2 || at.distance(feet) < 12.0)
+                    .filter(|(at, ..)| !squad || leader.is_none_or(|l| l.distance(*at) < 20.0))
+            };
+            // Fighting with only a sidearm and a real gun lies a few steps off: go and grab it.
+            bot.grab = if bot.target.is_some() && sidearm_only && !carrying {
+                loot_wish(&content, me, health, arsenal, feet, &reachable, 12.0).filter(|(_, score, swap)| !swap && *score > 1.0).map(|(at, ..)| at)
+            } else {
+                None
+            };
+            if wish_loot.is_none_or(|(at, ..)| bot.loot.is_none_or(|(was, _)| was.distance(at) > 0.5)) {
+                bot.loot_since = now;
+            }
+            bot.loot = None;
+            if let Some((at, _, true)) = wish_loot
+                && at.distance(feet) < 1.3
+            {
+                // Swap: the weaker gun in hand, then Use over the better one.
+                let worst = (0..arsenal.weapons.len())
+                    .filter(|i| arsenal.owns(*i) && *i < content.weapons.len())
+                    .min_by(|a, b| {
+                        let v = |i: usize| if has_rounds(&content.weapons[i], &arsenal.weapons[i]) { gun_value(content.weapons[i].class) } else { 0.3 };
+                        v(*a).total_cmp(&v(*b))
+                    })
+                    .map(|i| i as u8);
+                // Use takes the nearest gun in reach: only press it standing over the one it wants
+                // (not the one it just dropped).
+                let nearest = loot
+                    .iter()
+                    .filter(|(p, l)| matches!(l, crate::loot::Loot::Weapon { index, .. } if !arsenal.owns(*index as usize)) && p.xz().distance(feet.xz()) < 1.4)
+                    .min_by(|a, b| a.0.distance(feet).total_cmp(&b.0.distance(feet)))
+                    .map(|(p, _)| *p);
+                if let Some(worst) = worst.filter(|_| nearest.is_some_and(|n| n.distance(at) < 0.05)) {
+                    input.weapon = worst;
+                    if arsenal.current == worst && arsenal.cooldown <= 0.0 && bot.swap_wait <= 0.0 {
+                        bot.swap_wait = 1.0;
+                        orders.write(CommandEvent { player: me.id, command: PlayerCommand::Pickup });
+                    }
+                }
+            }
+            // Gear: a stim when hurt, an ammo pack when short; grenades at a foe tucked in
+            // behind cover, at a spot it keeps dying to, or smoke to cross a sniper's lane.
+            bot.gear_wait -= 0.3;
+            let gear = content.gear.get(me.gear as usize).map(|g| g.kind);
+            if me.gear_left > 0 && bot.gear_wait <= 0.0 && bot.throw <= 0.0 && me.cooking.is_none() {
+                use oz_core::content::GearKind;
+                let hidden_foe = bot.target.is_none() && now < bot.engaged_until && bot.cover.is_some();
+                let danger = bot.danger(now).map(|(at, _)| at).filter(|at| (8.0..32.0).contains(&at.distance(feet)) && bot.target.is_none());
+                let pick = match gear {
+                    Some(GearKind::Stim { .. }) if health.hp < health.max * 0.45 && bot.target.is_none() => Some(feet),
+                    Some(GearKind::Ammo { .. }) if crate::loot::low_on_ammo(&content, arsenal) => Some(feet),
+                    Some(GearKind::Frag { .. } | GearKind::Flash { .. }) if hidden_foe && (7.0..28.0).contains(&bot.foe.distance(feet)) => Some(bot.foe),
+                    Some(GearKind::Frag { .. } | GearKind::Flash { .. }) => danger,
+                    Some(GearKind::Smoke { .. }) => match bot.threat_at(now, 3.0) {
+                        Some(from) if bot.target.is_none() && bot.cover.is_none() && from.distance(feet) > 25.0 => Some(feet + (from - feet).normalize_or_zero() * 7.0),
+                        _ => danger.map(|d| feet.lerp(d, 0.5)),
+                    },
+                    _ => None,
+                };
+                if let Some(at) = pick {
+                    bot.throw = if matches!(gear, Some(GearKind::Stim { .. } | GearKind::Ammo { .. })) { 0.1 } else { 0.45 };
+                    bot.throw_at = at;
+                    bot.gear_wait = rng.0.range(9.0, 15.0);
+                }
+            }
             if bot.sentry && rules.hunt && feet.xz().distance(crate::versus::hunt_base(&map)) < crate::versus::HUNT_SAFE + 2.0 {
                 // Strayed into the squad's base: back to the post.
                 bot.heard = None;
@@ -1071,6 +1468,14 @@ pub fn drive_bots(
                     bot.path.clear();
                     bot.stuck = 0.0;
                 }
+            } else if let Some((at, _, swap)) = wish_loot {
+                // Something worth having lies close: ammo when running dry, a better gun, armour.
+                bot.loot = Some((at, swap));
+                if bot.goal.distance(at) > 0.8 || bot.path.is_empty() {
+                    bot.goal = at;
+                    bot.path.clear();
+                    bot.stuck = 0.0;
+                }
             } else if rules.hunt && me.team == 0 && bot.target.is_none() {
                 // Squadmates stay with the humans.
                 if let Some((_, lead)) = humans.iter().filter(|(team, _)| *team == me.team).min_by(|a, b| a.1.distance_squared(feet).total_cmp(&b.1.distance_squared(feet))) {
@@ -1078,16 +1483,21 @@ pub fn drive_bots(
                         bot.goal = *lead;
                         bot.path.clear();
                     }
-                } else if bot.path.is_empty() || bot.goal.distance(feet) < 4.0 {
+                } else if bot.goal.distance(feet) < 4.0 || (bot.path.is_empty() && bot.repath <= 0.0) {
                     bot.goal = sweep_point(&map, &mut rng);
                     bot.path.clear();
                 }
             } else if rules.loot
                 && bot.target.is_none()
                 && (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).count() < 2
-                && let Some(gun) = crate::loot::nearest_gun(feet, pickups.iter())
+                && let Some(gun) = reachable
+                    .iter()
+                    .filter(|(_, l)| matches!(l, crate::loot::Loot::Weapon { .. }))
+                    .map(|(at, _)| *at)
+                    .min_by(|a, b| a.distance_squared(feet).total_cmp(&b.distance_squared(feet)))
             {
-                // Scavenge: a pistol is not enough - go and get a real gun.
+                // Scavenge: a pistol is not enough - go and get a real gun, however far.
+                bot.loot = Some((gun, false));
                 if bot.goal.distance(gun) > 1.0 || bot.path.is_empty() {
                     bot.goal = gun;
                     bot.path.clear();
@@ -1099,9 +1509,10 @@ pub fn drive_bots(
                     bot.stuck = 0.0;
                 }
                 let hurt = health.hp < health.max * 0.35;
-                let known = intel.0[(me.team as usize).min(1)];
-                if !plan_objective(&mut bot, me, feet, &state.obj, &mut rng, &bodies, known, now) {
-                    plan_versus(&mut bot, me, feet, hurt, &map, &mut rng, &bodies, known, now);
+                let known = intel.0[team];
+                if !plan_objective(&mut bot, me, feet, &state.obj, &map, &mut rng, &bodies, &claims[team], known, now) {
+                    let long = matches!(class, GunClass::Rifle | GunClass::Sniper | GunClass::Lmg);
+                    plan_versus(&mut bot, me, feet, hurt, long, &map, &mut rng, &bodies, known, now);
                 }
             }
             // Camping in versus: not out in the open or in a doorway, but tucked in nearby
@@ -1149,9 +1560,27 @@ pub fn drive_bots(
         }
         // Lost sight of the target from cover (ducked, or it did): keep at it from there for
         // a moment rather than wander off - unless falling back or on the bomb.
+        // Shot at by someone it cannot see: get behind something between it and them.
+        // (Not on the bomb: carrying it or going to defuse, it pushes on and leaves the fight to
+        // the others.)
+        let obj = &state.obj;
+        let duty = obj.kind == crate::objective::kind::BOMB
+            && ((obj.bomb == crate::objective::bomb::CARRIED && obj.carrier == me.id)
+                || (obj.bomb == crate::objective::bomb::PLANTED && me.team.min(1) != obj.attackers && obj.bomb_at.distance(feet) < 12.0));
+        if bot.threat_at(now, 3.0).is_none() {
+            bot.pinned = 0.0;
+        } else if target.is_none() && bot.cover.is_some() {
+            bot.pinned += dt;
+        }
+        let under_fire = target.is_none() && !bot.hold_use && !duty && bot.pinned < 3.0 && bot.threat_at(now, 3.0).is_some();
+        if under_fire && let Some(from) = bot.threat_at(now, 3.0) {
+            bot.foe = from - Vec3::Y * 1.2;
+            bot.foe_stance = stance::STAND;
+            bot.engaged_until = bot.engaged_until.max(now + 1.0);
+        }
         let engaged = target.is_some() || (now < bot.engaged_until && bot.cover.is_some() && bot.plan != Plan::Retreat && !bot.hold_use);
         bot.cover_time -= dt;
-        if !engaged {
+        if !engaged && !under_fire {
             bot.cover = None;
         } else if bot.cover_time <= 0.0 {
             let seek = if target.is_some() && bot.foe.distance(feet) > far { Seek::Push } else { Seek::Fight };
@@ -1182,10 +1611,12 @@ pub fn drive_bots(
             let distance = to.length().max(1e-3);
             let wanted_yaw = yaw_to(to.xz()) + bot.aim_error.x;
             let wanted_pitch = (to.y / distance).asin() + bot.aim_error.y;
-            input.yaw = turn(input.yaw, wanted_yaw, 6.5 * dt);
+            // Being shot at, it snaps round and answers fast.
+            let snap = bot.under_fire(now, 4.0);
+            input.yaw = turn(input.yaw, wanted_yaw, if snap { 10.0 } else { 6.5 } * dt);
             input.pitch += (wanted_pitch - input.pitch).clamp(-5.0 * dt, 5.0 * dt);
             let off_target = ((wanted_yaw - input.yaw + PI).rem_euclid(TAU) - PI).abs();
-            let reacted = bot.seen > 0.35 / rules.difficulty.max(0.25);
+            let reacted = bot.seen > if snap { 0.15 } else { 0.35 } / rules.difficulty.max(0.25);
             // Tap the trigger every other frame so semi-automatic weapons fire too.
             if reacted && off_target < 0.08 && !input.held(buttons::FIRE) {
                 held |= buttons::FIRE;
@@ -1213,12 +1644,16 @@ pub fn drive_bots(
                 wanted_stance = if distance > 35.0 { stance::PRONE } else { stance::CROUCH };
                 wish *= 0.4;
             }
+            if let Some(at) = bot.grab {
+                // Over to the gun lying close by, still shooting.
+                wish = (at.xz() - feet.xz()).normalize_or_zero() + facing.perp() * bot.strafe * 0.3;
+            }
             bot.goal = enemy;
             bot.path.clear();
         } else if engaged {
             // Tucked in out of sight: keep the gun on where the target was.
             let to = Contact::at(bot.foe, bot.foe_stance).chest - crate::player::eye_point(&statics, feet, &input);
-            input.yaw = turn(input.yaw, yaw_to(to.xz()), 6.5 * dt);
+            input.yaw = turn(input.yaw, yaw_to(to.xz()), if under_fire { 10.0 } else { 6.5 } * dt);
             input.pitch += ((to.y / to.length().max(1e-3)).asin() - input.pitch).clamp(-5.0 * dt, 5.0 * dt);
         } else if let Some(nav) = nav.as_deref() {
             // Travel along a path; search again when it runs out or goes stale.
@@ -1230,6 +1665,20 @@ pub fn drive_bots(
             }
             while bot.path.first().is_some_and(|p| p.xz().distance(feet.xz()) < 0.6 && (p.y - feet.y).abs() < 1.6) {
                 bot.path.remove(0);
+            }
+            if bot.path.is_empty() && bot.goal.xz().distance(feet.xz()) > 2.0 {
+                // No route found from here (off the walkable grid, say): head straight for it, and
+                // let the unsticking take over if that goes nowhere.
+                wish = (bot.goal.xz() - feet.xz()).normalize_or_zero();
+                input.yaw = turn(input.yaw, yaw_to(wish), 6.0 * dt);
+            }
+            if bot.path.is_empty()
+                && let Some((at, _)) = bot.loot
+                && at.xz().distance(feet.xz()) < 2.0
+            {
+                // The last step onto the thing it wants.
+                let to = at.xz() - feet.xz();
+                wish = if to.length() > 0.08 { to.normalize_or_zero() * (to.length() / 0.5).min(1.0) * 0.6 } else { Vec2::ZERO };
             }
             if let Some(next) = bot.path.first() {
                 wish = (next.xz() - feet.xz()).normalize_or_zero();
@@ -1248,23 +1697,36 @@ pub fn drive_bots(
                 // Standing guard: look about.
                 input.yaw += (bot.strafe * 0.5 + if bot.alert > 0.0 { bot.strafe * 1.2 } else { 0.0 }) * dt;
             }
-            // Return fire at a gunshot it heard but cannot see the shooter of.
-            if bot.sentry && bot.suppress > 0.0 {
+            if let Some(from) = bot.threat_at(now, 2.5) {
+                // Shot at from somewhere it cannot see: face it at once, and never stand still for it.
+                let to = from - (feet + Vec3::Y * input.eye());
+                input.yaw = turn(input.yaw, yaw_to(to.xz()), 10.0 * dt);
+                input.pitch += ((to.y / to.length().max(1e-3)).asin() - input.pitch).clamp(-4.0 * dt, 4.0 * dt);
+                if wish == Vec2::ZERO {
+                    wish = to.xz().normalize_or(Vec2::X).perp() * bot.strafe;
+                }
+            }
+            // Return fire at a gunshot it heard (or a round that came at it) but cannot see the shooter of.
+            if bot.suppress > 0.0 {
                 let to = bot.suppress_at - (feet + Vec3::Y * input.eye());
                 let distance = to.length().max(1e-3);
-                input.yaw = turn(input.yaw, yaw_to(to.xz()) + bot.aim_error.x * 2.0, 7.0 * dt);
+                input.yaw = turn(input.yaw, yaw_to(to.xz()) + bot.aim_error.x * 2.0, 10.0 * dt);
                 input.pitch = (to.y / distance).asin() + bot.aim_error.y;
-                wish = Vec2::ZERO;
+                // Sidestepping while it shoots back, not standing for it.
+                wish = to.xz().normalize_or(Vec2::X).perp() * bot.strafe * 0.6;
                 held &= !buttons::SPRINT;
                 if !input.held(buttons::FIRE) {
                     held |= buttons::FIRE;
+                }
+                if distance > 12.0 {
+                    held |= buttons::AIM;
                 }
             }
         }
 
         // Fighting from cover: tucked in crouched, standing up (or stepping out) to shoot,
         // back in to reload. Moving between the two upright, never sprinting.
-        if let Some(cover) = bot.cover.filter(|_| engaged) {
+        if let Some(cover) = bot.cover.filter(|_| engaged && bot.grab.is_none()) {
             bot.peek -= dt;
             if bot.peek <= 0.0 {
                 bot.exposed = !bot.exposed;
@@ -1287,6 +1749,7 @@ pub fn drive_bots(
             && bot.target.is_none()
             && !engaged
             && !bot.sentry
+            && !bot.under_fire(now, 2.5)
             && bot.goal.xz().distance(feet.xz()) < 1.5
         {
             wish = Vec2::ZERO;
@@ -1308,6 +1771,45 @@ pub fn drive_bots(
             let ahead = Vec2::new(-input.yaw.sin(), -input.yaw.cos());
             wish = -ahead * 0.8 + ahead.perp() * bot.strafe * 0.4;
             wanted_stance = stance::CROUCH;
+        }
+        // Doing nothing - no headway, no fight, nothing held on purpose - for too long:
+        // shake out of it (a new plan, somewhere else to hold).
+        let busy = engaged || bot.hold_use || bot.suppress > 0.0 || (bot.sentry && !bot.under_fire(now, 4.0)) || arsenal.reload > 0.0;
+        if busy || feet.distance(bot.idle_from) > 2.0 {
+            bot.idle = 0.0;
+            bot.idle_from = feet;
+        } else {
+            bot.idle += dt;
+            if bot.idle > 6.0 {
+                bot.idle = 0.0;
+                bot.shifts = bot.shifts.wrapping_add(1);
+                bot.plan_until = 0.0;
+                bot.think = 0.0;
+                bot.camp_spot = None;
+                bot.objective = None;
+                bot.heard = None;
+                if matches!(bot.plan, Plan::Camp { .. }) {
+                    bot.plan = Plan::Search;
+                }
+                if bot.goal.xz().distance(feet.xz()) < 3.0 && !bot.sentry && state.obj.kind == crate::objective::kind::NONE {
+                    bot.goal = sweep_point(&map, &mut rng);
+                    bot.path.clear();
+                }
+            }
+        }
+        // Gear in hand: stims and ammo packs on a press; grenades cooked a moment and lobbed.
+        if bot.throw > 0.0 {
+            bot.throw -= dt;
+            let throwable = content.gear.get(me.gear as usize).is_some_and(|g| crate::combat::throw(&g.kind, Vec3::NEG_Z).is_some());
+            if throwable {
+                let to = bot.throw_at - eye;
+                input.yaw = turn(input.yaw, yaw_to(to.xz()), 10.0 * dt);
+                input.pitch = lob_pitch(to.xz().length()) + ((to.y / to.length().max(1e-3)).asin() * 0.5).clamp(-0.3, 0.3);
+            }
+            held &= !(buttons::FIRE | buttons::SPRINT);
+            if bot.throw > 0.0 && (throwable || bot.throw > 0.05) {
+                held |= buttons::GEAR;
+            }
         }
         // Stuck against something: stand up, jump (or vault) once upright, and look for a
         // fresh route. Low or lying down, it gets up first; a body that cannot stand never tries.
@@ -1482,6 +1984,26 @@ mod tests {
         assert!(!sees(&statics, threat.eye, cover.spot + Vec3::Y * 0.6), "{cover:?}: the body is in plain view");
         // The wall is too tall to see over crouched, so it watches standing.
         assert!(!cover.low && sees(&statics, cover.spot + Vec3::Y * EYE, threat.chest), "{cover:?}");
+    }
+
+    #[test]
+    fn a_bot_killed_twice_from_one_spot_comes_round_the_side_next_time() {
+        let mut bot = Bot::default();
+        let (from, goal, killer) = (Vec3::new(0.0, 0.0, -40.0), Vec3::new(0.0, 0.0, 40.0), Vec3::new(1.0, 0.0, 10.0));
+        let flat = |_: f32, _: f32| Some(0.0);
+        // Once is bad luck: straight there.
+        bot.deaths.push((Vec3::new(0.0, 0.0, -5.0), killer, 10.0));
+        assert_eq!(route_round(&mut bot, from, goal, 20.0, flat), goal);
+        // Twice from the same corner: the way past it is out to one side.
+        bot.deaths.push((Vec3::new(2.0, 0.0, -3.0), killer + Vec3::X * 3.0, 30.0));
+        let via = route_round(&mut bot, from, goal, 40.0, flat);
+        assert!(off_line(killer, from, via) > 8.0 && via.xz().distance(killer.xz()) > 15.0, "{via} still runs past {killer}");
+        // It keeps to the detour until it gets there, then goes on in.
+        assert_eq!(route_round(&mut bot, from + Vec3::X, goal, 41.0, flat), via);
+        assert_eq!(route_round(&mut bot, via, goal, 50.0, flat), goal);
+        // A way that does not pass the spot is left alone.
+        let mut other = Bot { deaths: bot.deaths.clone(), ..default() };
+        assert_eq!(route_round(&mut other, Vec3::new(60.0, 0.0, 0.0), Vec3::new(60.0, 0.0, 50.0), 40.0, flat), Vec3::new(60.0, 0.0, 50.0));
     }
 
     #[test]

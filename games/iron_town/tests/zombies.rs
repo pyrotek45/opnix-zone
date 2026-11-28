@@ -776,3 +776,40 @@ fn power_ups_are_sure_to_come() {
     }
     assert!(seen >= 2, "{kills} kills and only {seen} power-ups");
 }
+
+#[test]
+fn a_bot_buys_ammo_off_the_wall_with_its_points() {
+    let mut app = start(Layout::CinderWorks, 2);
+    run(&mut app, 1.0, |_| {});
+    let map = app.world().resource::<Map>().0.clone();
+    let layout = map.horde.as_deref().unwrap();
+    let content = app.world().resource::<Content>().clone();
+    let buy = layout.buys.iter().find(|b| b.zone == 0).copied().expect("a wall buy in the first zone");
+    let weapon = buy.weapon as usize;
+    let world = app.world_mut();
+    let (bot, id) = world.query_filtered::<(Entity, &Player), With<Bot>>().iter(world).map(|(e, p)| (e, p.id)).next().unwrap();
+    // The bot carries that wall's gun, out of ammo, and has points to spend.
+    {
+        let mut arsenal = app.world_mut().get_mut::<Arsenal>(bot).unwrap();
+        oz_sim::weapons::grant_weapon(&mut arsenal, &content.weapons, weapon);
+        arsenal.weapons[weapon].ammo = 0;
+        arsenal.weapons[weapon].reserve = 0;
+    }
+    app.world_mut().resource_mut::<MatchState>().horde.survivor_mut(id).unwrap().points = 5000;
+    // The squad stands a few steps from the wall.
+    let n = Vec3::new(buy.normal.x, 0.0, buy.normal.y);
+    let near = Vec3::new(buy.pos.x, map.height(buy.pos.x, buy.pos.z), buy.pos.z) + n * 3.0;
+    place(&mut app, near, -n);
+    app.world_mut().get_mut::<Transform>(bot).unwrap().translation = near + n.cross(Vec3::Y) * 1.5;
+    let mut seconds = 0.0;
+    while app.world().get::<Arsenal>(bot).unwrap().weapons[weapon].reserve == 0 {
+        scrap_husks(&mut app, None);
+        invulnerable(&mut app);
+        app.update();
+        seconds += FRAME;
+        assert!(seconds < 20.0, "the bot never bought ammo for its empty {}", content.weapons[weapon].name);
+    }
+    let points = state(&app).horde.survivor(id).unwrap().points;
+    println!("bought ammo after {seconds:.1} s, {points} points left");
+    assert!(points < 5000, "the ammo was paid for");
+}
