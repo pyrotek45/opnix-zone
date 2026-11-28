@@ -167,6 +167,24 @@ fn demo(
                 }
             }
         }
+    } else if which == "beside" {
+        // Inside, back to the wall just beside a window (the wall carries on under its sill).
+        'b: for window in &map.windows {
+            let along = if window.along_x { Vec3::X } else { Vec3::Z };
+            for normal in dirs.into_iter().filter(|n| if window.along_x { n.x == 0.0 } else { n.z == 0.0 }) {
+                let floor = window.center.y - oz_core::worldgen::WINDOW_SILL;
+                let feet = Vec3::new(window.center.x, floor, window.center.z) + normal * (OFFSET + 0.15) + along * (window.width * 0.5 + 0.55);
+                let wall = Wall { normal, low: false };
+                if statics.blocked(feet.x, feet.z, feet.y, 1.7, 0.3)
+                    || statics.raycast(feet + Vec3::Y, Vec3::Y, 3.0).is_none()
+                    || wall_behind(&statics, feet + Vec3::Y * 1.6, &wall).is_none()
+                {
+                    continue;
+                }
+                spot = Some((feet, normal, feet - normal * 10.0 + Vec3::Y * 1.4));
+                break 'b;
+            }
+        }
     } else if which == "window" {
         'w: for window in &map.windows {
             for normal in dirs.into_iter().filter(|n| if window.along_x { n.x == 0.0 } else { n.z == 0.0 }) {
@@ -380,7 +398,10 @@ fn take_cover(
         *cover = Cover::default();
         return;
     };
-    wall.low = top < feet.y + LOW;
+    // A window right behind (open at head height over a sill) is low cover too: pop up and
+    // look out through it.
+    let head = chest + Vec3::Y * 0.7;
+    wall.low = top < feet.y + LOW || wall_behind(&statics, head, &wall).is_none();
     let along = Vec3::new(-wall.normal.z, 0.0, wall.normal.x);
     cover.edges = [-1.0f32, 1.0].map(|side| wall_behind(&statics, chest + along * side * EDGE, &wall).is_none());
 
@@ -430,7 +451,14 @@ fn take_cover(
         } else {
             // Step out round whichever edge we are at, toward where we are looking (no
             // leaning in this game: the whole robot comes out past the corner).
-            let side = match cover.edges {
+            // Where we can look out: the wall's ends, or a window beside us (the wall carries
+            // on under its sill, so look for openings at head height too).
+            let open = |side: f32, d: f32| {
+                let p = along * side * d;
+                wall_behind(&statics, chest + p, &wall).is_none() || wall_behind(&statics, head + p, &wall).is_none()
+            };
+            let edges = [open(-1.0, EDGE), open(1.0, EDGE)];
+            let side = match edges {
                 [true, false] => -1.0,
                 [false, true] => 1.0,
                 [true, true] => {
@@ -454,7 +482,7 @@ fn take_cover(
                 'search: for step in 1..=12 {
                     let d = step as f32 * 0.1;
                     for dir in [looking, -looking] {
-                        if wall_behind(&statics, chest + along * dir * d, &wall).is_none() {
+                        if open(dir, d) {
                             found = Some((dir, d));
                             break 'search;
                         }
@@ -494,7 +522,14 @@ fn take_cover(
                 input.buttons |= buttons::BLIND;
             } else {
                 let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
-                let side = match cover.edges {
+                // Where we can look out: the wall's ends, or a window beside us (the wall carries
+            // on under its sill, so look for openings at head height too).
+            let open = |side: f32, d: f32| {
+                let p = along * side * d;
+                wall_behind(&statics, chest + p, &wall).is_none() || wall_behind(&statics, head + p, &wall).is_none()
+            };
+            let edges = [open(-1.0, EDGE), open(1.0, EDGE)];
+            let side = match edges {
                     [true, false] => -1.0,
                     [false, true] => 1.0,
                     [true, true] => {
