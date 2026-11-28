@@ -362,7 +362,7 @@ pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
         // Indoors is safe from what falls out of the sky (the roof takes it).
         let roofed = from_above && at.y > target.translation.y + 2.0 && statics.raycast(target.translation + Vec3::Y * 1.7, Vec3::Y, 60.0).is_some();
         if player.team != team && Some(player.id) != skip && distance < radius && !roofed && !sheltered(statics, at, target.translation) {
-            let amount = damage * (1.0 - 0.7 * distance / radius) * blast_scale(content, &player);
+            let amount = blast_damage(damage, radius, distance) * blast_scale(content, &player);
             player.last_hit = crate::player::part::BLAST;
             // A big blast tears a leg off anyone it does not kill outright.
             if amount > 60.0 {
@@ -373,6 +373,12 @@ pub fn blast_players<F: bevy::ecs::query::QueryFilter>(
             player.last_hit = crate::player::part::TORSO;
         }
     }
+}
+
+/// What a blast of `damage` and `radius` does to a robot whose middle is `distance` from it
+/// (before Flak Jacket): everything up close, falling off linearly to 30% at the edge.
+pub fn blast_damage(damage: f32, radius: f32, distance: f32) -> f32 {
+    if distance >= radius { 0.0 } else { damage * (1.0 - 0.7 * distance / radius.max(1e-3)) }
 }
 
 /// Damages every enemy within `radius`, with linear falloff.

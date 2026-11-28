@@ -67,7 +67,77 @@ impl GunClass {
             GunClass::Tool => 0.0,
         }
     }
+
+    /// What is left of a round's punch once it is far past its effective range (see
+    /// [`falloff`]): buckshot is spent, pistol rounds and SMGs fade, rifles carry, sniper
+    /// rounds barely notice and blasts do not care.
+    pub fn falloff_floor(self) -> f32 {
+        match self {
+            GunClass::Shotgun => 0.35,
+            GunClass::Smg => 0.5,
+            GunClass::Pistol | GunClass::Rifle => 0.55,
+            GunClass::Lmg => 0.6,
+            GunClass::Sniper => 0.85,
+            GunClass::Launcher | GunClass::Tool => 1.0,
+        }
+    }
+
+    /// How much wider than the listed spread hip fire is. SMGs and pistols are built to be
+    /// fired from the hip; a shotgun's listed spread *is* its hip pattern (the sights
+    /// squeeze it); long guns spray.
+    pub fn hip_width(self) -> f32 {
+        match self {
+            GunClass::Smg => 1.2,
+            GunClass::Shotgun => 1.0,
+            GunClass::Pistol => 1.4,
+            _ => 1.6,
+        }
+    }
+
+    /// How much of the movement bloom this kind of gun suffers: run-and-gun guns
+    /// (shotguns, SMGs, pistols) keep their cone on the move.
+    pub fn bloom_weight(self) -> f32 {
+        match self {
+            GunClass::Shotgun => 0.4,
+            GunClass::Smg => 0.5,
+            GunClass::Pistol => 0.7,
+            _ => 1.0,
+        }
+    }
+
+    /// A head hit from this kind of gun kills outright, whatever the range, armour or parts.
+    pub fn lethal_headshot(self) -> bool {
+        self == GunClass::Sniper
+    }
 }
+
+/// Damage multiplier at `distance` for a round with effective `range`: full damage out to
+/// the range, then easing linearly down to the class's [`GunClass::falloff_floor`] by
+/// three times it.
+pub fn falloff(class: GunClass, range: f32, distance: f32) -> f32 {
+    let past = ((distance - range) / (2.0 * range.max(0.1))).clamp(0.0, 1.0);
+    1.0 - (1.0 - class.falloff_floor()) * past
+}
+
+/// Where pellet `i` of `n` goes, as an offset in units of the spread (the pattern's outer
+/// edge is at 1): one down the middle, an inner ring at [`PELLET_INNER`] and an outer ring
+/// at the edge, turned by `spin`. `jitter` (each in -1..1) nudges a pellet's angle and
+/// radius a little so no two shots look printed, but the pattern never opens holes:
+/// aimed centre mass, the middle and the inner ring land together.
+pub fn pellet_offset(i: u8, n: u8, spin: f32, jitter: (f32, f32)) -> (f32, f32) {
+    if n <= 1 || i == 0 {
+        return (0.0, 0.0);
+    }
+    let inner = (n - 1) / 2;
+    let outer = n - 1 - inner;
+    let (ring, k, count, radius) = if i <= inner { (0.0, i - 1, inner, PELLET_INNER) } else { (0.5, i - 1 - inner, outer, 1.0) };
+    let angle = spin + (k as f32 + ring) * std::f32::consts::TAU / count.max(1) as f32 + jitter.0 * 0.15;
+    let radius = radius * (1.0 + jitter.1 * 0.1);
+    (angle.cos() * radius, angle.sin() * radius)
+}
+
+/// Radius of a shotgun pattern's inner ring, as a fraction of the spread.
+pub const PELLET_INNER: f32 = 0.45;
 
 /// Aim climb per unit of [`shot_kick`], in radians. The camera's visible kick is drawn from
 /// the same units, so what you see the gun do is what it does to your aim.

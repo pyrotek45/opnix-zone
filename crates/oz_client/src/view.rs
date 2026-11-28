@@ -379,6 +379,15 @@ fn follow_player(
             view.kick_roll = (view.kick_roll + r(1) * 0.09 * recoil.sqrt()).clamp(-0.25, 0.25);
             view.kick_side = (view.kick_side + r(2) * 0.012 * recoil.sqrt()).clamp(-0.04, 0.04);
             view.shake += recoil * 0.12;
+            // A shotgun blast is a shove into the shoulder: more of the camera goes with it.
+            if def.class == GunClass::Shotgun {
+                view.shake += 0.18 + recoil * 0.08;
+                view.kick = (view.kick + 0.6).min(3.5);
+            }
+            // Working a pump or a bolt racks it audibly once the gun comes back down.
+            if matches!(def.action, Action::Pump | Action::Bolt) && state.ammo > 0 {
+                sounds.write(crate::fx::PlaySfx::new(Sfx::Bolt, None).quiet(0.75).later(def.interval * 0.22));
+            }
             // Brass hits the floor a moment later.
             if def.mode == oz_core::arsenal::FireMode::Hitscan && def.mag > 0 {
                 sounds.write(crate::fx::PlaySfx::new(Sfx::Shell, None).quiet(0.35).later(0.38));
@@ -730,8 +739,8 @@ fn viewmodel(
                 dip += 0.02 * lift;
             }
             Action::Pump => {
-                slide = Vec3::Z * 0.12 * bump(c, 0.15, 0.85);
-                tilt += 0.06 * bump(c, 0.15, 0.85);
+                slide = Vec3::Z * 0.15 * bump(c, 0.12, 0.8);
+                tilt += 0.08 * bump(c, 0.12, 0.8);
             }
             _ if def.class == GunClass::Pistol => slide = Vec3::Z * 0.06 * bump(c, 0.0, 0.6),
             _ => slide = Vec3::Z * 0.03 * bump(c, 0.0, 0.5),
