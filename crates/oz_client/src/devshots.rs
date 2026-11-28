@@ -30,6 +30,9 @@ pub struct DevShotsPlugin;
 impl Plugin for DevShotsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, autostart.run_if(in_state(MatchPhase::Active)));
+        if std::env::var("OPNIX_POSE_CAM").is_ok() {
+            app.add_systems(Update, pose_cam.after(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
+        }
         if std::env::var("OPNIX_KILLCAM_TEST").is_ok() {
             app.add_systems(Update, killcam_test.after(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
         }
@@ -184,5 +187,55 @@ fn killcam_test(
                 let _ = std::fs::remove_file(old.replace(".png", ".ppm"));
             }
         }
+    }
+}
+
+#[derive(Component)]
+struct PoseCamera;
+
+/// `OPNIX_POSE_CAM=dir`: a camera off to the right of your own robot (and a little
+/// ahead, along the look) films it once a second as `dir/pose_<t>.ppm`, so its pose can be
+/// judged side on. `OPNIX_POSE_SIDE=-1` films from the left.
+fn pose_cam(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut images: ResMut<Assets<Image>>,
+    mut image: Local<Option<Handle<Image>>>,
+    mut last: Local<f32>,
+    me: Query<(&Transform, &PlayerInput), With<LocalPlayer>>,
+    mut cams: Query<&mut Transform, (With<PoseCamera>, Without<LocalPlayer>)>,
+) {
+    let Ok(dir) = std::env::var("OPNIX_POSE_CAM") else { return };
+    let handle = image
+        .get_or_insert_with(|| {
+            let size = Extent3d { width: 640, height: 480, depth_or_array_layers: 1 };
+            let mut target = Image::new_fill(size, TextureDimension::D2, &[0, 0, 0, 255], TextureFormat::Bgra8UnormSrgb, RenderAssetUsages::default());
+            target.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
+            let handle = images.add(target);
+            commands.spawn((
+                MatchEntity,
+                PoseCamera,
+                Camera3d::default(),
+                Camera { target: RenderTarget::Image(handle.clone().into()), order: -6, clear_color: ClearColorConfig::Custom(Color::srgb(0.55, 0.6, 0.7)), ..default() },
+                Projection::Perspective(PerspectiveProjection { fov: 50f32.to_radians(), near: 0.05, far: 300.0, ..default() }),
+                Msaa::Off,
+                bevy::core_pipeline::tonemapping::Tonemapping::Reinhard,
+                Transform::default(),
+            ));
+            handle
+        })
+        .clone();
+    let Ok((body, input)) = me.single() else { return };
+    let side: f32 = std::env::var("OPNIX_POSE_SIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let look = Quat::from_rotation_y(input.yaw);
+    let chest = body.translation + Vec3::Y * 1.0;
+    let at = chest + look * Vec3::new(2.6 * side, 0.5, -0.8);
+    if let Ok(mut cam) = cams.single_mut() {
+        *cam = Transform::from_translation(at).looking_at(chest, Vec3::Y);
+    }
+    let now = time.elapsed_secs();
+    if now - *last >= 1.0 {
+        *last = now;
+        commands.spawn(Screenshot::image(handle)).observe(save_ppm(format!("{dir}/pose_{now:07.2}.png")));
     }
 }

@@ -422,18 +422,24 @@ fn take_cover(
     if controls.aim && !cover.aiming
         && let Ok(eye) = camera.single()
     {
-        let from = eye.translation();
+        let head = feet + Vec3::Y * stance::eye(stance::STAND);
         let dir = eye.forward().as_vec3();
+        // Trace from level with the head, not from the camera behind it: the stretch behind
+        // us only ever finds our own wall or window frame.
+        let from = eye.translation() + dir * (head - eye.translation()).dot(dir).max(0.0);
         let mut reach = map.raycast(from, dir, 150.0);
         if let Some((d, _)) = statics.raycast(from, dir, reach) {
             reach = reach.min(d);
         }
-        let target = from + dir * reach.max(2.0);
-        let head = feet + Vec3::Y * stance::eye(stance::STAND);
-        let to = target - head;
-        if to.length() > 0.5 {
-            input.yaw = f32::atan2(-to.x, -to.z);
-            input.pitch = (to.y / to.length()).clamp(-1.0, 1.0).asin().clamp(-1.45, 1.45);
+        let to = from + dir * reach - head;
+        // Only a parallax nudge for something out in the world: a hit right in front of us
+        // (a window frame, the edge of the wall) would swing the view round into it.
+        if to.length() > 3.0 {
+            let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            let yaw = f32::atan2(-to.x, -to.z);
+            input.yaw += wrap(yaw - input.yaw).clamp(-0.35, 0.35);
+            let pitch = (to.y / to.length()).clamp(-1.0, 1.0).asin().clamp(-1.45, 1.45);
+            input.pitch += (pitch - input.pitch).clamp(-0.25, 0.25);
         }
     }
     cover.aiming = controls.aim;
