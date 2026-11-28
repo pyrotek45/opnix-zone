@@ -359,6 +359,13 @@ impl World {
                 self.trim_at(lamp - Vec3::Y * 0.02 + o * 0.03, Vec3::splat(0.05), Paint::Glow);
                 // A house number plate.
                 self.trim_at(face + o * 0.02 - along * (width * 0.5 + 0.35) + Vec3::Y * 1.7, flat(0.12, 0.08, 0.01), Paint::Cream);
+                // Flowers either side of the step, where the ground is at the door.
+                for s in [-1.0, 1.0] {
+                    let q = p + out * 0.5 + Vec2::new(along.x, along.z) * s * (width * 0.5 + 1.0);
+                    if (self.height(q.x, q.y) - floor).abs() < 0.4 && !self.occupied(q, 0.3) {
+                        self.flowers(q, &mut rng);
+                    }
+                }
             }
             super::shapes::Furnish::Plain if rng.chance(0.7) => {
                 // A striped shop awning sloping out over the door.
@@ -528,7 +535,8 @@ impl World {
         for k in 0..2 {
             let p = c + Vec2::new(2.5 + k as f32 * 1.4, -2.5);
             let gp = self.lowest(p, Vec2::splat(0.65));
-            let r = 0.62;
+            // As high as low cover, so it is vaulted like any other.
+            let r = super::COVER_HEIGHT * 0.5;
             let from = self.blocks.len();
             self.blocks.push(super::Block { aabb: Aabb::span(Vec3::new(p.x - r, gp - 0.05, p.y - 1.1), Vec3::new(p.x + r, gp + 2.0 * r, p.y + 1.1)), paint: Paint::Concrete, solid: true, hidden: true });
             self.mark_furniture(from);

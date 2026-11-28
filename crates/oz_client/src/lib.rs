@@ -37,6 +37,7 @@ pub mod clipboard;
 pub mod cover;
 pub mod debuglog;
 pub mod devshots;
+pub mod frametime;
 pub mod fx;
 pub mod gunsmith;
 pub mod hud;
@@ -138,7 +139,7 @@ impl Plugin for ClientPlugin {
             props::PropsPlugin,
             tactical::TacticalPlugin,
         ));
-        app.add_plugins((devshots::DevShotsPlugin, debuglog::DebugLogPlugin));
+        app.add_plugins((devshots::DevShotsPlugin, debuglog::DebugLogPlugin, frametime::FrameTimePlugin));
         app.add_plugins((killcam::KillCamPlugin, bushes::BushesPlugin, career::CareerPlugin, typeface::TypefacePlugin, qol::QolPlugin, naming::NamingPlugin, objectives::ObjectivesPlugin, punch::PunchPlugin));
         #[cfg(feature = "audio")]
         app.add_plugins((audio::AudioFxPlugin, announcer::AnnouncerPlugin));

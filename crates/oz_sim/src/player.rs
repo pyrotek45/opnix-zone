@@ -832,9 +832,9 @@ pub fn move_players(
             let lift = (vault.top + 0.12 - vault.from.y.max(vault.to.y)).max(0.0);
             pos.y += (k * std::f32::consts::PI).sin() * lift;
             // Never dip into the obstacle on the way over.
-            if (0.15..0.85).contains(&k) {
-                pos.y = pos.y.max(vault.top + 0.05);
-            }
+            // Eased in and out, so a tall obstacle never lifts the body a metre in one tick.
+            let guard = ((k - 0.05) / 0.12).clamp(0.0, 1.0) * ((0.95 - k) / 0.12).clamp(0.0, 1.0);
+            pos.y += (vault.top + 0.05 - pos.y).max(0.0) * guard;
             mover.speed = (pos - transform.translation).xz().length() / dt.max(1e-4);
             transform.translation = pos;
             input.stance = stance::CROUCH;
