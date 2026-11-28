@@ -1467,11 +1467,21 @@ impl World {
             }
         }
 
+        // A ladder up a side wall without a door, onto the roof (see below), is decided now:
+        // a pitched roof under one turns its gable ends to the side walls.
+        let free = |side: usize| doors[side].is_none() && !open[side];
+        let ladder_east = (plan.ladder && rng.chance(0.55) && (free(1) || free(2))).then(|| free(2) && (!free(1) || rng.chance(0.5)));
+        let roof = match roof {
+            Roof::Hip(tiles) if ladder_east.is_some() && plan.roof == Roof::Auto => Roof::Gable(tiles),
+            roof => roof,
+        };
+
         // Roof.
+        let ramps_before = self.ramps.len();
         self.solid(Aabb::span(Vec3::new(x0 - 0.15, roof_y, z0 - 0.15), Vec3::new(x1 + 0.15, roof_y + 0.3, z1 + 0.15)), if plan.trim == Some(paint) { shapes::darker(paint) } else { Paint::Dark });
         match roof {
             Roof::Gable(tiles) | Roof::Hip(tiles) => {
-                let along_x = hx >= hz;
+                let along_x = hx >= hz || ladder_east.is_some();
                 let ridge = self.stepped_roof((x0 - 0.15, x1 + 0.15, z0 - 0.15, z1 + 0.15), roof_y + 0.3, matches!(roof, Roof::Hip(_)), along_x, (tiles, paint));
                 // A chimney: solid, it is cover up there.
                 if plan.chimney && rng.chance(0.7) {
@@ -1504,23 +1514,28 @@ impl World {
             self.balcony(Vec2::new(c.x, z0), g + STOREY, trim);
         }
 
-        // A ladder up a side wall without a door, onto the roof.
-        let free = |side: usize| doors[side].is_none() && !open[side];
-        if plan.ladder && rng.chance(0.55) && (free(1) || free(2)) {
-            let east = free(2) && (!free(1) || rng.chance(0.5));
+        // The ladder up a side wall, beside the south corner. It comes out where the roof is
+        // walked level inward from the wall, at the height it is walked there: a flat roof, or
+        // a gable end (the ridge running along X), where the slope is walked across, not up.
+        // Up an eave or a hip end the walked roof rises straight from the eave, so there is
+        // no level landing: the climber would come off the top below the slope in front of it.
+        let walked = self.ramps[ramps_before..].first().cloned();
+        let level = walked.is_none() || matches!(roof, Roof::Gable(_));
+        if let Some(east) = ladder_east.filter(|_| level) {
             let (x, out) = if east { (x1 + 0.22, 1.0) } else { (x0 - 0.22, -1.0) };
             // Beside the south corner, where walls never have windows.
             let z = z0 + 0.75;
             let foot = Vec3::new(x, self.height(x, z), z);
+            let top = walked.map_or(roof_y + 0.3, |ramp| ramp.height(x - out * 0.9, z));
             for side in [-0.3, 0.3] {
-                self.decor(Aabb::span(Vec3::new(x - 0.04, foot.y, z + side - 0.04), Vec3::new(x + 0.04, roof_y + 1.0, z + side + 0.04)), Paint::Iron);
+                self.decor(Aabb::span(Vec3::new(x - 0.04, foot.y, z + side - 0.04), Vec3::new(x + 0.04, top + 0.7, z + side + 0.04)), Paint::Iron);
             }
             let mut y = foot.y + 0.3;
-            while y < roof_y + 0.6 {
+            while y < top + 0.3 {
                 self.decor(Aabb::new(Vec3::new(x, y, z), Vec3::new(0.03, 0.03, 0.3)), Paint::Iron);
                 y += 0.35;
             }
-            self.ladders.push(Ladder { foot, top: roof_y + 0.3, out: Vec2::new(out, 0.0) });
+            self.ladders.push(Ladder { foot, top, out: Vec2::new(out, 0.0) });
         }
         (g, roof_y)
     }

@@ -87,7 +87,9 @@ fn walking_over_rooftops_is_smooth() {
     let mut pitched = 0;
     for ramp in &map.ramps {
         let (centre, half) = ((ramp.min + ramp.max) * 0.5, (ramp.max - ramp.min) * 0.5);
-        let across = if half.x < half.y { Vec2::X } else { Vec2::Y };
+        // Across the ridge: the way its first (main) slope rises. Usually the short way, but
+        // a roof with a ladder up to it turns its gable ends to the ladder's wall.
+        let across = if ramp.planes[0].x.abs() > ramp.planes[0].y.abs() { Vec2::X } else { Vec2::Y };
         let (wide, long) = (half.dot(across), half.dot(across.perp().abs()));
         for offset in [-0.6, 0.0, 0.6] {
             // Clear of the eaves, where a joined wing's roof can overlap this one.
@@ -111,7 +113,7 @@ fn walking_over_rooftops_is_smooth() {
     }
     assert!(pitched >= 3, "only {pitched} pitched roofs could be walked across");
 
-    // Flat roofs, from the top of each ladder inward.
+    // Ladder landings (flat roofs and gable ends, walked level), from the top of each ladder inward.
     let mut flat = 0;
     for ladder in &map.ladders {
         let inward = -ladder.out;
