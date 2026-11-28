@@ -1213,4 +1213,92 @@ mod tests {
         assert!(launcher.reload >= 4.0 && launcher.mag <= 4 && launcher.reserve <= 4);
         assert!(launcher.splash <= 5.0 && launcher.damage <= 130.0);
     }
+
+    /// Where a ray first enters a part (treated as its box), if it does.
+    fn ray_part(from: glam::Vec3, dir: glam::Vec3, part: &crate::model::Part) -> Option<f32> {
+        let inv = part.rot.inverse();
+        let (o, d, half) = (inv * (from - part.pos), inv * dir, part.size * 0.5);
+        let (mut near, mut far) = (0.0f32, f32::MAX);
+        for i in 0..3 {
+            if d[i].abs() < 1e-9 {
+                if o[i].abs() > half[i] {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((-half[i] - o[i]) / d[i], (half[i] - o[i]) / d[i]);
+            near = near.max(a.min(b));
+            far = far.min(a.max(b));
+            if near > far {
+                return None;
+            }
+        }
+        Some(near)
+    }
+
+    /// The sight line the viewmodel puts on the screen centre is the one the model actually
+    /// has: with every optic, barrel, muzzle device and stock, on every gun, the front post (or
+    /// the dot, or the lens) sits on it, the rear notch is open on it, and nothing else on the
+    /// gun gets in the way of the eye looking down it.
+    #[test]
+    fn sight_lines_match_the_assembled_model() {
+        use crate::arsenal::{SightLine, options, sight_line, slot};
+        use crate::model::{Paint, Shape};
+        use glam::Vec3;
+        let guns = standard_guns();
+        let table = standard_attachments();
+        let (mut checked, mut blocked) = (0, Vec::new());
+        for gun in &guns {
+            let fits = |s: usize| options(gun, &table, s).into_iter().map(|o| o.0 as u8).collect::<Vec<_>>();
+            let mut builds = Vec::new();
+            for optic in fits(slot::OPTIC) {
+                for barrel in fits(slot::BARREL) {
+                    for muzzle in fits(slot::MUZZLE) {
+                        let mut parts = gun.defaults;
+                        (parts[slot::OPTIC], parts[slot::BARREL], parts[slot::MUZZLE]) = (optic, barrel, muzzle);
+                        builds.push(parts);
+                    }
+                }
+                for (stock, under, mag) in fits(slot::STOCK).into_iter().zip(fits(slot::UNDER).into_iter().cycle()).zip(fits(slot::MAGAZINE).into_iter().cycle()).map(|((s, u), m)| (s, u, m)) {
+                    let mut parts = gun.defaults;
+                    (parts[slot::OPTIC], parts[slot::STOCK], parts[slot::UNDER], parts[slot::MAGAZINE]) = (optic, stock, under, mag);
+                    builds.push(parts);
+                }
+            }
+            for parts in builds {
+                let line: SightLine = sight_line(gun, &parts);
+                let model = assemble(gun, &parts);
+                let what = format!("{} with {:?}", gun.name, parts);
+                assert!(line.dir().angle_between(Vec3::NEG_Z) < 1e-4, "{what}: the sight line must run along the bore");
+                assert!(line.aim.x.abs() < 1e-6 && line.rear.x.abs() < 1e-6, "{what}: sights off the centreline");
+                let near = |p: Vec3, q: Vec3| p.distance(q) < 2e-4;
+                if line.optic {
+                    // The dot or the lens is centred on the line.
+                    let mark = model.parts.iter().any(|p| match p.paint {
+                        Paint::Red => p.shape == Shape::Cube && near(p.pos, line.aim),
+                        Paint::Blue | Paint::Violet => p.shape == Shape::Cylinder && near(p.pos, line.aim),
+                        _ => false,
+                    });
+                    assert!(mark, "{what}: no reticle or lens at {:?}", line.aim);
+                } else {
+                    // A glowing post tip just under the line, and a notch either side of it at the back.
+                    assert!(model.parts.iter().any(|p| p.paint == Paint::Glow && near(p.pos, line.aim - Vec3::Y * 0.003)), "{what}: no front post at {:?}", line.aim);
+                    let notch = model.parts.iter().filter(|p| p.paint == Paint::Dark && (p.pos.z - line.rear.z).abs() < 1e-4 && (p.pos.y + p.size.y * 0.5 - line.rear.y).abs() < 1e-4).count();
+                    assert_eq!(notch, 2, "{what}: rear notch");
+                }
+                // Looking down the line from behind the gun, just under it (the post's tip, the dot):
+                // the first thing in the way must be the sight itself.
+                let eye = line.rear + Vec3::new(0.0, -0.001, 0.6);
+                let first = model.parts.iter().filter_map(|p| ray_part(eye, Vec3::NEG_Z, p).map(|t| (eye.z - t, p))).max_by(|a, b| a.0.total_cmp(&b.0));
+                let (z, part) = first.unwrap_or_else(|| panic!("{what}: the eye sees nothing down the sights"));
+                let clear = if line.optic { z <= line.rear.z + 0.01 && z >= line.aim.z - 0.01 } else { (z - line.aim.z).abs() < 0.02 };
+                if !clear {
+                    blocked.push(format!("{what}: {:?} {:?} at {:?} size {:?} is in the way (sights at y {:.3})", part.shape, part.paint, part.pos, part.size, line.aim.y));
+                }
+                checked += 1;
+            }
+        }
+        assert!(blocked.is_empty(), "{} of {checked} builds have something in front of the sights:\n{}", blocked.len(), blocked.join("\n"));
+        assert!(checked > 2000, "{checked}");
+    }
 }

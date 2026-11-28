@@ -11,6 +11,7 @@ use crate::{
     economy::Cost,
     model::{Anim, BlockModel, Paint},
 };
+use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 pub const SLOT_COUNT: usize = 7;
@@ -754,16 +755,64 @@ pub fn muzzle_distance(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> f32 {
 
 /// Height of the sight line above the grip.
 pub fn sight_height(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> f32 {
-    let Some(frame) = def.frame else { return 0.19 };
-    let deck = deck_height(&frame);
-    let base = deck + 0.016;
-    match equipped[slot::OPTIC] {
-        0 => deck + 0.055,
-        1 => base + 0.045,
-        2 => base + 0.037,
-        3 | 8 => base + 0.05,
-        7 => base + 0.055,
-        _ => base + 0.06,
+    sight_line(def, equipped).aim.y
+}
+
+/// Where each optic's aim mark sits, as (height above the optic base `deck + 0.016`, distance
+/// along the gun from the optic's middle `BACK - receiver * 0.45`, and where its back end is
+/// along the gun): the reflex and holographic dots, and the centre of each scope's objective
+/// lens (its tube's axis). Must match [`assemble`]; a test checks it does.
+const OPTIC_MARK: [(f32, f32, f32); 9] = [
+    (0.0, 0.0, 0.0),
+    (0.045, -0.024, 0.0),
+    (0.037, -0.04, 0.045),
+    (0.05, -0.101, 0.08),
+    (0.06, -0.247, 0.175),
+    (0.056, -0.187, 0.14),
+    (0.066, -0.372, 0.235),
+    (0.058, -0.151, 0.112),
+    (0.05, -0.085, 0.065),
+];
+
+/// A gun's sight picture in its model space (+Y up, -Z forward, origin at the grip).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SightLine {
+    /// Where the eye looks from: the top of the rear notch, or the back end of the optic, on its axis.
+    pub rear: Vec3,
+    /// What sits on the target: the tip of the front post, the red dot, or the centre of the lens.
+    pub aim: Vec3,
+    /// An optic (true) or iron sights.
+    pub optic: bool,
+}
+
+impl SightLine {
+    /// The direction the sights look along (unit length).
+    pub fn dir(&self) -> Vec3 {
+        (self.aim - self.rear).normalize_or(Vec3::NEG_Z)
+    }
+}
+
+/// The sight line of the gun as [`assemble`] builds it with these parts: the rear notch and
+/// front post with iron sights, or the fitted optic's aim mark and axis.
+pub fn sight_line(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> SightLine {
+    let Some(f) = def.frame else {
+        return SightLine { rear: Vec3::new(0.0, 0.19, 0.0), aim: Vec3::new(0.0, 0.19, -def.length.max(0.2)), optic: false };
+    };
+    let deck = deck_height(&f);
+    let r = f.receiver * stretch(def.class);
+    match equipped[slot::OPTIC] as usize {
+        // The notch is cut down to `deck + 0.055` and the post comes up to the same line.
+        0 => {
+            let front = BACK - r;
+            let zf = front - barrel_length(&f, def.class, equipped) * 0.82;
+            let y = deck + 0.055;
+            SightLine { rear: Vec3::new(0.0, y, BACK - 0.04), aim: Vec3::new(0.0, y, zf), optic: false }
+        }
+        i => {
+            let (dy, dz, back) = OPTIC_MARK[i.min(OPTIC_MARK.len() - 1)];
+            let (y, z0) = (deck + 0.016 + dy, BACK - r * 0.45);
+            SightLine { rear: Vec3::new(0.0, y, z0 + back), aim: Vec3::new(0.0, y, z0 + dz), optic: true }
+        }
     }
 }
 
@@ -1346,7 +1395,8 @@ pub fn assemble(def: &WeaponDef, equipped: &[u8; SLOT_COUNT]) -> BlockModel {
         }
         MagShape::Cylinder => {
             // The open frame window holds the cylinder; the rounds at its back face come out with a reload.
-            let d = (h * 0.95).max(bore * 2.6);
+            // Sized by the frame's own bore: a heavy barrel must not swell it up into the sight line.
+            let d = (h * 0.95).max(f.bore * 2.6);
             let (zc, len) = (mid - r * 0.05, r * 0.62);
             let yc = bore_y - d * 0.12;
             m = m.cylinder(Paint::Steel, [0.0, yc, zc], [d, len, d]).rotated([90.0, 0.0, 0.0]);

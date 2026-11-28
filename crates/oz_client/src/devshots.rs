@@ -7,6 +7,9 @@
 //!   replayed moment is saved as `dir/replay_<t>.png` with `t` on the same clock, and both
 //!   are logged to `dir/views.csv` so the camera numbers can be compared too. Quits after
 //!   the first kill cam.
+//! * `OPNIX_ADS=weapon[:o,m,b,u,g,s,a]` holds the local player down the sights of that catalog
+//!   weapon, fitted with those parts (slot variants), looking level (`OPNIX_ADS_PITCH` radians),
+//!   to photograph the sight picture with `OPNIX_SHOTS`.
 
 use crate::{
     avatar::{OwnRobot, PlayerRobot},
@@ -35,6 +38,9 @@ impl Plugin for DevShotsPlugin {
         }
         if std::env::var("OPNIX_POSE_CAM").is_ok() {
             app.add_systems(Update, pose_cam.after(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
+        }
+        if std::env::var("OPNIX_ADS").is_ok() {
+            app.add_systems(Update, hold_sights.in_set(crate::ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)));
         }
         if std::env::var("OPNIX_KILLCAM_TEST").is_ok() {
             app.add_systems(Update, killcam_test.after(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
@@ -336,4 +342,24 @@ fn pose_cam(
         info!("pose cam at {at} looking at {chest}");
         commands.spawn(Screenshot::image(handle)).observe(save_ppm(format!("{dir}/pose_{now:07.2}.png")));
     }
+}
+
+/// `OPNIX_ADS=weapon[:parts]`: aim down the sights of the given gun, kitted as asked.
+fn hold_sights(mut controls: ResMut<crate::input::Controls>, mut players: Query<(&mut PlayerInput, &mut Arsenal), With<LocalPlayer>>) {
+    let Ok(spec) = std::env::var("OPNIX_ADS") else { return };
+    let Ok((mut input, mut arsenal)) = players.single_mut() else { return };
+    let mut halves = spec.splitn(2, ':');
+    let Some(weapon) = halves.next().and_then(|w| w.trim().parse::<usize>().ok()) else { return };
+    let parts: Vec<u8> = halves.next().unwrap_or("").split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    let Some(state) = arsenal.weapons.get_mut(weapon) else { return };
+    state.owned = true;
+    for (slot, part) in parts.iter().enumerate().take(oz_core::arsenal::SLOT_COUNT) {
+        state.equipped[slot] = *part;
+    }
+    arsenal.current = weapon as u8;
+    input.weapon = weapon as u8;
+    input.pitch = std::env::var("OPNIX_ADS_PITCH").ok().and_then(|p| p.parse().ok()).unwrap_or(0.0);
+    input.buttons |= buttons::AIM;
+    input.buttons &= !buttons::FIRE;
+    controls.aim = true;
 }

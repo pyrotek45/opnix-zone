@@ -18,7 +18,7 @@ use bevy::{
     },
     window::PrimaryWindow,
 };
-use oz_core::arsenal::{Action, GunClass, ReloadStyle, SLOT_COUNT, assemble, resolve};
+use oz_core::arsenal::{Action, GunClass, ReloadStyle, SLOT_COUNT, SightLine, assemble, resolve, sight_line};
 use oz_sim::prelude::*;
 use std::f32::consts::PI;
 
@@ -92,6 +92,8 @@ pub struct ViewState {
     last_shots: u32,
     /// (weapon, equipped parts) currently shown in the hands.
     shown: Option<(u8, [u8; SLOT_COUNT])>,
+    /// How far ahead of the eye the shown gun's rear sight sits when aimed ([`eye_relief`]).
+    relief: f32,
     /// Smoothed eye height (crouching and going prone glide).
     eye: f32,
     /// How far the eye still trails the feet after a stair step snapped them up or down
@@ -419,10 +421,8 @@ fn follow_player(
     view.fall_speed = mover.vertical;
     view.land = (view.land - dt * 5.0).max(0.0);
     view.swap = (view.swap - dt * 5.0).max(0.0);
-    view.kick = (view.kick - dt * 9.0 * view.kick.max(0.3)).max(0.0);
+    settle_kick(&mut view, dt);
     view.punch = (view.punch - dt * 5.0).max(0.0);
-    view.kick_roll *= (-dt * 10.0).exp();
-    view.kick_side *= (-dt * 12.0).exp();
     view.limb_hit = (view.limb_hit - dt).max(0.0);
     view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).clamp(0.0, 2.5);
     view.sway = (view.sway + controls.look * 0.6).clamp_length_max(0.06) * (-dt * 12.0).exp();
@@ -432,7 +432,6 @@ fn follow_player(
     if let Ok(mut light) = lights.single_mut() {
         light.intensity = if view.flash > 0.0 { 90_000.0 } else { 0.0 };
     }
-    view.recoil = (view.recoil - dt * 6.0 * view.recoil.max(0.4)).max(0.0);
     view.flash = (view.flash - dt).max(0.0);
     view.hurt = (view.hurt - dt * 1.6).max(0.0);
     view.blind = (view.blind - dt).max(0.0);
@@ -564,6 +563,131 @@ pub fn held_weapon(input: &PlayerInput, arsenal: &Arsenal) -> u8 {
     if arsenal.owns(input.weapon as usize) { input.weapon } else { arsenal.current }
 }
 
+/// The visual recoil dying away after shots.
+fn settle_kick(view: &mut ViewState, dt: f32) {
+    view.kick = (view.kick - dt * 9.0 * view.kick.max(0.3)).max(0.0);
+    view.kick_roll *= (-dt * 10.0).exp();
+    view.kick_side *= (-dt * 12.0).exp();
+    view.recoil = (view.recoil - dt * 6.0 * view.recoil.max(0.4)).max(0.0);
+}
+
+/// How far ahead of the eye a wall makes a gun of this length tuck its muzzle up.
+fn tuck_reach(length: f32) -> f32 {
+    0.95 + length * 0.3
+}
+
+/// How far the gun tucks with a wall `room` metres ahead (`None`: nothing within reach).
+/// Open space never tucks, however long the gun: a long barrel used to read "no hit" as
+/// a wall at the end of a fixed-length probe and aim its sights off the screen centre.
+fn wanted_tuck(length: f32, room: Option<f32>) -> f32 {
+    let reach = tuck_reach(length);
+    ((reach - room.unwrap_or(reach).min(reach)) / 0.6).clamp(0.0, 1.0)
+}
+
+/// The rotation, in camera space, that turns the camera's forward axis onto the direction
+/// the shots actually go.
+fn shot_in_view(camera: Quat, aim_dir: Vec3) -> Quat {
+    let dir = (camera.inverse() * aim_dir).normalize_or(Vec3::NEG_Z);
+    Quat::from_rotation_arc(Vec3::NEG_Z, dir)
+}
+
+/// Nearest the eye any part of a gun may come down the sights while still in view: just
+/// past the camera's 0.1 m near plane, so nothing is sliced open across the screen.
+const NEAR_CLEAR: f32 = 0.125;
+/// How close the sights come to the eye when the gun allows it: the rear notch (or the back
+/// of an optic) this far ahead, big and close like a real sight picture.
+const EYE_RELIEF: [f32; 2] = [0.24, 0.28];
+
+/// How far ahead of the eye a gun's rear sight (or optic) sits when aimed: as close as
+/// [`EYE_RELIEF`] wants unless some part of it (a stock's comb, a carry handle, a charging
+/// handle) would then come nearer the eye than [`NEAR_CLEAR`] inside the view; then just
+/// far enough out that it does not. A stock passes below and behind the eye; on screen it
+/// must not be cut off by the near plane.
+pub fn eye_relief(model: &BlockModel, sight: &SightLine) -> f32 {
+    let rotation = Quat::from_rotation_arc(sight.dir(), Vec3::NEG_Z);
+    let points: Vec<Vec3> = model
+        .parts
+        .iter()
+        .flat_map(oz_core::model::part_points)
+        .chain(model.hulls.iter().flat_map(|h| h.points.iter().copied()))
+        .map(|p| rotation * (p - sight.rear) * GUN_SCALE)
+        .collect();
+    // The widest view the gun can be seen in: the hip field of view on an ultrawide screen.
+    let (up, side) = ((BASE_FOV * 0.5).to_radians().tan() * 1.25, (BASE_FOV * 0.5).to_radians().tan() * 2.6);
+    let clear = |relief: f32| {
+        points.iter().all(|p| {
+            let depth = relief - p.z;
+            let at = depth.max(0.1);
+            depth >= NEAR_CLEAR || p.y.abs() > at * up || p.x.abs() > at * side
+        })
+    };
+    let mut relief = EYE_RELIEF[sight.optic as usize];
+    while !clear(relief) && relief < 0.8 {
+        relief += 0.005;
+    }
+    relief
+}
+
+/// Where the gun sits fully aimed, in camera space: its sight line (the rear notch and the
+/// front post, or the optic's axis) along the camera's forward axis, so the post's tip, the
+/// dot or the lens centre is on the screen centre and the barrel runs straight away from
+/// the eye, with the rear sight `relief` metres ahead of it (see [`eye_relief`]).
+pub fn ads_pose(sight: &SightLine, relief: f32) -> Transform {
+    let rotation = Quat::from_rotation_arc(sight.dir(), Vec3::NEG_Z);
+    let rear = rotation * sight.rear * GUN_SCALE;
+    Transform { translation: Vec3::new(0.0, 0.0, -relief) - rear, rotation, scale: Vec3::splat(GUN_SCALE) }
+}
+
+/// What moves the gun in the hands this frame apart from the [`ViewState`]: the clock,
+/// walking, inspecting, sprinting, reload and action choreography, the off hand and melee.
+#[derive(Clone, Copy, Default)]
+struct Hold {
+    t: f32,
+    walking: f32,
+    show: f32,
+    flip: f32,
+    sprint: f32,
+    dip: f32,
+    tilt: f32,
+    roll: f32,
+    busy: f32,
+    melee: f32,
+}
+
+/// The gun's pose in camera space: from the hip to [`ads_pose`] by `view.ads`, with
+/// everything that moves it on top. `aim` turns the camera's axis onto the shots (see
+/// [`shot_in_view`]); down the sights the gun follows it, so the sight picture is where
+/// the bullets land.
+fn gun_pose(view: &ViewState, sight: &SightLine, hold: &Hold, aim: Quat) -> Transform {
+    let Hold { t, walking, show, flip, sprint, dip, tilt, roll, busy, melee } = *hold;
+    let ads = ads_pose(sight, if view.relief > 0.0 { view.relief } else { EYE_RELIEF[sight.optic as usize] });
+    // Idle life (breathing, a slow wobble) fades out down the sights: moving the gun
+    // without turning it would pull the post off the notch. The hold drift on the camera
+    // keeps the sight picture alive instead. Mouse lag is mostly gone there too.
+    let idle = 1.0 - view.ads;
+    let sway = view.sway * (1.0 - 0.8 * view.ads);
+    // Breathing: the gun drifts in a slow figure eight.
+    let breath = Vec3::new((t * 0.9).sin() * 0.006, (t * 1.8).sin() * 0.004, 0.0) * idle;
+    let translation = GUN_POS.lerp(ads.translation, view.ads)
+        + breath
+        + Vec3::new(
+            view.bob.sin() * 0.018 * walking + sway.x * 0.5 - 0.06 * show + 0.04 * sprint,
+            (view.bob * 2.0).sin() * 0.016 * walking - dip - view.swap * 0.22 - view.land * 0.05 - sway.y * 0.5 + (t * 1.3).sin() * 0.003 * idle + 0.05 * show - 0.06 * sprint,
+            view.recoil * 0.085 + 0.04 * sprint,
+        )
+        + Vec3::X * view.kick_side
+        + Vec3::new(0.12, -0.32, 0.05) * busy
+        + Vec3::new(0.04, -0.1, 0.3) * view.tuck
+        + Vec3::new(0.14, -0.5, 0.12) * view.climb
+        + Vec3::new(-0.08, 0.04, -0.2) * melee;
+    let rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint + view.kick_side * 2.0 + 0.6 * melee)
+        * Quat::from_rotation_x(view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip - 0.5 * busy + 0.35 * melee + 0.9 * view.tuck - 0.7 * view.climb)
+        * Quat::from_rotation_z(roll + sway.x * 1.6 + 1.2 * flip + 0.25 * sprint + view.kick_roll + (t * 0.7).sin() * 0.012 * idle)
+        * Quat::IDENTITY.slerp(ads.rotation, view.ads);
+    let follow = Quat::IDENTITY.slerp(aim, view.ads);
+    Transform { translation: follow * translation, rotation: follow * rotation, scale: Vec3::splat(GUN_SCALE) }
+}
+
 fn ease(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -622,6 +746,7 @@ fn viewmodel(
                 model = model.cube(kind.paint(), [-0.07, 0.02 + 0.045 * slot as f32, -0.16], [0.025, 0.03, 0.1]);
             }
         }
+        view.relief = eye_relief(&model, &sight_line(def, &state.equipped));
         let shell = BlockModel::new()
             .cylinder(Paint::Red, [0.0, 0.0, 0.0], [0.035, 0.09, 0.035])
             .rotated([90.0, 0.0, 0.0])
@@ -790,29 +915,16 @@ fn viewmodel(
     }
 
     // Up against a wall the gun pulls back and points its muzzle up instead of sinking into it.
-    let room = eyes.single().ok().and_then(|eye| statics.raycast(eye.translation, eye.forward().as_vec3(), 1.2).map(|(d, _)| d)).unwrap_or(1.2);
-    let wanted_tuck = ((0.95 + stats.length * 0.3 - room) / 0.6).clamp(0.0, 1.0);
+    let reach = tuck_reach(stats.length);
+    let room = eyes.single().ok().and_then(|eye| statics.raycast(eye.translation, eye.forward().as_vec3(), reach).map(|(d, _)| d));
     let tuck_rate = 1.0 - (-time.delta_secs() * 12.0).exp();
-    view.tuck += (wanted_tuck - view.tuck) * tuck_rate;
-    let ads_pos = Vec3::new(0.0, -stats.sight * GUN_SCALE, -0.40);
-    let sprint = view.sprint * (1.0 - view.ads);
-    // Breathing: the gun drifts in a slow figure eight, much less down the sights.
-    let breath = Vec3::new((t * 0.9).sin() * 0.006, (t * 1.8).sin() * 0.004, 0.0) * (1.0 - view.ads * 0.7);
-    transform.translation = GUN_POS.lerp(ads_pos, view.ads)
-        + breath
-        + Vec3::new(
-            view.bob.sin() * 0.018 * walking + view.sway.x * 0.5 - 0.06 * show + 0.04 * sprint,
-            (view.bob * 2.0).sin() * 0.016 * walking - dip - view.swap * 0.22 - view.land * 0.05 - view.sway.y * 0.5 + (t * 1.3).sin() * 0.003 + 0.05 * show - 0.06 * sprint,
-            view.recoil * 0.085 + 0.04 * sprint,
-        )
-        + Vec3::X * view.kick_side
-        + Vec3::new(0.12, -0.32, 0.05) * busy
-        + Vec3::new(0.04, -0.1, 0.3) * view.tuck
-        + Vec3::new(0.14, -0.5, 0.12) * view.climb
-        + Vec3::new(-0.08, 0.04, -0.2) * melee;
-    transform.rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint + view.kick_side * 2.0 + 0.6 * melee)
-        * Quat::from_rotation_x(view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip - 0.5 * busy + 0.35 * melee + 0.9 * view.tuck - 0.7 * view.climb)
-        * Quat::from_rotation_z(roll + view.sway.x * 1.6 + 1.2 * flip + 0.25 * sprint + view.kick_roll + (t * 0.7).sin() * 0.012 * (1.0 - view.ads * 0.6));
+    view.tuck += (wanted_tuck(stats.length, room) - view.tuck) * tuck_rate;
+    // Down the sights the gun points where the shots go (the aim, not the camera, which
+    // the visual kick, shake and hold drift move about); with those settled that is dead centre.
+    let aim = eyes.single().ok().map_or(Quat::IDENTITY, |eye| shot_in_view(eye.rotation, input.aim_dir()));
+    let hold = Hold { t, walking, show, flip, sprint: view.sprint * (1.0 - view.ads), dip, tilt, roll, busy, melee };
+    let pose = gun_pose(&view, &sight_line(def, &state.equipped), &hold, aim);
+    (transform.translation, transform.rotation) = (pose.translation, pose.rotation);
     // Tracers leave from here, sights up or not.
     view.muzzle = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.05) * GUN_SCALE);
 
@@ -838,5 +950,179 @@ fn viewmodel(
         let size = 0.8 + view.flash * 18.0 * (1.0 + 0.3 * (view.shot_count as f32 * 1.7).sin());
         flash_transform.scale = Vec3::new(0.07, 0.07, 0.2) * size;
         flash_transform.rotation = transform.rotation * Quat::from_rotation_z(view.shot_count as f32 * 2.399);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::render::camera::CameraProjection;
+    use oz_core::arsenal::{WeaponDef, WeaponState, options, slot, standard_attachments};
+
+    const SCREEN: Vec2 = Vec2::new(1280.0, 720.0);
+
+    /// Pixels from the screen centre at which a camera-space point is drawn.
+    fn on_screen(point: Vec3, fov: f32) -> Vec2 {
+        let projection = PerspectiveProjection { fov: fov.to_radians(), aspect_ratio: SCREEN.x / SCREEN.y, near: 0.1, far: 600.0 };
+        let clip = projection.get_clip_from_view() * point.extend(1.0);
+        assert!(clip.w > 0.1, "{point} is behind the near plane");
+        clip.truncate().truncate() / clip.w * SCREEN * 0.5
+    }
+
+    /// Every gun with every sight, and each barrel and muzzle device that moves the front post,
+    /// plus every stock, grip and magazine (each alongside every sight).
+    fn builds() -> Vec<(WeaponDef, [u8; SLOT_COUNT])> {
+        let table = standard_attachments();
+        let mut out = Vec::new();
+        for gun in oz_core::kit::standard_guns() {
+            let fits = |s: usize| options(&gun, &table, s).into_iter().map(|o| o.0 as u8).collect::<Vec<_>>();
+            for optic in fits(slot::OPTIC) {
+                for barrel in fits(slot::BARREL) {
+                    for muzzle in fits(slot::MUZZLE) {
+                        let mut parts = gun.defaults;
+                        (parts[slot::OPTIC], parts[slot::BARREL], parts[slot::MUZZLE]) = (optic, barrel, muzzle);
+                        out.push((gun.clone(), parts));
+                    }
+                }
+                for other in [slot::UNDER, slot::MAGAZINE, slot::STOCK] {
+                    for variant in fits(other) {
+                        let mut parts = gun.defaults;
+                        (parts[slot::OPTIC], parts[other]) = (optic, variant);
+                        out.push((gun.clone(), parts));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn ads_fov(def: &WeaponDef, parts: [u8; SLOT_COUNT]) -> f32 {
+        resolve(def, &WeaponState { equipped: parts, ..WeaponState::fresh(def) }, &standard_attachments()).ads_fov
+    }
+
+    /// Where the sights point on screen (the front post's tip, the dot or the lens centre, and
+    /// the rear notch), and how far (radians) the sight line is from parallel to the view.
+    fn sight_picture(pose: &Transform, line: &SightLine, fov: f32) -> (Vec2, Vec2, f32) {
+        let (aim, rear) = (pose.transform_point(line.aim), pose.transform_point(line.rear));
+        (on_screen(aim, fov), on_screen(rear, fov), (aim - rear).angle_between(Vec3::NEG_Z))
+    }
+
+    /// Aimed down the sights of this build, everything else still.
+    fn aimed(def: &WeaponDef, parts: &[u8; SLOT_COUNT]) -> ViewState {
+        ViewState { ads: 1.0, relief: eye_relief(&assemble(def, parts), &sight_line(def, parts)), ..default() }
+    }
+
+    #[test]
+    fn every_sight_on_every_gun_is_on_the_screen_centre_when_aimed() {
+        let mut worst = (0.0f32, String::new());
+        let all = builds();
+        assert!(all.len() > 3000, "{}", all.len());
+        for (def, parts) in &all {
+            let view = aimed(def, parts);
+            let line = sight_line(def, parts);
+            let fov = ads_fov(def, *parts);
+            // At any moment: the idle breathing and wobble must not pull the sights off.
+            for t in [0.0, 0.77, 1.9, 3.3, 5.1] {
+                let pose = gun_pose(&view, &line, &Hold { t, ..default() }, Quat::IDENTITY);
+                let (aim, rear, angle) = sight_picture(&pose, &line, fov);
+                let what = format!("{} {:?} at t {t}", def.name, parts);
+                assert!(aim.length() < 1.0, "{what}: the sights point {aim} px off the centre");
+                assert!(rear.length() < 1.0, "{what}: the rear sight is {rear} px off the centre");
+                assert!(angle < 2e-4, "{what}: sight line {angle} rad off the view direction");
+                if aim.length() > worst.0 {
+                    worst = (aim.length(), what);
+                }
+            }
+            // Open space ahead never tucks the gun, however long the barrel.
+            assert_eq!(wanted_tuck(resolve(def, &WeaponState { equipped: *parts, ..WeaponState::fresh(def) }, &standard_attachments()).length, None), 0.0, "{}", def.name);
+        }
+        assert!(worst.0 < 0.05, "worst {worst:?}");
+    }
+
+    /// Down the sights the gun reads as looking down it: the rear sight close to the eye,
+    /// the barrel running straight away along the view (not canted or rolled), and no part of
+    /// the gun sliced open by the camera's near plane.
+    #[test]
+    fn aiming_looks_straight_down_the_gun() {
+        let mut reliefs: Vec<(f32, String)> = Vec::new();
+        for (def, parts) in builds() {
+            let view = aimed(&def, &parts);
+            let line = sight_line(&def, &parts);
+            let pose = gun_pose(&view, &line, &Hold::default(), Quat::IDENTITY);
+            let what = format!("{} {:?}", def.name, parts);
+            assert!((pose.rotation * Vec3::NEG_Z).angle_between(Vec3::NEG_Z) < 2e-4, "{what}: the barrel is not along the view");
+            assert!((pose.rotation * Vec3::Y).angle_between(Vec3::Y) < 2e-4, "{what}: the gun is canted");
+            let rear = pose.transform_point(line.rear);
+            // As close as the gun's own stock allows, and never further out than the old fixed
+            // spot (the grip 0.4 m ahead) left it.
+            let old = 0.40 - line.rear.z * GUN_SCALE;
+            assert!(-rear.z >= EYE_RELIEF[line.optic as usize] - 1e-4 && -rear.z <= old.max(EYE_RELIEF[line.optic as usize]) + 0.1, "{what}: rear sight {} m from the eye (was {old})", -rear.z);
+            // No corner of the gun nearer than the near plane anywhere it could be seen.
+            let model = assemble(&def, &parts);
+            let tan = (BASE_FOV * 0.5).to_radians().tan();
+            for p in model.parts.iter().flat_map(oz_core::model::part_points).chain(model.hulls.iter().flat_map(|h| h.points.clone())) {
+                let q = pose.transform_point(p);
+                let at = (-q.z).max(0.1);
+                assert!(-q.z >= 0.1 || q.y.abs() > at * tan * 1.25 || q.x.abs() > at * tan * 2.6, "{what}: {q} is cut by the near plane");
+            }
+            reliefs.push((-rear.z, format!("{what} (was {old:.3})")));
+        }
+        reliefs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if std::env::var("OZ_PRINT_RELIEF").is_ok() {
+            for (relief, what) in reliefs.iter().filter(|r| r.1.contains("[0, 0, 0") || r.1.contains("[4, 0, 0")) {
+                println!("relief {relief:.3} {what}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wall_close_ahead_still_tucks_the_gun() {
+        assert_eq!(wanted_tuck(0.9, Some(5.0)), 0.0);
+        assert!(wanted_tuck(0.9, Some(0.5)) > 0.9);
+        assert!(wanted_tuck(1.8, Some(1.2)) > 0.4, "a long gun tucks earlier");
+    }
+
+    /// Fire a burst down the sights and let it settle: the sights always point where the
+    /// shots go (the camera's visual kick, shake and hold drift do not move them off the
+    /// impact point), and once the gun's own kick has died away they are back on the centre.
+    #[test]
+    fn recoil_settles_back_onto_the_centre_and_the_sights_follow_the_shots() {
+        let all = builds();
+        let picks = [0usize, all.len() / 5, all.len() / 3, all.len() / 2, all.len() * 3 / 4, all.len() - 1];
+        for &i in &picks {
+            let (def, parts) = &all[i];
+            let line = sight_line(def, parts);
+            let fov = ads_fov(def, *parts);
+            let mut view = ViewState { recoil: 2.5, kick: 2.5, kick_side: 0.04, kick_roll: -0.25, shake: 0.8, ..aimed(def, parts) };
+            // Where the player aims, and so where the shots go.
+            let look = Quat::from_euler(EulerRot::YXZ, 0.7, -0.1, 0.0);
+            let dt = 1.0 / 60.0;
+            for frame in 0..150 {
+                let t = frame as f32 * dt;
+                settle_kick(&mut view, dt);
+                view.shake = (view.shake - dt * 5.0 * view.shake.max(0.25)).clamp(0.0, 2.5);
+                // The camera as `follow_player` turns it: kicked up, shaken, drifting.
+                let drift = Vec2::new((t * 0.8).sin(), (t * 1.3).cos() * 0.7) * 0.0035;
+                let shake = Vec2::new((t * 61.0).sin(), (t * 53.0).cos()) * view.shake * 0.012;
+                let camera = Quat::from_euler(EulerRot::YXZ, 0.7 + shake.x + drift.x, -0.1 + view.recoil * 0.012 + shake.y + drift.y, 0.0);
+                let shots = camera.inverse() * (look * Vec3::NEG_Z);
+                let aim = shot_in_view(camera, look * Vec3::NEG_Z);
+                // With the gun's own kick taken out, the sights sit exactly on the shots' line.
+                let still = ViewState { recoil: 0.0, kick_side: 0.0, kick_roll: 0.0, ..view };
+                let pose = gun_pose(&still, &line, &Hold { t, ..default() }, aim);
+                let (picture, _, _) = sight_picture(&pose, &line, fov);
+                let impact = on_screen(shots * 100.0, fov);
+                assert!(picture.distance(impact) < 1.0, "{} frame {frame}: sights at {picture}, shots land at {impact}", def.name);
+                if frame == 149 {
+                    // Settled: the gun's kick is gone, so the sights are on the shots even with the
+                    // camera still drifting; and with the camera on the aim, on the centre.
+                    assert!(view.recoil == 0.0 && view.kick_side.abs() < 1e-4 && view.kick_roll.abs() < 1e-4);
+                    let (settled, _, _) = sight_picture(&gun_pose(&view, &line, &Hold { t, ..default() }, aim), &line, fov);
+                    assert!(settled.distance(impact) < 1.0, "{}: settled at {settled} with the shots at {impact}", def.name);
+                    let (centred, _, _) = sight_picture(&gun_pose(&view, &line, &Hold { t, ..default() }, shot_in_view(look, look * Vec3::NEG_Z)), &line, fov);
+                    assert!(centred.length() < 1.0, "{}: settled at {centred}", def.name);
+                }
+            }
+        }
     }
 }
