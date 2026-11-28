@@ -51,6 +51,37 @@ impl GunClass {
             GunClass::Sniper => "SNIPER", GunClass::Lmg => "LMG", GunClass::Launcher => "LAUNCHER", GunClass::Tool => "TOOL",
         }
     }
+
+    /// How hard this kind of gun kicks, on top of the gun's own recoil figure: pistols and
+    /// SMGs are light (SMGs lightest per round, they fire so many), rifles moderate, LMGs,
+    /// shotguns and sniper rifles strong.
+    pub fn kick(self) -> f32 {
+        match self {
+            GunClass::Pistol => 0.75,
+            GunClass::Smg => 0.85,
+            GunClass::Rifle => 1.25,
+            GunClass::Lmg => 1.8,
+            GunClass::Shotgun => 1.6,
+            GunClass::Sniper => 1.7,
+            GunClass::Launcher => 1.3,
+            GunClass::Tool => 0.0,
+        }
+    }
+}
+
+/// Aim climb per unit of [`shot_kick`], in radians. The camera's visible kick is drawn from
+/// the same units, so what you see the gun do is what it does to your aim.
+pub const RECOIL_RADIANS: f32 = 0.0062;
+/// Aiming down the sights braces the gun against the shoulder.
+pub const ADS_RECOIL: f32 = 0.78;
+/// The hardest single kick any gun can give (in units), so even the heaviest stays usable.
+pub const MAX_KICK: f32 = 4.5;
+
+/// One shot's kick, in recoil units: the gun's recoil after attachments (grips, stocks,
+/// compensators...), times its class, times `brace` (the stance: crouched and prone kick
+/// less), times [`ADS_RECOIL`] when aiming. Multiply by [`RECOIL_RADIANS`] for the aim climb.
+pub fn shot_kick(class: GunClass, recoil: f32, brace: f32, aiming: bool) -> f32 {
+    (recoil * class.kick() * brace * if aiming { ADS_RECOIL } else { 1.0 }).clamp(0.0, MAX_KICK)
 }
 
 /// Every class that takes attachments.
@@ -1488,6 +1519,59 @@ mod tests {
             frame: Some(GunFrame { mag: MagShape::Curved, ..GunFrame::RIFLE }),
             defaults: [0; SLOT_COUNT], model: BlockModel::new(), length: 0.6, weight: 3.5,
         }
+    }
+
+    #[test]
+    fn recoil_scales_with_class_parts_stance_and_aim() {
+        use crate::kit::standard_guns;
+        let guns = standard_guns();
+        let table = standard_attachments();
+        // Average aim climb per shot (radians) for each class, standing, from the hip.
+        let average = |class: GunClass| {
+            let kicks: Vec<f32> = guns.iter().filter(|g| g.class == class && g.frame.is_some()).map(|g| shot_kick(g.class, g.recoil, 1.0, false) * RECOIL_RADIANS).collect();
+            assert!(!kicks.is_empty(), "no {class:?}");
+            kicks.iter().sum::<f32>() / kicks.len() as f32
+        };
+        let (smg, pistol, rifles, lmg, shotgun, sniper) =
+            (average(GunClass::Smg), average(GunClass::Pistol), average(GunClass::Rifle), average(GunClass::Lmg), average(GunClass::Shotgun), average(GunClass::Sniper));
+        // Light SMGs, then pistols, rifles; LMGs heavier; shotguns and snipers kick hardest.
+        assert!(smg < pistol && pistol < rifles && rifles < lmg && lmg < shotgun && shotgun < sniper, "{smg} {pistol} {rifles} {lmg} {shotgun} {sniper}");
+        // A clear difference: a sniper round kicks several times an SMG round.
+        assert!(sniper > smg * 6.0, "{sniper} vs {smg}");
+        // Noticeable but sane per shot: between a twentieth of a degree and two degrees.
+        for g in guns.iter().filter(|g| g.frame.is_some()) {
+            let k = shot_kick(g.class, g.recoil, 1.0, false) * RECOIL_RADIANS;
+            assert!(k > 0.05f32.to_radians() && k < 2.0f32.to_radians(), "{}: {k}", g.name);
+        }
+        // Controllable: no automatic climbs more than ten degrees a second held from the hip
+        // (the pattern adds up to 35% late in a burst), and aimed and crouched it is far less.
+        for g in guns.iter().filter(|g| g.frame.is_some() && g.action == Action::Auto) {
+            let per_second = shot_kick(g.class, g.recoil, 1.0, false) * RECOIL_RADIANS * 1.35 / g.interval;
+            assert!(per_second < 10f32.to_radians(), "{} climbs {} deg/s", g.name, per_second.to_degrees());
+            let braced = shot_kick(g.class, g.recoil, 0.72, true) * RECOIL_RADIANS * 1.35 / g.interval;
+            assert!(braced < per_second * 0.6);
+        }
+        // Parts: a vertical grip and a compensator each tame it; no stock makes it worse.
+        let def = rifle();
+        let mut state = WeaponState::fresh(&def);
+        let base = shot_kick(def.class, resolve(&def, &state, &table).recoil, 1.0, false);
+        let find = |slot_index: usize, name: &str| table[slot_index].iter().position(|p| p.name == name).unwrap_or_else(|| panic!("{name}")) as u8;
+        state.equipped[slot::UNDER] = find(slot::UNDER, "VERTICAL GRIP");
+        let gripped = shot_kick(def.class, resolve(&def, &state, &table).recoil, 1.0, false);
+        state.equipped[slot::MUZZLE] = find(slot::MUZZLE, "COMPENSATOR");
+        let both = shot_kick(def.class, resolve(&def, &state, &table).recoil, 1.0, false);
+        assert!(gripped < base * 0.8 && both < gripped * 0.8, "{base} {gripped} {both}");
+        let mut bare = WeaponState::fresh(&def);
+        bare.equipped[slot::STOCK] = find(slot::STOCK, "NO STOCK");
+        assert!(shot_kick(def.class, resolve(&def, &bare, &table).recoil, 1.0, false) > base);
+        // Stance and aiming: crouched < standing, prone < crouched, aimed < hip.
+        assert!(shot_kick(def.class, 1.0, 0.72, false) < base && shot_kick(def.class, 1.0, 0.45, false) < shot_kick(def.class, 1.0, 0.72, false));
+        assert!(shot_kick(def.class, 1.0, 1.0, true) < base);
+        // The class sets the scale for the same recoil figure.
+        assert!(shot_kick(GunClass::Smg, 1.0, 1.0, false) < shot_kick(GunClass::Rifle, 1.0, 1.0, false));
+        assert!(shot_kick(GunClass::Sniper, 1.0, 1.0, false) > shot_kick(GunClass::Rifle, 1.0, 1.0, false));
+        // Capped, so the heaviest gun is still usable.
+        assert_eq!(shot_kick(GunClass::Sniper, 9.0, 1.0, false), MAX_KICK);
     }
 
     #[test]

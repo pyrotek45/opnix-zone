@@ -114,6 +114,7 @@ fn medals(
     local: Query<&Player, With<LocalPlayer>>,
     mut announce: EventWriter<Announce>,
     bodies: Query<(&Player, &Transform)>,
+    content: Res<oz_sim::session::Content>,
 ) {
     let Ok(me) = local.single() else {
         events.clear();
@@ -187,8 +188,8 @@ fn medals(
                 sounds.write(PlaySfx::new(Sfx::Alarm, None));
             }
             FxEvent::Streak { player, reward } if *player == me.id => {
-                let def = killstreak::def(*reward);
-                let kills = def.map_or(0, |d| d.kills);
+                let hardline = matches!(oz_sim::player::perk(&content, me), Some(oz_core::content::PerkEffect::Hardline));
+                let kills = killstreak::def(*reward).map_or(me.streak, |d| killstreak::kills_needed(d, hardline));
                 banners.push(format!("{kills} KILL STREAK"), format!("{} READY", killstreak::name(*reward)), Color::srgb(1.0, 0.8, 0.35));
                 sounds.write(PlaySfx::new(Sfx::Streak, None));
             }
@@ -203,6 +204,10 @@ fn medals(
                         killstreak::reward::AIRSTRIKE => "Airstrike inbound.",
                         killstreak::reward::ARTILLERY => "Artillery on the way.",
                         killstreak::reward::SUPPLY => "Supply drop. Rearm.",
+                        killstreak::reward::DRONE_STRIKE => "Drone strike inbound.",
+                        killstreak::reward::SENTRY => "Sentry gun up.",
+                        killstreak::reward::EMP => "E M P. Their radar is down.",
+                        killstreak::reward::ADVANCED_UAV => "Advanced U A V online.",
                         _ => "Attack drone deployed.",
                     };
                     announce.write(Announce(line.into()));
@@ -213,6 +218,10 @@ fn medals(
                         killstreak::reward::AIRSTRIKE => ("ENEMY BOMBER INBOUND", "SHOOT IT DOWN OR GET UNDER COVER", "Enemy bomber inbound."),
                         killstreak::reward::ARTILLERY => ("INCOMING ARTILLERY", "GET INDOORS", "Incoming artillery. Get indoors."),
                         killstreak::reward::SUPPLY => ("ENEMY SUPPLY DROP", "THEY JUST REARMED", "Enemy supply drop."),
+                        killstreak::reward::DRONE_STRIKE => ("ENEMY DRONE STRIKE", "KEEP MOVING - GET UNDER A ROOF", "Enemy drone strike. Keep moving."),
+                        killstreak::reward::SENTRY => ("ENEMY SENTRY GUN", "FLANK IT OR SHOOT IT DOWN", "Enemy sentry gun deployed."),
+                        killstreak::reward::EMP => ("EMP - SYSTEMS DOWN", "NO RADAR OR MAP FOR 20 SECONDS", "E M P. Our radar is down."),
+                        killstreak::reward::ADVANCED_UAV => ("ENEMY ADVANCED UAV", "THEY SEE EVERYONE - TOO HIGH TO SHOOT EASILY", "Enemy advanced U A V overhead."),
                         _ => ("ENEMY ATTACK DRONE", "SHOOT IT DOWN", "Enemy attack drone. Shoot it down."),
                     };
                     // The banner (and the announcer, if installed) is warning enough: no alarm tone,

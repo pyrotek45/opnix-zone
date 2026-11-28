@@ -251,7 +251,7 @@ fn use_doors(
         .map(|(i, d)| (i, d.center + Vec3::Y * 1.1 - eye.translation))
         .filter(|(_, to)| to.length() < DOOR_REACH && to.normalize_or_zero().dot(forward) > 0.55)
         .min_by(|a, b| a.1.length().total_cmp(&b.1.length()))
-        .map(|(i, _)| (i, state.doors.get(i) == Some(&door::OPEN)));
+        .map(|(i, _)| (i, state.doors.get(i).is_some_and(|s| door::is_open(*s))));
     prompt.0 = best;
     if let Some((index, _)) = best
         && controls.interact

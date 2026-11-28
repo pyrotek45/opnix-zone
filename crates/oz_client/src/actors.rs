@@ -122,6 +122,19 @@ fn air_model(look: ShotLook, team: u8) -> BlockModel {
             .cube(Paint::Dark, [0.0, 0.0, 0.85], [0.8, 0.06, 0.4])
             .cube(Paint::Dark, [0.0, 0.0, 0.85], [0.06, 0.8, 0.4])
             .cube(Paint::Gold, [0.0, 0.0, -0.3], [0.44, 0.44, 0.08]),
+        // A sentry gun: a tripod, an ammo box, a turret head with a long barrel and a team light.
+        ShotLook::Sentry => BlockModel::new()
+            .segment(Paint::Dark, [0.0, -0.3, 0.0], [0.0, -0.9, -0.55], 0.05)
+            .segment(Paint::Dark, [0.0, -0.3, 0.0], [0.48, -0.9, 0.28], 0.05)
+            .segment(Paint::Dark, [0.0, -0.3, 0.0], [-0.48, -0.9, 0.28], 0.05)
+            .cylinder(Paint::Steel, [0.0, -0.22, 0.0], [0.22, 0.16, 0.22])
+            .cube(paint, [0.0, 0.0, 0.05], [0.5, 0.36, 0.62])
+            .cube(Paint::Iron, [0.32, -0.04, 0.1], [0.16, 0.24, 0.34])
+            .cylinder(Paint::Dark, [0.0, 0.04, -0.62], [0.09, 0.7, 0.09])
+            .rotated([90.0, 0.0, 0.0])
+            .cube(Paint::Dark, [0.0, 0.04, -0.95], [0.14, 0.14, 0.12])
+            .cube(light, [0.0, 0.2, 0.26], [0.18, 0.06, 0.08])
+            .shard(Paint::Red, [0.0, 0.12, -0.34], [0.1, 0.08, 0.06]),
         // An artillery shell with a glowing tail.
         _ => BlockModel::new()
             .cylinder(Paint::Gold, [0.0, 0.0, 0.0], [0.24, 0.9, 0.24])
