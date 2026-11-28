@@ -1,5 +1,6 @@
 //! Horde mode on screen: the husks' shambling rigs, the map's furniture (chalk wall buys,
-//! perk machines, the salvage crate, the reforge, the power switch, doors and boards), power-ups,
+//! perk machines, the salvage crate, the reforge, the generator, arc grates, relay beacons,
+//! doors and boards), power-ups,
 //! and the HUD - the round in the corner, everyone's points with +10 popups, perk badges,
 //! what Use would do here, and the down / revive bars.
 //!
@@ -35,7 +36,7 @@ impl Plugin for HordeHudPlugin {
             .add_systems(OnEnter(MatchPhase::Active), (dress_map, spawn_hud).run_if(zombies::horde))
             .add_systems(Update, demo.in_set(ClientSet::Input).after(crate::input::DrivePlayer).run_if(in_state(MatchPhase::Active)).run_if(zombies::horde))
             .add_systems(Update, send_use.in_set(ClientSet::Input).after(crate::input::ReadDevices).run_if(in_state(MatchPhase::Active)).run_if(zombies::horde))
-            .add_systems(Update, (attach_husks, animate_husks, update_map, update_drops, update_hud, float_popups).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)).run_if(zombies::horde));
+            .add_systems(Update, (attach_husks, animate_husks, update_map, update_extras, update_drops, update_hud, float_popups).chain().in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)).run_if(zombies::horde));
     }
 }
 
@@ -123,6 +124,11 @@ struct ForgeGun(u8);
 struct ForgeCore;
 #[derive(Component)]
 struct DropLook(usize);
+/// An arc grate's live bars (`.1` false) or its panel lamp (`.1` true).
+#[derive(Component)]
+struct TrapLook(usize, bool);
+#[derive(Component)]
+struct RelayLamp(usize);
 
 fn machine_center(m: &oz_core::worldgen::HordeMachine) -> Vec3 {
     m.pos - Vec3::new(m.facing.x, 0.0, m.facing.y) * 0.95
@@ -196,6 +202,47 @@ fn dress_map(mut commands: Commands, map: Res<Map>, content: Res<Content>, art: 
         let lever = commands.spawn((PowerLever, Transform::from_xyz(0.0, 1.4, -0.15).with_rotation(Quat::from_rotation_x(0.9)), Visibility::Inherited, ChildOf(root))).id();
         piece(&mut commands, &art, lever, Shape::Cube, Paint::Dark, Vec3::new(0.0, 0.25, 0.0), Vec3::new(0.08, 0.5, 0.08), Quat::IDENTITY);
         piece(&mut commands, &art, lever, Shape::Cube, Paint::Red, Vec3::new(0.0, 0.52, 0.0), Vec3::new(0.2, 0.1, 0.1), Quat::IDENTITY);
+    }
+    // Arc grates: steel bars across the floor that light up while live, and a switch panel
+    // with a lamp (dark without power, green ready, amber live, red cooling).
+    for (i, trap) in layout.traps.iter().enumerate() {
+        let (x0, x1, z0, z1) = trap.floor;
+        let y = layout.ground + 0.04;
+        let root = commands.spawn((MatchEntity, Transform::from_xyz((x0 + x1) * 0.5, y, (z0 + z1) * 0.5), Visibility::Inherited)).id();
+        let (w, d) = (x1 - x0, z1 - z0);
+        let along_x = w >= d;
+        let (long, short) = if along_x { (w, d) } else { (d, w) };
+        let bars = (long / 0.5) as usize;
+        for k in 0..bars {
+            let u = -long * 0.5 + (k as f32 + 0.5) * long / bars as f32;
+            let at = if along_x { Vec3::new(u, 0.0, 0.0) } else { Vec3::new(0.0, 0.0, u) };
+            let size = if along_x { Vec3::new(0.1, 0.05, short - 0.1) } else { Vec3::new(short - 0.1, 0.05, 0.1) };
+            piece(&mut commands, &art, root, Shape::Cube, Paint::Steel, at, size, Quat::IDENTITY);
+            if k % 2 == 0 {
+                let glow = piece(&mut commands, &art, root, Shape::Cube, Paint::Aether, at + Vec3::Y * 0.03, size * Vec3::new(0.6, 1.0, 1.0).min(Vec3::ONE) + Vec3::Y * 0.01, Quat::IDENTITY);
+                commands.entity(glow).insert((TrapLook(i, false), Visibility::Hidden));
+            }
+        }
+        let panel = trap.panel;
+        let at = panel.pos - Vec3::new(panel.facing.x, 0.0, panel.facing.y) * 1.3;
+        let root = commands.spawn((MatchEntity, Transform::from_translation(at).with_rotation(facing_rotation(panel.facing)), Visibility::Inherited)).id();
+        piece(&mut commands, &art, root, Shape::Cube, Paint::Dark, Vec3::new(0.0, 1.35, 0.0), Vec3::new(0.7, 0.9, 0.22), Quat::IDENTITY);
+        piece(&mut commands, &art, root, Shape::Cube, Paint::Gold, Vec3::new(0.0, 1.35, -0.12), Vec3::new(0.62, 0.08, 0.02), Quat::IDENTITY);
+        piece(&mut commands, &art, root, Shape::Shard, Paint::Gold, Vec3::new(0.0, 1.62, -0.12), Vec3::new(0.18, 0.18, 0.03), Quat::IDENTITY);
+        let lamp = piece(&mut commands, &art, root, Shape::Cube, Paint::Dark, Vec3::new(0.0, 1.06, -0.13), Vec3::new(0.3, 0.14, 0.03), Quat::IDENTITY);
+        commands.entity(lamp).insert(TrapLook(i, true));
+        // A cable from the panel down to the floor.
+        piece(&mut commands, &art, root, Shape::Cube, Paint::Dark, Vec3::new(0.25, 0.45, 0.0), Vec3::new(0.06, 0.9, 0.06), Quat::IDENTITY);
+    }
+    // Relay beacons: a mast on the transmitter with a lamp that lights when switched on.
+    for (i, relay) in layout.relays.iter().enumerate() {
+        let root = commands.spawn((MatchEntity, Transform::from_translation(machine_center(relay)).with_rotation(facing_rotation(relay.facing)), Visibility::Inherited)).id();
+        piece(&mut commands, &art, root, Shape::Cube, Paint::Steel, Vec3::new(0.0, 0.85, -0.43), Vec3::new(0.9, 0.5, 0.03), Quat::IDENTITY);
+        piece(&mut commands, &art, root, Shape::Cube, Paint::Screen, Vec3::new(-0.2, 0.9, -0.45), Vec3::new(0.35, 0.22, 0.02), Quat::IDENTITY);
+        piece(&mut commands, &art, root, Shape::Cylinder, Paint::Iron, Vec3::new(0.25, 1.9, 0.0), Vec3::new(0.06, 1.4, 0.06), Quat::IDENTITY);
+        piece(&mut commands, &art, root, Shape::Cube, Paint::Iron, Vec3::new(0.25, 2.3, 0.0), Vec3::new(0.6, 0.04, 0.04), Quat::IDENTITY);
+        let lamp = piece(&mut commands, &art, root, Shape::Cube, Paint::Red, Vec3::new(0.25, 2.65, 0.0), Vec3::splat(0.2), Quat::from_rotation_y(0.785));
+        commands.entity(lamp).insert(RelayLamp(i));
     }
     // The crate: one, moved between its spots.
     let crate_root = commands.spawn((MatchEntity, CrateLook, Transform::default(), Visibility::Hidden)).id();
@@ -287,7 +334,7 @@ fn update_map(
         }
     }
     for mut lever in &mut lever {
-        lever.rotation = Quat::from_rotation_x(if h.power { -0.9 } else { 0.9 });
+        lever.rotation = Quat::from_rotation_x(if h.power { -0.9 } else { 0.9 - 1.2 * h.charge });
     }
     for mut core in &mut core {
         let working = h.forge_phase == forge_phase::WORKING;
@@ -324,6 +371,54 @@ fn update_map(
         set(&mut v, show);
         if show {
             transform.rotation = Quat::from_rotation_y(FRAC_PI_2 + t * 1.2);
+        }
+    }
+}
+
+/// Arc grates and relay beacons: lit by the state.
+fn update_extras(
+    time: Res<Time>,
+    state: Res<MatchState>,
+    art: Res<Art>,
+    mut traps: Query<(&TrapLook, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility)>,
+    mut relays: Query<(&RelayLamp, &mut MeshMaterial3d<StandardMaterial>), Without<TrapLook>>,
+) {
+    let h = &state.horde;
+    let t = time.elapsed_secs();
+    for (look, mut material, mut v) in &mut traps {
+        let (running, left) = h.trap(look.0);
+        let paint = if look.1 {
+            if !h.power {
+                Paint::Dark
+            } else if running {
+                Paint::Glow
+            } else if left > 0.0 {
+                Paint::Red
+            } else {
+                Paint::Green
+            }
+        } else if (t * 17.0 + look.0 as f32).sin() > 0.0 {
+            Paint::Aether
+        } else {
+            Paint::White
+        };
+        let want = art.paint(paint);
+        if material.0 != want {
+            material.0 = want;
+        }
+        if !look.1 {
+            let show = if running { Visibility::Inherited } else { Visibility::Hidden };
+            if *v != show {
+                *v = show;
+            }
+        }
+    }
+    for (lamp, mut material) in &mut relays {
+        let on = h.relay_on(lamp.0);
+        let blink = (t * 2.5 + lamp.0 as f32).sin() > 0.0;
+        let want = art.paint(if on { Paint::Aether } else if blink { Paint::Red } else { Paint::Dark });
+        if material.0 != want {
+            material.0 = want;
         }
     }
 }
@@ -734,6 +829,9 @@ fn update_hud(
     } else if let Some(patient) = h.survivors.iter().find(|s| s.down && s.reviver == id) {
         bar_value = Some((patient.revive, ui::GOOD));
         format!("REVIVING {}", name_of(patient.id))
+    } else if what == Some(Interact::Power) && h.charge > 0.0 {
+        bar_value = Some((h.charge, ui::ACCENT));
+        "THE GENERATOR SPUTTERS".to_string()
     } else if mine.is_some_and(|s| s.out) || !health.alive() {
         "BLED OUT - BACK NEXT ROUND".to_string()
     } else if h.rest > 0.0 && !state.over() {
@@ -771,6 +869,15 @@ fn update_hud(
         }
         if h.sale > 0.0 {
             parts.push(format!("{}  {:.0}", drop::NAMES[drop::CLEARANCE as usize], h.sale.ceil()));
+        }
+        for i in 0..layout.traps.len() {
+            let (running, left) = h.trap(i);
+            if running {
+                parts.push(format!("ARC GRATE  {:.0}", left.ceil()));
+            }
+        }
+        if h.relays != 0 && (h.relays.count_ones() as usize) < layout.relays.len() {
+            parts.push(format!("RELAYS {}/{}", h.relays.count_ones(), layout.relays.len()));
         }
         let line = parts.join("      ");
         if text.0 != line {
