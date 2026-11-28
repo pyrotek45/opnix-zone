@@ -34,8 +34,9 @@ const FORECOURT: (f32, f32) = (12.0, 71.0);
 /// The market square in the middle of the middle terrace: half its width and depth.
 const SQUARE: (f32, f32) = (12.0, 9.0);
 /// The footpaths along the terraces, (z, x from, x to): the lower one between the ramp roads,
-/// the upper one from chalet to chalet past every flight of stairs.
-const PROMENADES: [(f32, f32, f32); 2] = [(-47.0, -70.0, 70.0), (26.0, -104.0, 104.0)];
+/// the upper one from chalet to chalet past every flight of stairs, stopping at the kerbs of
+/// the roads it crosses.
+const PROMENADES: [(f32, f32, f32); 4] = [(-47.0, -67.0, 67.0), (26.0, -104.0, -51.0), (26.0, -45.0, 45.0), (26.0, 51.0, 104.0)];
 pub(super) const STEP_RUN: f32 = 0.42;
 
 fn smoothstep(t: f32) -> f32 {
@@ -468,6 +469,8 @@ impl World {
         let z = level_mid(2);
         let kerb = z + 3.0;
         // The inn, looking onto the square.
+        // A fountain in the middle of the square: cover, and it breaks the line between the bases.
+        self.plaza_at(rng, Vec2::new(0.0, z));
         let inn = Vec2::new(-21.0, kerb + 6.5);
         let from = self.doors.len();
         let mut plan = Plan { walls: Some(Paint::Wood), roof: Roof::Gable(Paint::Rust), furnish: Furnish::Home, chimney: true, random_doors: false, ..Plan::default() };

@@ -218,7 +218,9 @@ impl World {
                         let (du, ds) = (to(u, 0.0) - to(0.0, 0.0), to(0.0, s) - to(0.0, 0.0));
                         let centre = apex + du * r + ds * r;
                         let rim = arc(centre, r, -ds, -du);
-                        found.push(Corner { apex, rim, paint: a.paint, kerb: kerbed.then_some((centre, r, -ds, -du, false)) });
+                        // The corner is the narrower road's mouth: a path's gravel, not the asphalt.
+                        let paint = if a.width <= b.width { a.paint } else { b.paint };
+                        found.push(Corner { apex, rim, paint, kerb: kerbed.then_some((centre, r, -ds, -du, false)) });
                     }
                 }
                 // The outside of a bend: this road ends inside the other, which ends inside this.
