@@ -1,5 +1,5 @@
-//! Horde: round-based co-op survival against husks - scrap robots that claw their way in
-//! through barricaded windows and rise out of floor vents.
+//! Horde: round-based co-op survival against husks - scrap robots that gather out in the
+//! dark and claw their way in through the barricaded windows (the only way in).
 //!
 //! The squad (humans, plus bots for any empty seats) starts in one zone of a horde map
 //! (`worldgen::HordeLayout`) with a pistol and 500 points. Points come from hits and kills
@@ -8,8 +8,10 @@
 //! perks from machines once the power is on, a gamble at the salvage crate, and a trip
 //! through the reforge for a much better gun.
 //!
-//! Rounds escalate: more husks, tougher ones, faster ones, a brute every fifth round, and
-//! husks that lose their legs keep coming on their hands. Some drop power-ups. A player who
+//! Rounds escalate: more husks, tougher ones, faster ones, brutes every fifth round, volt husks
+//! that burst when scrapped from the sixth, and husks that lose their legs keep coming on
+//! their hands. The last few of a round break into a run. Kills now and then (and surely,
+//! every so many) drop power-ups. A player who
 //! goes down crawls with a pistol until a teammate holds Use on them, or bleeds out and sits
 //! out the round. When everyone is down at once, the run is over.
 //!
@@ -45,8 +47,8 @@ pub use oz_core::worldgen::perk_id as perk_ids;
 pub mod perk {
     use oz_core::model::Paint;
     pub use oz_core::worldgen::perk_id::*;
-    pub const COUNT: usize = 6;
-    pub const NAMES: [&str; COUNT] = ["IRON HIDE", "QUICKFIX", "HAIR TRIGGER", "PATCH-UP", "FLEETFOOT", "SPARE SOCKET"];
+    pub const COUNT: usize = 7;
+    pub const NAMES: [&str; COUNT] = ["IRON HIDE", "QUICKFIX", "HAIR TRIGGER", "PATCH-UP", "FLEETFOOT", "SPARE SOCKET", "SCRAP MAGNET"];
     pub const BLURBS: [&str; COUNT] = [
         "Plating: take two and a half times the punishment",
         "Reload nearly twice as fast",
@@ -54,11 +56,12 @@ pub mod perk {
         "Revive teammates twice as fast. Alone: get yourself back up",
         "Run and walk faster",
         "Carry a third gun",
+        "Kills pay half again; power-ups turn up twice as often",
     ];
-    pub const PRICES: [u32; COUNT] = [2500, 3000, 2000, 1500, 2000, 4000];
+    pub const PRICES: [u32; COUNT] = [2500, 3000, 2000, 1500, 2000, 4000, 2500];
     /// Two-letter badges for the HUD.
-    pub const SHORT: [&str; COUNT] = ["IH", "QF", "HT", "PU", "FF", "SS"];
-    pub const COLORS: [Paint; COUNT] = [Paint::Red, Paint::Green, Paint::Gold, Paint::Blue, Paint::Coral, Paint::Violet];
+    pub const SHORT: [&str; COUNT] = ["IH", "QF", "HT", "PU", "FF", "SS", "SM"];
+    pub const COLORS: [Paint; COUNT] = [Paint::Red, Paint::Green, Paint::Gold, Paint::Blue, Paint::Coral, Paint::Violet, Paint::Teal];
     /// Most perks one robot can hold.
     pub const MAX: u32 = 4;
 }
@@ -76,7 +79,14 @@ pub mod kind {
     pub const HUSK: u16 = 0;
     pub const BRUTE: u16 = 1;
     pub const CRAWLER: u16 = 2;
+    /// Overcharged: sprints, and bursts when scrapped (hurting robots and husks close by).
+    pub const VOLT: u16 = 3;
 }
+
+/// A volt husk's burst: reach, and what it does to robots and to other husks.
+pub const VOLT_RADIUS: f32 = 3.2;
+pub const VOLT_PLAYER_DAMAGE: f32 = 45.0;
+pub const VOLT_HUSK_DAMAGE: f32 = 900.0;
 
 /// Power-ups husks drop.
 pub mod drop {
@@ -84,12 +94,32 @@ pub mod drop {
     pub const DOUBLE: u8 = 1;
     pub const INSTA: u8 = 2;
     pub const NUKE: u8 = 3;
-    pub const COUNT: u8 = 4;
-    pub const NAMES: [&str; 4] = ["FULL LOAD", "DOUBLE SCRAP", "KILLSWITCH", "MELTDOWN"];
+    /// Every window boarded up again, and points for the trouble.
+    pub const LOCKDOWN: u8 = 4;
+    /// Points for everyone.
+    pub const HAUL: u8 = 5;
+    /// The salvage crate for next to nothing, for a while.
+    pub const CLEARANCE: u8 = 6;
+    pub const COUNT: u8 = 7;
+    pub const NAMES: [&str; COUNT as usize] = ["FULL LOAD", "DOUBLE SCRAP", "KILLSWITCH", "MELTDOWN", "LOCKDOWN", "SCRAP HAUL", "CLEARANCE"];
+    /// What each does, for the pickup notice.
+    pub const BLURBS: [&str; COUNT as usize] = [
+        "every gun topped up",
+        "points count double",
+        "every hit is a kill",
+        "every husk scrapped",
+        "every window boarded",
+        "500 points each",
+        "the crate for 10 points",
+    ];
+    /// How often each turns up (relative).
+    pub const WEIGHTS: [u32; COUNT as usize] = [4, 3, 2, 2, 2, 2, 1];
 }
 
 pub const START_POINTS: u32 = 500;
 pub const CRATE_PRICE: u32 = 950;
+/// The crate's price while a clearance runs.
+pub const SALE_PRICE: u32 = 10;
 pub const FORGE_PRICE: u32 = 5000;
 pub const UPGRADED_AMMO: u32 = 2500;
 pub const PLANKS: u8 = 6;
@@ -197,6 +227,8 @@ pub struct HordeState {
     /// Seconds of double points and of one-hit kills left.
     pub double: f32,
     pub insta: f32,
+    /// Seconds of the crate on clearance left.
+    pub sale: f32,
     pub kills: u32,
 }
 
@@ -215,6 +247,11 @@ impl HordeState {
 
     pub fn door_open(&self, index: usize) -> bool {
         self.doors & (1 << index) != 0
+    }
+
+    /// What the salvage crate costs right now.
+    pub fn crate_price(&self) -> u32 {
+        if self.sale > 0.0 { SALE_PRICE } else { CRATE_PRICE }
     }
 
     /// Points, doubled while the power-up lasts.
@@ -285,8 +322,6 @@ fn max_alive(players: usize) -> usize {
 /// What a husk is doing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase2 {
-    /// Climbing out of a vent.
-    Rise { t: f32 },
     /// Walking up to a window from outside.
     Approach { window: u8 },
     /// Tearing boards off a window.
@@ -316,11 +351,16 @@ pub struct Husk {
     /// Damage soaked by the legs: enough and it goes down to its hands.
     legs: f32,
     pub crawl: bool,
+    /// Where along the window it stands to tear at the boards (metres off the middle).
+    lane: f32,
+    /// Stuck on a corner: seconds of stepping sideways left, and which way.
+    dodge: f32,
+    dodge_side: f32,
 }
 
 impl Husk {
     fn new(phase: Phase2, speed: f32) -> Self {
-        Self { phase, speed, path: Vec::new(), repath: 0.0, target: None, retarget: 0.0, windup: 0.0, cooldown: 0.5, last: Vec3::ZERO, check: 4.0, stuck: 0, tear: 0.6, legs: 0.0, crawl: false }
+        Self { phase, speed, path: Vec::new(), repath: 0.0, target: None, retarget: 0.0, windup: 0.0, cooldown: 0.5, last: Vec3::ZERO, check: 4.0, stuck: 0, tear: 0.6, legs: 0.0, crawl: false, lane: 0.0, dodge: 0.0, dodge_side: 1.0 }
     }
 }
 
@@ -379,7 +419,16 @@ pub struct Horde {
     hold: HashMap<u8, f32>,
     repair_timer: HashMap<u8, f32>,
     crate_rolls: u32,
+    /// What the crate's current roll was paid (refunded if it moves on).
+    crate_paid: u32,
     drops: u8,
+    /// Kills since the last power-up (one is sure to come after enough of them).
+    since_drop: u32,
+    last_drop: u8,
+    /// Volt husks still to send this round.
+    volts: u32,
+    /// Bursts to set off (where, and whose kill set it off).
+    bursts: Vec<(Vec3, Option<u8>)>,
     bots: bool,
     /// The round whose start has been handled (respawns, grenades).
     started: u16,
@@ -417,7 +466,7 @@ impl Plugin for HordePlugin {
 /// Authority: a fresh run.
 fn setup_horde(mut commands: Commands, role: Res<crate::state::NetRole>, map: Res<Map>, mut state: ResMut<MatchState>, mut horde: ResMut<Horde>) {
     let Some(layout) = map.horde.as_deref() else { return };
-    *horde = Horde::default();
+    *horde = Horde { last_drop: NOBODY, ..default() };
     if *role == crate::state::NetRole::Client {
         return;
     }
@@ -643,7 +692,7 @@ pub fn describe(layout: &HordeLayout, state: &HordeState, catalog: &Catalog, me:
                 (format!("{name} - {}", perk::BLURBS[p as usize]), Some(perk::PRICES[p as usize]))
             }
         }
-        Interact::Crate => ("SALVAGE CRATE".to_string(), Some(CRATE_PRICE)),
+        Interact::Crate => (if state.sale > 0.0 { "SALVAGE CRATE - CLEARANCE".to_string() } else { "SALVAGE CRATE".to_string() }, Some(state.crate_price())),
         Interact::CrateTake => (format!("TAKE {}", weapon_name(state.crate_weapon as usize)), None),
         Interact::Forge => {
             let current = arsenal.current as usize;
@@ -797,12 +846,15 @@ fn horde_commands(
                 if h.crate_phase != crate_phase::IDLE {
                     continue;
                 }
-                if !h.pay(id, CRATE_PRICE) {
+                let price = h.crate_price();
+                if !h.pay(id, price) {
                     deny(&mut fx, "NOT ENOUGH POINTS");
                     continue;
                 }
                 horde.crate_rolls += 1;
-                let moves = layout.crates.len() > 1 && horde.crate_rolls > 3 && rng.0.chance(0.18);
+                horde.crate_paid = price;
+                // It never wanders off while on clearance.
+                let moves = layout.crates.len() > 1 && horde.crate_rolls > 3 && h.sale <= 0.0 && rng.0.chance(0.18);
                 let h = &mut state.horde;
                 h.crate_phase = crate_phase::ROLLING;
                 h.crate_timer = 4.2;
@@ -917,6 +969,7 @@ fn rounds(
     let h = &mut state.horde;
     h.double = (h.double - dt).max(0.0);
     h.insta = (h.insta - dt).max(0.0);
+    h.sale = (h.sale - dt).max(0.0);
 
     // The crate and the reforge.
     match h.crate_phase {
@@ -928,7 +981,7 @@ fn rounds(
                     h.crate_timer = 7.0;
                     let who = h.crate_for;
                     if let Some(s) = h.survivor_mut(who) {
-                        s.points += CRATE_PRICE;
+                        s.points += horde.crate_paid;
                     }
                     fx.write(FxEvent::notice("THE CRATE HAS MOVED ON"));
                     fx.write(FxEvent::Sound { sfx: Sfx::Growl, at: layout.crates.get(h.crate_at as usize).map(|c| c.pos) });
@@ -997,8 +1050,7 @@ fn rounds(
         true
     });
     for kind in taken {
-        let name = drop::NAMES[kind as usize];
-        fx.write(FxEvent::notice(name));
+        fx.write(FxEvent::notice(format!("{} - {}", drop::NAMES[kind as usize], drop::BLURBS[kind as usize].to_uppercase())));
         fx.write(FxEvent::Sound { sfx: Sfx::Streak, at: None });
         match kind {
             drop::AMMO => {
@@ -1012,6 +1064,27 @@ fn rounds(
             }
             drop::DOUBLE => state.horde.double = POWERUP_SECONDS,
             drop::INSTA => state.horde.insta = POWERUP_SECONDS,
+            drop::CLEARANCE => state.horde.sale = POWERUP_SECONDS,
+            drop::LOCKDOWN => {
+                let open = layout.open_zones(state.horde.doors);
+                for (i, w) in layout.windows.iter().enumerate() {
+                    if open & (1 << w.zone) != 0
+                        && let Some(p) = state.horde.planks.get_mut(i)
+                    {
+                        *p = PLANKS;
+                    }
+                }
+                let ids: Vec<u8> = state.horde.survivors.iter().map(|s| s.id).collect();
+                for id in ids {
+                    state.horde.earn(id, 200);
+                }
+            }
+            drop::HAUL => {
+                let ids: Vec<u8> = state.horde.survivors.iter().map(|s| s.id).collect();
+                for id in ids {
+                    state.horde.earn(id, 500);
+                }
+            }
             _ => {
                 for (entity, transform) in &husks {
                     hits.write(Hit::plain(entity, 1e9, None));
@@ -1049,7 +1122,8 @@ fn rounds(
             let round = h.round;
             let size = round_size(round, squad);
             horde.brutes = if round % 5 == 0 { (1 + round as u32 / 10) * (1 + squad as u32 / 3) } else { 0 };
-            horde.queue = size.saturating_sub(horde.brutes);
+            horde.volts = if content.enemies.len() > kind::VOLT as usize { volt_count(round, size) } else { 0 };
+            horde.queue = size.saturating_sub(horde.brutes + horde.volts);
             horde.spawn_timer = 1.5;
             horde.drops = 0;
             h.left = size as u16;
@@ -1057,7 +1131,11 @@ fn rounds(
                 s.repaired = 0;
             }
             state.day = round as u32;
-            fx.write(FxEvent::notice(format!("ROUND {round}")));
+            fx.write(FxEvent::notice(match round {
+                r if r % 5 == 0 => format!("ROUND {r} - BRUTES ON THE PROWL"),
+                VOLT_ROUND => format!("ROUND {VOLT_ROUND} - VOLT HUSKS: SCRAP THEM AT A DISTANCE"),
+                r => format!("ROUND {r}"),
+            }));
             fx.write(FxEvent::Sound { sfx: Sfx::Horn, at: None });
         }
         return;
@@ -1068,24 +1146,39 @@ fn rounds(
     // Send husks while there is room.
     horde.spawn_timer -= dt;
     let room = max_alive(squad) as u32;
-    while horde.spawn_timer <= 0.0 && horde.queue + horde.brutes > 0 && alive < room {
+    while horde.spawn_timer <= 0.0 && horde.queue + horde.brutes + horde.volts > 0 && alive < room {
         horde.spawn_timer += (2.0 * 0.92f32.powi(h.round as i32 - 1)).max(0.35);
-        let brute = horde.brutes > 0 && (horde.queue == 0 || rng.0.chance(0.15));
-        let kind = if brute { kind::BRUTE } else { kind::HUSK };
+        let brute = horde.brutes > 0 && (horde.queue + horde.volts == 0 || rng.0.chance(0.15));
+        let volt = !brute && horde.volts > 0 && (horde.queue == 0 || rng.0.chance(horde.volts as f32 / (horde.queue + horde.volts) as f32));
+        let kind = if brute {
+            kind::BRUTE
+        } else if volt {
+            kind::VOLT
+        } else {
+            kind::HUSK
+        };
         let targets: Vec<Vec3> = players.iter().filter(|(_, _, health, _)| health.alive()).map(|(_, t, ..)| t.translation).collect();
         let Some((phase, at)) = pick_spawn(layout, &state.horde, &targets, &mut rng) else { break };
         if brute {
             horde.brutes -= 1;
+        } else if volt {
+            horde.volts -= 1;
         } else {
             horde.queue -= 1;
         }
         let round = state.horde.round;
-        spawn_husk(&mut commands, &mut ids, &content, kind, at, phase, husk_health(round) * if brute { 5.0 } else { 1.0 }, gait(round, brute, &mut rng), &mut rng);
+        let (hp, speed) = match kind {
+            kind::BRUTE => (husk_health(round) * 5.0, gait(round, true, &mut rng)),
+            // Fragile, and in a hurry.
+            kind::VOLT => (husk_health(round) * 0.6, rng.0.range(4.4, 5.2)),
+            _ => (husk_health(round), gait(round, false, &mut rng)),
+        };
+        spawn_husk(&mut commands, &mut ids, &content, kind, at, phase, hp, speed, &mut rng);
         break;
     }
     let h = &mut state.horde;
-    h.left = (horde.queue + horde.brutes + alive) as u16;
-    if horde.queue + horde.brutes == 0 && alive == 0 {
+    h.left = (horde.queue + horde.brutes + horde.volts + alive) as u16;
+    if horde.queue + horde.brutes + horde.volts == 0 && alive == 0 {
         h.rest = REST;
         fx.write(FxEvent::notice(format!("ROUND {} SURVIVED", h.round)));
         fx.write(FxEvent::Sound { sfx: Sfx::Dawn, at: None });
@@ -1111,21 +1204,29 @@ fn gait(round: u16, brute: bool, rng: &mut SimRng) -> f32 {
     base * rng.0.range(0.9, 1.1)
 }
 
-/// Where the next husk comes from: a window or vent of an open zone, near the squad.
-fn pick_spawn(layout: &HordeLayout, state: &HordeState, targets: &[Vec3], rng: &mut SimRng) -> Option<(Phase2, Vec3)> {
+/// The first round volt husks come in.
+pub const VOLT_ROUND: u16 = 6;
+
+/// How many of a round's husks are volt husks: none before [`VOLT_ROUND`], then a growing
+/// share (a fifth at most).
+pub fn volt_count(round: u16, size: u32) -> u32 {
+    if round < VOLT_ROUND {
+        return 0;
+    }
+    let share = (0.06 + 0.02 * (round - VOLT_ROUND) as f32).min(0.2);
+    ((size as f32 * share).round() as u32).max(1)
+}
+
+/// Where the next husk comes from: out in the open beyond a window of an open zone (never
+/// inside; every husk has to tear its way in), favouring windows near the squad.
+pub fn pick_spawn(layout: &HordeLayout, state: &HordeState, targets: &[Vec3], rng: &mut SimRng) -> Option<(Phase2, Vec3)> {
     let open = layout.open_zones(state.doors);
     let near = |p: Vec3| targets.iter().map(|t| t.distance(p)).fold(f32::MAX, f32::min);
     let mut spots: Vec<(f32, Phase2, Vec3)> = Vec::new();
     for (i, w) in layout.windows.iter().enumerate() {
         if open & (1 << w.zone) != 0 {
-            let out = Vec3::new(w.out.x, 0.0, w.out.y);
-            let side = Vec3::new(-w.out.y, 0.0, w.out.x) * rng.0.range(-1.2, 1.2);
-            spots.push((near(w.inside), Phase2::Approach { window: i as u8 }, w.outside + out * rng.0.range(3.5, 5.0) + side));
-        }
-    }
-    for v in &layout.vents {
-        if open & (1 << v.zone) != 0 && near(v.pos) > 3.0 {
-            spots.push((near(v.pos), Phase2::Rise { t: 0.0 }, v.pos - Vec3::Y * 1.7));
+            let side = Vec3::new(-w.out.y, 0.0, w.out.x) * rng.0.range(-w.spread, w.spread.max(1e-3));
+            spots.push((near(w.inside), Phase2::Approach { window: i as u8 }, w.spawn + side));
         }
     }
     if spots.is_empty() {
@@ -1142,7 +1243,8 @@ fn spawn_husk(commands: &mut Commands, ids: &mut NetIds, content: &Content, kind
     let def = &content.enemies[kind as usize];
     let entity = crate::enemy::spawn_enemy(commands, ids, content, kind, at, hp / def.hp.max(1.0), rng);
     // The engine's own enemy brain never thinks for a husk: it has its own.
-    commands.entity(entity).insert((Enemy { kind, think: f32::MAX, ..default() }, Husk::new(phase, speed)));
+    let lane = rng.0.range(-0.45, 0.45);
+    commands.entity(entity).insert((Enemy { kind, think: f32::MAX, ..default() }, Husk { lane, ..Husk::new(phase, speed) }));
     entity
 }
 
@@ -1365,12 +1467,41 @@ fn husk_brains(
     mut commands: Commands,
     mut husks: Query<(Entity, &mut Transform, &mut Enemy, &mut Husk, &Health)>,
     mut players: Query<(Entity, &Player, &Transform, &mut Health, &mut Arsenal), Without<Husk>>,
+    mut horde: ResMut<Horde>,
+    mut hits: EventWriter<Hit>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let Some(layout) = map.horde.as_deref() else { return };
     let Some(mut nav) = nav else { return };
     let dt = sim_dt(&time);
     let solo = players.iter().count() <= 1;
+
+    // Volt husks scrapped last frame go off: robots close by get hurt, husks close by get
+    // torn apart (on the account of whoever set it off).
+    for (at, by) in std::mem::take(&mut horde.bursts) {
+        fx.write(FxEvent::Explosion { at: at + Vec3::Y * 0.9, radius: VOLT_RADIUS });
+        fx.write(FxEvent::Sound { sfx: Sfx::Explosion, at: Some(at) });
+        for (_, player, transform, mut health, mut arsenal) in &mut players {
+            if !health.alive() || state.horde.is_down(player.id) || transform.translation.distance(at) > VOLT_RADIUS {
+                continue;
+            }
+            let player = player.clone();
+            health.hp -= VOLT_PLAYER_DAMAGE;
+            fx.write(FxEvent::Hurt { player: player.id });
+            if health.hp <= 0.0 {
+                go_down(&mut state.horde, &content, &player, &mut health, &mut arsenal, solo, &mut fx);
+            }
+        }
+        for (entity, transform, _, _, health) in &husks {
+            if health.alive() && transform.translation.distance(at) < VOLT_RADIUS {
+                hits.write(Hit::plain(entity, VOLT_HUSK_DAMAGE, by));
+            }
+        }
+    }
+    // Last few of a round: they stop shambling.
+    let hurry = state.horde.round >= 2 && state.horde.left <= 3;
+    // One husk at a time climbs through a window.
+    let mut climbing: Vec<u8> = husks.iter().filter_map(|(_, _, _, h, _)| if let Phase2::Climb { window, .. } = h.phase { Some(window) } else { None }).collect();
     let targets: Vec<(Entity, Vec3)> = players.iter().filter(|(_, p, _, h, _)| h.alive() && !state.horde.is_down(p.id)).map(|(e, _, t, ..)| (e, t.translation)).collect();
     let closed: Vec<Aabb> = layout.doors.iter().enumerate().filter(|(i, _)| !state.horde.door_open(*i)).map(|(_, d)| d.aabb).collect();
     let free = |p: Vec3| !statics.blocked(p.x, p.z, p.y, 1.5, 0.28) && !closed.iter().any(|b| b.touches(p.x, p.z, 0.28)) && map.in_bounds(p.x, p.z);
@@ -1395,25 +1526,16 @@ fn husk_brains(
                 transform.rotation = transform.rotation.slerp(want, (dt * 7.0).min(1.0));
             }
         };
+        let lane = |w: &oz_core::worldgen::HordeWindow, lane: f32| w.outside + Vec3::new(-w.out.y, 0.0, w.out.x) * lane;
         match husk.phase {
-            Phase2::Rise { t } => {
-                let t = t + dt / 1.6;
-                let vent_y = map.height(here.x, here.z).max(layout.ground);
-                transform.translation.y = vent_y - 1.7 * (1.0 - t.min(1.0));
-                husk.phase = if t >= 1.0 { Phase2::Hunt } else { Phase2::Rise { t } };
-                if let Some((_, p)) = targets.iter().min_by(|a, b| a.1.distance(here).total_cmp(&b.1.distance(here))) {
-                    face(&mut transform, (*p - here).xz(), dt);
-                }
-                continue;
-            }
             Phase2::Approach { window } => {
                 let w = layout.windows[window as usize];
-                let to = (w.outside - here).xz();
+                let to = (lane(&w, husk.lane) - here).xz();
                 if to.length() < 0.35 {
                     husk.phase = Phase2::Tear { window };
                     continue;
                 }
-                let step = to.normalize() * (husk.speed.min(3.0) * slow * dt).min(to.length());
+                let step = to.normalize() * (husk.speed.min(4.5) * slow * dt).min(to.length());
                 transform.translation += Vec3::new(step.x, 0.0, step.y);
                 transform.translation.y = map.height(transform.translation.x, transform.translation.z).max(layout.ground);
                 face(&mut transform, to, dt);
@@ -1424,7 +1546,11 @@ fn husk_brains(
                 face(&mut transform, -w.out, dt);
                 let planks = state.horde.planks.get(window as usize).copied().unwrap_or(0);
                 if planks == 0 {
-                    husk.phase = Phase2::Climb { window, t: 0.0 };
+                    // Through the gap one at a time.
+                    if !climbing.contains(&window) {
+                        climbing.push(window);
+                        husk.phase = Phase2::Climb { window, t: 0.0 };
+                    }
                     continue;
                 }
                 husk.tear -= dt;
@@ -1438,9 +1564,9 @@ fn husk_brains(
             }
             Phase2::Climb { window, t } => {
                 let w = layout.windows[window as usize];
-                let t = t + dt / 1.1;
+                let t = t + dt / if enemy.kind == kind::VOLT { 0.7 } else { 1.1 };
                 let k = t.min(1.0);
-                let mut p = w.outside.lerp(w.inside, k);
+                let mut p = lane(&w, husk.lane).lerp(w.inside, k);
                 p.y += (k * std::f32::consts::PI).sin() * 1.05;
                 transform.translation = p;
                 face(&mut transform, -w.out, dt);
@@ -1513,8 +1639,13 @@ fn husk_brains(
         } else {
             husk.path.clear();
         }
-        let dir = (aim - here).xz().normalize_or_zero();
-        let speed = if distance < reach + 0.3 { 0.0 } else { husk.speed * slow };
+        let mut dir = (aim - here).xz().normalize_or_zero();
+        if husk.dodge > 0.0 {
+            husk.dodge -= dt;
+            dir = (Vec2::new(-dir.y, dir.x) * husk.dodge_side + dir * 0.4).normalize_or_zero();
+        }
+        let pace = if hurry { husk.speed.max(if enemy.kind == kind::CRAWLER { 1.7 } else { 3.0 }) } else { husk.speed };
+        let speed = if distance < reach + 0.3 { 0.0 } else { pace * slow };
         let mut step = dir * speed;
         // Shoulder past other husks instead of stacking up.
         let mut push = Vec2::ZERO;
@@ -1554,6 +1685,8 @@ fn husk_brains(
                 husk.stuck += 1;
                 husk.path.clear();
                 husk.repath = 0.0;
+                husk.dodge = 0.9;
+                husk.dodge_side = if rng.0.chance(0.5) { 1.0 } else { -1.0 };
             } else {
                 husk.stuck = 0;
             }
@@ -1628,7 +1761,12 @@ fn score_hits(
                 husk.crawl = true;
             }
         }
+        // A volt husk scrapped by someone goes off (a meltdown just switches it off).
+        if left <= 0.0 && enemy.kind == kind::VOLT && hit.by.is_some() {
+            horde.bursts.push((transform.translation, hit.by));
+        }
         let Some(id) = hit.by else { continue };
+        let magnet = state.horde.survivor(id).is_some_and(|s| s.has(perk::SCRAP_MAGNET));
         if left <= 0.0 {
             let points = if melee {
                 130
@@ -1637,7 +1775,7 @@ fn score_hits(
             } else {
                 60
             };
-            state.horde.earn(id, points);
+            state.horde.earn(id, if magnet { points * 3 / 2 } else { points });
             state.horde.kills += 1;
             if let Some(s) = state.horde.survivor_mut(id) {
                 s.kills += 1;
@@ -1646,10 +1784,14 @@ fn score_hits(
             if let Some((mut player, ..)) = players.iter_mut().find(|(p, ..)| p.id == id) {
                 player.kills = player.kills.saturating_add(1);
             }
-            // Now and then a husk leaves something behind.
-            if horde.drops < 4 && rng.0.chance(0.035) {
+            // Now and then a husk leaves something behind, and surely after enough kills.
+            horde.since_drop += 1;
+            let due = horde.since_drop >= drop_every(state.horde.round);
+            if horde.drops < 4 && (due || rng.0.chance(if magnet { 0.07 } else { 0.035 })) {
                 horde.drops += 1;
-                let kind = rng.0.below(drop::COUNT as usize) as u8;
+                horde.since_drop = 0;
+                let kind = pick_drop(horde.last_drop, &mut rng);
+                horde.last_drop = kind;
                 let at = transform.translation;
                 state.horde.drops.push(Drop { kind, at: Vec3::new(at.x, at.y.max(0.0) + 0.9, at.z), ttl: 26.0 });
             }
@@ -1659,6 +1801,25 @@ fn score_hits(
         }
     }
     let _ = &content;
+}
+
+/// Kills between sure power-ups: often early on, less so as the rounds swell.
+pub fn drop_every(round: u16) -> u32 {
+    (20 + 3 * round as u32).min(70)
+}
+
+/// A power-up by weight, never the same one twice running.
+fn pick_drop(last: u8, rng: &mut SimRng) -> u8 {
+    let total: u32 = (0..drop::COUNT).filter(|k| *k != last).map(|k| drop::WEIGHTS[k as usize]).sum();
+    let mut roll = rng.0.below(total.max(1) as usize) as u32;
+    for k in (0..drop::COUNT).filter(|k| *k != last) {
+        let w = drop::WEIGHTS[k as usize];
+        if roll < w {
+            return k;
+        }
+        roll -= w;
+    }
+    drop::AMMO
 }
 
 /// Authority: what the perks do.
@@ -1691,13 +1852,14 @@ fn perk_effects(time: Res<Time>, state: Res<MatchState>, mut players: Query<(&mu
     }
 }
 
-/// Authority: bot squadmates follow the nearest human, shoot husks they can see, and pick
-/// up the fallen.
+/// Authority: bot squadmates follow the nearest human, shoot husks they can see, pick up
+/// the fallen, and board up windows near the squad when nothing needs shooting.
 #[allow(clippy::too_many_arguments)]
 fn horde_bots(
     time: Res<Time>,
     statics: Res<Statics>,
     content: Res<Content>,
+    map: Res<Map>,
     state: Res<MatchState>,
     nav: Option<ResMut<HordeNav>>,
     mut horde: ResMut<Horde>,
@@ -1796,6 +1958,18 @@ fn horde_bots(
         if !down {
             let patient = downed.iter().filter(|(id, _)| *id != player.id).min_by(|a, b| a.1.distance(me).total_cmp(&b.1.distance(me))).copied();
             let threat = enemies.iter().any(|(p, _)| p.distance(me) < 2.5);
+            // Boards down on a window close to the squad, and nothing to shoot: fix them.
+            let repair = map.horde.as_deref().filter(|_| target.is_none() && !threat).and_then(|layout| {
+                let open = layout.open_zones(state.horde.doors);
+                layout
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, w)| open & (1 << w.zone) != 0 && state.horde.planks.get(*i).is_some_and(|p| *p < PLANKS))
+                    .map(|(_, w)| w.inside)
+                    .filter(|at| at.distance(me) < 9.0 && leader.is_none_or(|l| l.distance(*at) < 12.0))
+                    .min_by(|a, b| a.distance(me).total_cmp(&b.distance(me)))
+            });
             let goal = match (patient, leader) {
                 (Some((id, at)), _) if at.distance(me) < 40.0 => {
                     if at.distance(me) < 1.6 && !threat {
@@ -1804,6 +1978,15 @@ fn horde_bots(
                         None
                     } else {
                         Some((at, 0.8))
+                    }
+                }
+                _ if repair.is_some() => {
+                    let at = repair.unwrap_or(me);
+                    if at.distance(me) < 1.3 {
+                        horde.hold(player.id);
+                        None
+                    } else {
+                        Some((at, 0.5))
                     }
                 }
                 (_, Some(at)) => Some((at, 4.0)),

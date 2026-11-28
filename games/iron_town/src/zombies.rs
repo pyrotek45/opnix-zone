@@ -102,6 +102,8 @@ pub fn catalog(_: &Rules) -> Catalog {
             husk("HUSK", 150.0, 1.3, 0.42, 55.0, 1.0, Paint::Rust),
             husk("SLAG BRUTE", 150.0, 2.6, 0.6, 90.0, 1.4, Paint::Iron),
             husk("CRAWLER", 150.0, 1.0, 0.4, 35.0, 1.1, Paint::Rust),
+            // Overcharged: sprints in, and bursts when scrapped (see `oz_sim::zombies::kind::VOLT`).
+            husk("VOLT HUSK", 150.0, 4.8, 0.4, 40.0, 0.9, Paint::Teal),
         ],
         perks: vec![
             PerkDef { name: "NONE", blurb: "", effect: PerkEffect::Speed(1.0) },

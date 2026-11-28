@@ -235,6 +235,12 @@ impl BlockModel {
         self.cube(paint, [x, (from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5], [width, thick, length]).rotated([(-dy).atan2(dz).to_degrees(), 0.0, 0.0])
     }
 
+    /// The model's bounding box in model space (min, max), if it has anything in it.
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        let points = self.parts.iter().flat_map(part_points).chain(self.hulls.iter().flat_map(|h| h.points.iter().copied()));
+        points.fold(None, |acc, p| Some(acc.map_or((p, p), |(lo, hi): (Vec3, Vec3)| (lo.min(p), hi.max(p)))))
+    }
+
     /// Keeps only the parts whose animation tag passes `keep`.
     pub fn filtered(&self, keep: impl Fn(Anim) -> bool) -> BlockModel {
         BlockModel { parts: self.parts.iter().copied().filter(|p| keep(p.anim)).collect(), hulls: self.hulls.iter().filter(|h| keep(h.anim)).cloned().collect() }

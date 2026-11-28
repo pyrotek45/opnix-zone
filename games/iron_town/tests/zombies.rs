@@ -1,5 +1,7 @@
 //! Headless horde-mode tests: rounds, points and buying, downs and revives, game over, the
-//! husks' hunt, and the two horde maps' layouts.
+//! husks' hunt, and the two horde maps' layouts. Husks only ever turn up outside and come in
+//! through the windows; wall guns fit their chalk frames; bot squads play rounds through;
+//! volt husks burst; power-ups are sure to come.
 
 use bevy::{prelude::*, state::app::StatesPlugin, time::TimeUpdateStrategy};
 use iron_town::{IronTownPlugin, horde_rules};
@@ -313,9 +315,6 @@ fn horde_maps_connect_through_their_doors() {
         for (i, b) in lay.buys.iter().enumerate() {
             spots.push((format!("wall buy {i}"), ground(b.pos.xz() + b.normal * 0.7)));
         }
-        for (i, v) in lay.vents.iter().enumerate() {
-            spots.push((format!("vent {i}"), v.pos));
-        }
         for z in 0..lay.zones.len() {
             spots.push((lay.zones[z].name.to_string(), center(z)));
         }
@@ -343,4 +342,263 @@ fn both_maps_run_rounds() {
             assert!(seconds < 200.0, "{layout:?}: round 1 never ended");
         }
     }
+}
+
+/// Keeps every robot topped up so the husks can be watched all the way in.
+fn invulnerable(app: &mut App) {
+    let world = app.world_mut();
+    for mut health in world.query_filtered::<&mut Health, With<Player>>().iter_mut(world) {
+        health.hp = health.max;
+    }
+    let mut st = world.resource_mut::<MatchState>();
+    for s in &mut st.horde.survivors {
+        s.down = false;
+        s.out = false;
+    }
+}
+
+/// Watches every husk from the moment it turns up: where it appears, the way it comes in,
+/// and whether it gets to the squad. Husks that reach a robot are scrapped (by player 0).
+#[derive(Default)]
+struct Watch {
+    /// Per husk: inside yet, reached a robot yet.
+    seen: std::collections::HashMap<Entity, (bool, bool)>,
+    spawned: usize,
+    reached: usize,
+    climbed: usize,
+    teleports: usize,
+    /// Where each husk was last seen inside (to say where a stuck one got stuck).
+    last: std::collections::HashMap<Entity, Vec3>,
+}
+
+impl Watch {
+    fn step(&mut self, app: &mut App, what: &str) {
+        let layout = app.world().resource::<Map>().horde.clone().unwrap();
+        let world = app.world_mut();
+        let robots: Vec<Vec3> = world.query_filtered::<&Transform, With<Player>>().iter(world).map(|t| t.translation).collect();
+        let mut scrap = Vec::new();
+        for (entity, transform, husk, enemy) in world.query::<(Entity, &Transform, &Husk, &oz_sim::enemy::Enemy)>().iter(world) {
+            let at = transform.translation;
+            let inside = layout.zone_at(at.xz()).is_some();
+            let fresh = !self.seen.contains_key(&entity);
+            // A husk that loses its legs comes back as a crawler right where it fell.
+            let crawler = enemy.kind == zombies::kind::CRAWLER;
+            if fresh && !crawler {
+                self.spawned += 1;
+                assert!(!inside, "{what}: a husk appeared inside the walls at {at:?} ({:?})", husk.phase);
+                assert!(matches!(husk.phase, zombies::Phase2::Approach { .. }), "{what}: a husk started as {:?}", husk.phase);
+                // Out in the open, clear of every building by a margin.
+                for z in &layout.zones {
+                    let (x0, x1, z0, z1) = z.rect;
+                    let gap = (x0 - at.x).max(at.x - x1).max(z0 - at.z).max(at.z - z1);
+                    assert!(gap > 1.0, "{what}: a husk appeared only {gap:.1} m from {} at {at:?}", z.name);
+                }
+            }
+            let entry = self.seen.entry(entity).or_insert((crawler, false));
+            match husk.phase {
+                zombies::Phase2::Approach { .. } | zombies::Phase2::Tear { .. } => {
+                    assert!(!inside, "{what}: a husk outside the boards is inside a zone at {at:?}");
+                    if entry.0 && !fresh {
+                        // In, and then out again: only a stuck husk is put back out.
+                        self.teleports += 1;
+                        entry.0 = false;
+                        println!("{what}: husk stuck near {:?}, put back out", self.last.get(&entity));
+                    }
+                }
+                zombies::Phase2::Climb { .. } => {
+                    if !entry.0 {
+                        self.climbed += 1;
+                    }
+                    entry.0 = true;
+                }
+                zombies::Phase2::Hunt => {
+                    assert!(entry.0, "{what}: a husk is hunting inside without having climbed in at {at:?}");
+                }
+            }
+            if inside {
+                self.last.insert(entity, at);
+            }
+            if inside && robots.iter().any(|r| r.distance(at) < 2.2) {
+                if !entry.1 {
+                    entry.1 = true;
+                    if !crawler {
+                        self.reached += 1;
+                    }
+                }
+                scrap.push(entity);
+            }
+        }
+        for husk in scrap {
+            world.send_event(Hit::plain(husk, 1.0e7, Some(0)));
+        }
+    }
+}
+
+#[test]
+fn husks_only_come_in_through_the_windows_and_reach_the_squad() {
+    for layout in Layout::HORDE {
+        for all_open in [false, true] {
+            let what = format!("{layout:?}{}", if all_open { " (every door open)" } else { "" });
+            let mut app = start(layout, 1);
+            if all_open {
+                app.world_mut().resource_mut::<MatchState>().horde.doors = u64::MAX;
+            }
+            let mut watch = Watch::default();
+            let mut seconds = 0.0;
+            while state(&app).horde.round < 4 {
+                invulnerable(&mut app);
+                watch.step(&mut app, &what);
+                app.update();
+                seconds += FRAME;
+                assert!(seconds < 600.0, "{what}: stalled in round {} with {} left ({} in, {} reached)", state(&app).horde.round, state(&app).horde.left, watch.climbed, watch.reached);
+            }
+            println!("{what}: {} husks, {} climbed in, {} reached the player, {} put back out, {seconds:.0} s", watch.spawned, watch.climbed, watch.reached, watch.teleports);
+            assert!(watch.spawned >= 27, "{what}: rounds 1-3 send at least 27 husks");
+            assert!(watch.climbed * 10 >= watch.spawned * 9, "{what}: most husks climb in through a window");
+            assert!(watch.reached * 10 >= watch.spawned * 8, "{what}: most husks find the player");
+            assert!(watch.teleports * 10 <= watch.spawned, "{what}: {} husks got stuck and were put back out", watch.teleports);
+        }
+    }
+}
+
+#[test]
+fn every_window_leads_husks_to_the_squad() {
+    for layout in Layout::HORDE {
+        let map = GameMap::generate(WorldRecipe::horde(layout));
+        let lay = map.horde.clone().unwrap();
+        let what = format!("{layout:?}");
+        let start = Vec3::new(map.spawn.x, lay.ground, map.spawn.y);
+        let mut shut = HordeNav::build(&map, &lay, 0);
+        let mut open = HordeNav::build(&map, &lay, u64::MAX);
+        let s = statics(&map);
+        for (i, w) in lay.windows.iter().enumerate() {
+            // The way in from where they turn up is open ground.
+            assert!(lay.zone_at(w.spawn.xz()).is_none(), "{what}: window {i} spawns husks inside");
+            assert!(!s.blocked(w.spawn.x, w.spawn.z, w.spawn.y + 0.2, 1.4, 0.45), "{what}: window {i}'s spawn is in something");
+            assert!(w.spawn.xz().distance(w.outside.xz()) >= 3.0, "{what}: window {i}'s husks turn up right at the boards");
+            // Once through, a path to the squad's start.
+            let nav = if w.zone == 0 { &mut shut } else { &mut open };
+            let path = nav.path(w.inside, start);
+            assert!(path.is_some_and(|p| p.last().unwrap().xz().distance(start.xz()) < 1.6), "{what}: no way from window {i} (zone {}) to the start", w.zone);
+        }
+        let zone0 = lay.windows.iter().filter(|w| w.zone == 0).count();
+        assert!(zone0 >= 3, "{what}: the start zone needs a few windows, has {zone0}");
+    }
+}
+
+#[test]
+fn wall_guns_fit_their_chalk_frames() {
+    use oz_core::worldgen::{CHALK_FRAME, chalk_fit};
+    for layout in Layout::HORDE {
+        let app = start(layout, 1);
+        let lay = app.world().resource::<Map>().horde.clone().unwrap();
+        let content = app.world().resource::<Content>().clone();
+        for buy in &lay.buys {
+            let def = &content.weapons[buy.weapon as usize];
+            let model = oz_core::arsenal::assemble(def, &def.defaults);
+            let (lo, hi) = model.bounds().expect("a gun has a model");
+            let (scale, mid) = chalk_fit(lo, hi);
+            // Drawn as (p - mid) * scale round the frame's centre: along the wall is Z, up is Y.
+            let (a, b) = ((lo - mid) * scale, (hi - mid) * scale);
+            let room = CHALK_FRAME * 0.5;
+            assert!(a.z >= -room.x && b.z <= room.x, "{layout:?}: {} runs out of its frame ({:.2}..{:.2} of {:.2})", def.name, a.z, b.z, room.x);
+            assert!(a.y >= -room.y && b.y <= room.y, "{layout:?}: {} sticks out of its frame ({:.2}..{:.2} of {:.2})", def.name, a.y, b.y, room.y);
+            assert!((a.z + b.z).abs() < 1e-3 && (a.y + b.y).abs() < 1e-3, "{layout:?}: {} is off centre", def.name);
+            // Big enough to make out: it fills most of the frame one way or the other.
+            let fill = ((b.z - a.z) / CHALK_FRAME.x).max((b.y - a.y) / CHALK_FRAME.y);
+            println!("{layout:?}: {} scale {scale:.2} fills {fill:.2}", def.name);
+            assert!(fill > 0.65, "{layout:?}: {} is lost in its frame ({fill:.2})", def.name);
+        }
+    }
+}
+
+#[test]
+fn a_full_squad_of_bots_plays_rounds_without_stalling() {
+    // One human (kept standing, never shooting) and three bots: the bots do the work.
+    let mut app = start(Layout::CinderWorks, 4);
+    let mut seconds = 0.0;
+    while state(&app).horde.round < 5 {
+        invulnerable(&mut app);
+        app.update();
+        seconds += FRAME;
+        assert!(seconds < 900.0, "stalled in round {} with {} left", state(&app).horde.round, state(&app).horde.left);
+    }
+    let st = state(&app);
+    let bots: u32 = st.horde.survivors.iter().filter(|s| s.id != 0).map(|s| s.kills as u32).sum();
+    println!("round 5 after {seconds:.0} s; bots scrapped {bots}, {} in all", st.horde.kills);
+    assert!(bots >= 40, "the bots should do the killing ({bots})");
+}
+
+#[test]
+fn volt_husks_burst_and_lockdown_boards_up() {
+    let mut app = start(Layout::Blackfen, 1);
+    // Skip ahead to the first round with volt husks.
+    {
+        let mut st = app.world_mut().resource_mut::<MatchState>();
+        st.horde.round = zombies::VOLT_ROUND - 1;
+        st.horde.rest = 0.1;
+    }
+    let mut volt = None;
+    let mut seconds = 0.0;
+    while volt.is_none() {
+        invulnerable(&mut app);
+        app.update();
+        seconds += FRAME;
+        assert!(seconds < 120.0, "no volt husk in round {}", zombies::VOLT_ROUND);
+        let world = app.world_mut();
+        volt = world.query::<(Entity, &oz_sim::enemy::Enemy)>().iter(world).find(|(_, e)| e.kind == zombies::kind::VOLT).map(|(e, _)| e);
+    }
+    // Bring it right up to the player, with a plain husk beside it, and scrap it.
+    let world = app.world_mut();
+    let me = world.query_filtered::<&Transform, With<LocalPlayer>>().single(world).unwrap().translation;
+    let other = world.query::<(Entity, &oz_sim::enemy::Enemy)>().iter(world).find(|(_, e)| e.kind == zombies::kind::HUSK).map(|(e, _)| e);
+    world.get_mut::<Transform>(volt.unwrap()).unwrap().translation = me + Vec3::X * 1.5;
+    if let Some(other) = other {
+        world.get_mut::<Transform>(other).unwrap().translation = me + Vec3::X * 2.5;
+    }
+    world.send_event(Hit::plain(volt.unwrap(), 1.0e7, Some(0)));
+    let before = state(&app).horde.survivor(0).unwrap().kills;
+    for _ in 0..4 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let health = *world.query_filtered::<&Health, With<LocalPlayer>>().single(world).unwrap();
+    assert!(health.hp <= health.max - zombies::VOLT_PLAYER_DAMAGE + 0.1, "the burst hurts a robot close by ({})", health.hp);
+    if other.is_some() {
+        assert!(state(&app).horde.survivor(0).unwrap().kills >= before + 2, "the burst takes the husk beside it too");
+    }
+
+    // A lockdown boards every open window back up.
+    {
+        let mut st = app.world_mut().resource_mut::<MatchState>();
+        for p in &mut st.horde.planks {
+            *p = 0;
+        }
+        st.horde.drops.push(zombies::Drop { kind: zombies::drop::LOCKDOWN, at: me + Vec3::Y * 0.9, ttl: 10.0 });
+    }
+    place(&mut app, me, Vec3::NEG_Z);
+    app.update();
+    let lay = app.world().resource::<Map>().horde.clone().unwrap();
+    for (i, w) in lay.windows.iter().enumerate() {
+        if w.zone == 0 {
+            assert!(state(&app).horde.planks[i] >= zombies::PLANKS - 1, "window {i} boarded up again");
+        }
+    }
+}
+
+#[test]
+fn power_ups_are_sure_to_come() {
+    let mut app = start(Layout::CinderWorks, 1);
+    let mut seen = 0;
+    let mut kills = 0;
+    let mut seconds = 0.0;
+    while kills < zombies::drop_every(1) as usize * 3 {
+        let before = state(&app).horde.drops.len();
+        kills += scrap_husks(&mut app, Some(0));
+        app.update();
+        seen += state(&app).horde.drops.len().saturating_sub(before);
+        seconds += FRAME;
+        assert!(seconds < 600.0);
+    }
+    assert!(seen >= 2, "{kills} kills and only {seen} power-ups");
 }

@@ -238,7 +238,8 @@ fn demo(
 /// `OPNIX_SHOT_EVERY` seconds apart (default 0.4) after a 3 s settle, then quits.
 fn demo_photos(mut commands: Commands, time: Res<Time>, state: Res<MatchState>, mut clock: Local<f32>, mut taken: Local<u32>, mut exit: EventWriter<AppExit>) {
     let Ok(dir) = std::env::var("OPNIX_SHOTS") else { return };
-    if state.phase != Phase::Live {
+    // Horde runs are played at night.
+    if !matches!(state.phase, Phase::Live | Phase::Night) {
         return;
     }
     let count = std::env::var("OPNIX_SHOT_COUNT").ok().and_then(|n| n.parse().ok()).unwrap_or(6u32);
