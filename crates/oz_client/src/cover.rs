@@ -135,7 +135,7 @@ fn demo(
             // Standing on its own: nothing else solid within a couple of metres.
             let near = |o: &oz_core::collide::Aabb| (o.center.x - b.center.x).abs() < o.half.x + b.half.x + 1.5 && (o.center.z - b.center.z).abs() < o.half.z + b.half.z + 1.5 && o.top() > b.bottom() + 0.1 && o.center != b.center;
             let crowded = map.blocks.iter().filter(|o| o.solid && near(&o.aabb)).count();
-            if crowded > 1 {
+            if crowded > 1 && std::env::var("OPNIX_DEMO_ALONE").is_ok() {
                 continue;
             }
             for normal in dirs {
