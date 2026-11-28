@@ -56,6 +56,7 @@ fn follow(
     (local, mut death, state): (Query<(&Health, &Player), With<LocalPlayer>>, ResMut<crate::fx::DeathInfo>, Res<MatchState>),
     mut was_dead: Local<bool>,
     (mut subject, mut robots, killcam): (ResMut<crate::view::ViewSubject>, Query<&mut Visibility, With<crate::avatar::PlayerRobot>>, Res<crate::killcam::KillCam>),
+    (rules, controls): (Res<Rules>, Res<crate::input::Controls>),
 ) {
     let now = time.elapsed_secs();
     for event in events.read() {
@@ -94,7 +95,9 @@ fn follow(
     let dead = local.single().is_ok_and(|(h, _)| !h.alive());
     // Search and destroy: out for the round, so watch a teammate who is still in it.
     let my_team = local.single().map_or(0, |(_, p)| p.team);
-    let team_watch = dead && state.obj.kind == oz_sim::objective::kind::BOMB && state.phase == Phase::Live && players.iter().any(|(_, p, .., h)| p.team == my_team && h.alive());
+    // Horde: down until the next round, so watch the squad (and flick between them).
+    let one_life = (state.obj.kind == oz_sim::objective::kind::BOMB && state.phase == Phase::Live) || rules.horde;
+    let team_watch = dead && one_life && players.iter().any(|(_, p, .., h)| p.team == my_team && h.alive());
     let watchable = |p: &Player| !team_watch || p.team == my_team;
     if !dead {
         death.killer = None;
@@ -121,6 +124,23 @@ fn follow(
         spectate.hold = 1.0;
     }
 
+    // Watching the squad: stay on who you picked; fire (or jump) moves on to the next.
+    if team_watch {
+        spectate.hold = spectate.hold.max(1.0);
+        if controls.fire_pressed || controls.jump_pressed {
+            let mates: Vec<_> = players.iter().filter(|(_, p, .., h)| h.alive() && watchable(p)).map(|(e, p, ..)| (e, p.id, p.name.clone())).collect();
+            if !mates.is_empty() {
+                let now_at = spectate.target.and_then(|t| mates.iter().position(|(e, ..)| *e == t));
+                let (entity, _, name) = mates[now_at.map_or(0, |i| (i + 1) % mates.len())].clone();
+                if spectate.target != Some(entity) {
+                    spectate.position = None;
+                    spectate.rotation = None;
+                }
+                spectate.target = Some(entity);
+                spectate.name = name;
+            }
+        }
+    }
     // Cut when the shot has run long or the subject went down; prefer whoever is shooting.
     let current = spectate.target.and_then(|e| players.get(e).ok()).filter(|(_, p, .., health)| health.alive() && watchable(p));
     if current.is_none() || spectate.hold <= 0.0 {

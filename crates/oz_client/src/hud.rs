@@ -559,7 +559,7 @@ fn update_text(
     let killer = death.killer.and_then(|id| state.roster.iter().find(|r| r.id == id)).map(|r| r.name.clone());
     let one_life = state.obj.kind == oz_sim::objective::kind::BOMB && state.phase == Phase::Live;
     let prompt = if !health.alive() && rules.horde {
-        String::new()
+        if spectate.name.is_empty() { String::new() } else { format!("DOWN  -  WATCHING {}  -  [{fire_key}] NEXT", spectate.name) }
     } else if !health.alive() && one_life {
         if spectate.name.is_empty() { "ELIMINATED  -  OUT UNTIL THE NEXT ROUND".to_string() } else { format!("ELIMINATED  -  WATCHING {}", spectate.name) }
     } else if !health.alive() {
