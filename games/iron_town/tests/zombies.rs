@@ -1,7 +1,8 @@
 //! Headless horde-mode tests: rounds, points and buying, downs and revives, game over, the
 //! husks' hunt, and the two horde maps' layouts. Husks only ever turn up outside and come in
-//! through the windows; wall guns fit their chalk frames; bot squads play rounds through;
-//! volt husks burst; power-ups are sure to come.
+//! through the windows; every zone opens up door by door; wall guns fit their chalk frames;
+//! bot squads play rounds through on both maps; volt husks burst; power-ups are sure to come;
+//! the generator, the arc grates and the relay beacons do what they say.
 
 use bevy::{prelude::*, state::app::StatesPlugin, time::TimeUpdateStrategy};
 use iron_town::{IronTownPlugin, horde_rules};
@@ -66,6 +67,20 @@ fn place(app: &mut App, at: Vec3, look: Vec3) {
     transform.translation = at;
     input.yaw = f32::atan2(-look.x, -look.z);
     input.pitch = 0.0;
+}
+
+/// Holds Use for `seconds` (as the client does: a press, then "still held" every frame).
+fn hold_use(app: &mut App, seconds: f32) {
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Mode(act::USE) });
+    run(app, seconds, |app| {
+        app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Mode(act::HOLD) });
+        invulnerable(app);
+    });
+}
+
+/// Stands at a machine, facing it.
+fn at_machine(app: &mut App, m: &oz_core::worldgen::HordeMachine) {
+    place(app, m.pos, -Vec3::new(m.facing.x, 0.0, m.facing.y));
 }
 
 fn use_it(app: &mut App) {
@@ -145,9 +160,9 @@ fn wall_buys_doors_power_perks_and_the_reforge() {
     use_it(&mut app);
     assert!(!state(&app).horde.survivor(0).unwrap().has(perk::IRON_HIDE), "no power, no perk");
     let power = layout.power.unwrap();
-    place(&mut app, power.pos, -Vec3::new(power.facing.x, 0.0, power.facing.y));
-    use_it(&mut app);
-    assert!(state(&app).horde.power, "the switch should turn the power on");
+    at_machine(&mut app, &power);
+    hold_use(&mut app, zombies::CRANK_SECONDS + 0.5);
+    assert!(state(&app).horde.power, "cranking the generator should turn the power on");
     place(&mut app, machine.pos, face);
     use_it(&mut app);
     run(&mut app, 0.2, keep_clear);
@@ -156,8 +171,9 @@ fn wall_buys_doors_power_perks_and_the_reforge() {
     let health = *world.query_filtered::<&Health, With<LocalPlayer>>().single(world).unwrap();
     assert_eq!(health.max, 250.0, "iron hide plates you up");
 
-    // The reforge takes the gun in hand and hands back its reforged twin.
+    // The reforge (up on its deck) takes the gun in hand and hands back its reforged twin.
     let forge = layout.forge.unwrap();
+    assert!(forge.pos.y > layout.ground + 2.0);
     place(&mut app, forge.pos, -Vec3::new(forge.facing.x, 0.0, forge.facing.y));
     use_it(&mut app);
     assert_eq!(state(&app).horde.forge_phase, zombies::forge_phase::WORKING);
@@ -297,7 +313,7 @@ fn horde_maps_connect_through_their_doors() {
             let (x0, x1, z0, z1) = lay.zones[z].rect;
             ground(Vec2::new((x0 + x1) * 0.5, (z0 + z1) * 0.5))
         };
-        let reaches = |nav: &mut HordeNav, to: Vec3| nav.path(start, to).is_some_and(|p| p.last().unwrap().xz().distance(to.xz()) < 1.6);
+        let reaches = |nav: &mut HordeNav, to: Vec3| nav.path(start, to).is_some_and(|p| p.last().unwrap().xz().distance(to.xz()) < 1.6 && (p.last().unwrap().y - to.y).abs() < 1.0);
         // Doors shut: the start zone is sealed off from the rest.
         let mut shut = HordeNav::build(&map, &lay, 0);
         for z in 1..lay.zones.len() {
@@ -309,8 +325,11 @@ fn horde_maps_connect_through_their_doors() {
         for (i, w) in lay.windows.iter().enumerate() {
             spots.push((format!("window {i}"), w.inside));
         }
-        for (i, m) in lay.perks.iter().chain(&lay.crates).chain(lay.forge.iter()).chain(lay.power.iter()).enumerate() {
+        for (i, m) in lay.machines().enumerate() {
             spots.push((format!("machine {i}"), m.pos));
+        }
+        for (i, t) in lay.traps.iter().enumerate() {
+            spots.push((format!("trap {i}"), ground(Vec2::new((t.floor.0 + t.floor.1) * 0.5, (t.floor.2 + t.floor.3) * 0.5))));
         }
         for (i, b) in lay.buys.iter().enumerate() {
             spots.push((format!("wall buy {i}"), ground(b.pos.xz() + b.normal * 0.7)));
@@ -327,6 +346,158 @@ fn horde_maps_connect_through_their_doors() {
         assert!(!s.blocked(start.x, start.z, start.y, 1.7, 0.35), "{what}: spawn blocked");
         assert!(map.blocks.len() < 4000, "{what}: {} blocks", map.blocks.len());
         println!("{what}: {} blocks, {} windows, {} doors, {} wall buys", map.blocks.len(), lay.windows.len(), lay.doors.len(), lay.buys.len());
+    }
+}
+
+/// Buying the doors one at a time from the start zone outward opens every zone in turn: each
+/// zone is sealed until a door into it is bought, and walkable (with its windows, wall guns
+/// and machines) right after. The last zones out hold the reforge and cost the most to reach.
+#[test]
+fn every_zone_opens_up_door_by_door() {
+    for layout in Layout::HORDE {
+        let map = GameMap::generate(WorldRecipe::horde(layout));
+        let lay = map.horde.clone().unwrap();
+        let what = format!("{layout:?}");
+        let ground = |p: Vec2| Vec3::new(p.x, lay.ground, p.y);
+        let start = ground(map.spawn);
+        let center = |z: usize| {
+            let (x0, x1, z0, z1) = lay.zones[z].rect;
+            ground(Vec2::new((x0 + x1) * 0.5, (z0 + z1) * 0.5))
+        };
+        let reaches = |nav: &mut HordeNav, to: Vec3| nav.path(start, to).is_some_and(|p| p.last().unwrap().xz().distance(to.xz()) < 1.6 && (p.last().unwrap().y - to.y).abs() < 1.0);
+        let mut doors = 0u64;
+        let mut zones = 1u64;
+        let mut nav = HordeNav::build(&map, &lay, 0);
+        // Cheapest door out of what is open first, the way a squad would go.
+        let mut order = Vec::new();
+        loop {
+            let next = lay
+                .doors
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| (zones >> d.zones.0) & 1 != (zones >> d.zones.1) & 1)
+                .min_by_key(|(i, d)| (d.price, *i))
+                .map(|(i, d)| (i, *d));
+            let Some((i, door)) = next else { break };
+            let fresh = if zones & (1 << door.zones.0) != 0 { door.zones.1 } else { door.zones.0 } as usize;
+            assert!(!reaches(&mut nav, center(fresh)), "{what}: {} is open before door {i} is bought", lay.zones[fresh].name);
+            doors |= 1 << i;
+            zones |= 1 << fresh;
+            order.push((lay.zones[fresh].name, door.price));
+            nav = HordeNav::build(&map, &lay, doors);
+            assert!(reaches(&mut nav, center(fresh)), "{what}: door {i} should open {}", lay.zones[fresh].name);
+            let mut spots: Vec<(String, Vec3)> = Vec::new();
+            for (k, w) in lay.windows.iter().enumerate().filter(|(_, w)| w.zone as usize == fresh) {
+                spots.push((format!("window {k}"), w.inside));
+            }
+            for (k, b) in lay.buys.iter().enumerate().filter(|(_, b)| b.zone as usize == fresh) {
+                spots.push((format!("wall buy {k}"), ground(b.pos.xz() + b.normal * 0.7)));
+            }
+            for (k, m) in lay.machines().enumerate().filter(|(_, m)| m.zone as usize == fresh) {
+                spots.push((format!("machine {k}"), m.pos));
+            }
+            for (name, at) in spots {
+                assert!(reaches(&mut nav, at), "{what}: {name} in {} out of reach once it opens", lay.zones[fresh].name);
+            }
+        }
+        println!("{what}: {order:?}");
+        assert_eq!(zones.count_ones() as usize, lay.zones.len(), "{what}: some zone never opens");
+        // The reforge is in one of the last zones to open, behind the dearest doors.
+        let forge = lay.forge.unwrap().zone as usize;
+        let rank = order.iter().position(|(name, _)| *name == lay.zones[forge].name).unwrap();
+        assert!(rank + 3 >= order.len(), "{what}: the reforge opens too early ({rank} of {})", order.len());
+        let dearest = lay.doors.iter().map(|d| d.price).max().unwrap();
+        assert!(lay.doors.iter().filter(|d| d.zones.0 as usize == forge || d.zones.1 as usize == forge).all(|d| d.price == dearest), "{what}: the way to the reforge should cost the most");
+        // Loops: more doors than zones, so the door graph has cycles to run round.
+        assert!(lay.doors.len() > lay.zones.len(), "{what}: dead ends");
+    }
+}
+
+#[test]
+fn the_generator_arc_grates_and_relay_beacons() {
+    for layout in Layout::HORDE {
+        let what = format!("{layout:?}");
+        let mut app = start(layout, 1);
+        let lay = app.world().resource::<Map>().horde.clone().unwrap();
+        {
+            let mut st = app.world_mut().resource_mut::<MatchState>();
+            st.horde.doors = u64::MAX;
+            st.horde.survivor_mut(0).unwrap().points = 50_000;
+        }
+        // Without the power a grate stays dead.
+        let trap = lay.traps[0];
+        at_machine(&mut app, &trap.panel);
+        let before = points(&app);
+        use_it(&mut app);
+        assert_eq!(state(&app).horde.traps[0], 0.0, "{what}: a grate needs power");
+        assert_eq!(points(&app), before);
+
+        // The generator: a tap does nothing; it takes a few seconds of cranking.
+        let power = lay.power.unwrap();
+        at_machine(&mut app, &power);
+        use_it(&mut app);
+        assert!(!state(&app).horde.power, "{what}: a tap does not restart the generator");
+        hold_use(&mut app, zombies::CRANK_SECONDS * 0.5);
+        let charge = state(&app).horde.charge;
+        assert!(!state(&app).horde.power && charge > 0.3 && charge < 0.7, "{what}: halfway cranked ({charge:.2})");
+        hold_use(&mut app, zombies::CRANK_SECONDS * 0.5 + 0.4);
+        assert!(state(&app).horde.power, "{what}: cranked long enough, the power comes back");
+
+        // Wait for a husk, then set the grate going and drop the husk on it.
+        let mut seconds = 0.0;
+        let husk = loop {
+            invulnerable(&mut app);
+            app.update();
+            seconds += FRAME;
+            assert!(seconds < 30.0, "{what}: no husk turned up");
+            let world = app.world_mut();
+            if let Some(e) = world.query_filtered::<Entity, With<Husk>>().iter(world).next() {
+                break e;
+            }
+        };
+        at_machine(&mut app, &trap.panel);
+        let before = points(&app);
+        use_it(&mut app);
+        assert!(state(&app).horde.trap(0).0, "{what}: the grate is live");
+        assert_eq!(points(&app), before - zombies::TRAP_PRICE);
+        let (x0, x1, z0, z1) = trap.floor;
+        {
+            let world = app.world_mut();
+            world.get_mut::<Transform>(husk).unwrap().translation = Vec3::new((x0 + x1) * 0.5, lay.ground, (z0 + z1) * 0.5);
+            world.get_mut::<Husk>(husk).unwrap().phase = zombies::Phase2::Hunt;
+        }
+        run(&mut app, 0.5, invulnerable);
+        let world = app.world_mut();
+        assert!(world.get::<Health>(husk).is_none_or(|h| !h.alive()), "{what}: the grate fries a husk on it");
+        // It runs out, cools down (and will not start again meanwhile), and is ready again.
+        run(&mut app, zombies::TRAP_SECONDS, invulnerable);
+        let (running, left) = state(&app).horde.trap(0);
+        assert!(!running && left > 0.0, "{what}: the grate cools down after its run");
+        let before = points(&app);
+        use_it(&mut app);
+        assert_eq!(points(&app), before, "{what}: no paying for a grate that is cooling");
+        run(&mut app, zombies::TRAP_COOLDOWN, invulnerable);
+        assert_eq!(state(&app).horde.trap(0), (false, 0.0), "{what}: ready again");
+
+        // Relays: each one pays; the last pays everyone and leaves a power-up.
+        let n = lay.relays.len();
+        for (i, relay) in lay.relays.iter().enumerate() {
+            at_machine(&mut app, relay);
+            let (before, drops) = (points(&app), state(&app).horde.drops.len());
+            use_it(&mut app);
+            assert!(state(&app).horde.relay_on(i), "{what}: relay {i} switches on");
+            let gained = points(&app) - before;
+            if i + 1 < n {
+                assert!(gained >= zombies::RELAY_POINTS, "{what}: relay {i} pays");
+            } else {
+                assert!(gained >= zombies::RELAY_POINTS + zombies::RELAY_BONUS, "{what}: the whole network pays a bonus");
+                assert!(state(&app).horde.drops.len() > drops, "{what}: and leaves a power-up");
+            }
+            // A second press does nothing.
+            let before = points(&app);
+            use_it(&mut app);
+            assert_eq!(points(&app), before);
+        }
     }
 }
 
@@ -514,19 +685,22 @@ fn wall_guns_fit_their_chalk_frames() {
 
 #[test]
 fn a_full_squad_of_bots_plays_rounds_without_stalling() {
-    // One human (kept standing, never shooting) and three bots: the bots do the work.
-    let mut app = start(Layout::CinderWorks, 4);
-    let mut seconds = 0.0;
-    while state(&app).horde.round < 5 {
-        invulnerable(&mut app);
-        app.update();
-        seconds += FRAME;
-        assert!(seconds < 900.0, "stalled in round {} with {} left", state(&app).horde.round, state(&app).horde.left);
+    // One human (kept standing, never shooting) and three bots: the bots do the work, on
+    // both maps, to round six.
+    for layout in Layout::HORDE {
+        let mut app = start(layout, 4);
+        let mut seconds = 0.0;
+        while state(&app).horde.round < 6 {
+            invulnerable(&mut app);
+            app.update();
+            seconds += FRAME;
+            assert!(seconds < 1200.0, "{layout:?}: stalled in round {} with {} left", state(&app).horde.round, state(&app).horde.left);
+        }
+        let st = state(&app);
+        let bots: u32 = st.horde.survivors.iter().filter(|s| s.id != 0).map(|s| s.kills as u32).sum();
+        println!("{layout:?}: round 6 after {seconds:.0} s; bots scrapped {bots}, {} in all", st.horde.kills);
+        assert!(bots >= 60, "{layout:?}: the bots should do the killing ({bots})");
     }
-    let st = state(&app);
-    let bots: u32 = st.horde.survivors.iter().filter(|s| s.id != 0).map(|s| s.kills as u32).sum();
-    println!("round 5 after {seconds:.0} s; bots scrapped {bots}, {} in all", st.horde.kills);
-    assert!(bots >= 40, "the bots should do the killing ({bots})");
 }
 
 #[test]

@@ -5,8 +5,12 @@
 //! (`worldgen::HordeLayout`) with a pistol and 500 points. Points come from hits and kills
 //! (more for headshots and melee) and from boarding windows back up, and buy everything:
 //! guns chalked on the walls (and ammo for them), doors and rubble into the rest of the map,
-//! perks from machines once the power is on, a gamble at the salvage crate, and a trip
-//! through the reforge for a much better gun.
+//! perks from machines once the power is on, a gamble at the salvage crate, a trip through
+//! the reforge for a much better gun, and arc grates that fry husks for a while.
+//!
+//! The power is off at the start: someone has to crank the generator back to life (hold Use
+//! on it for a few seconds) before the perk machines, the reforge and the grates work. Relay
+//! beacons are dotted round each map: switch every one of them on for a bonus.
 //!
 //! Rounds escalate: more husks, tougher ones, faster ones, brutes every fifth round, volt husks
 //! that burst when scrapped from the sixth, and husks that lose their legs keep coming on
@@ -123,6 +127,17 @@ pub const SALE_PRICE: u32 = 10;
 pub const FORGE_PRICE: u32 = 5000;
 pub const UPGRADED_AMMO: u32 = 2500;
 pub const PLANKS: u8 = 6;
+/// Seconds of holding Use on the generator to bring the power back.
+pub const CRANK_SECONDS: f32 = 5.0;
+/// Arc grates: price, how long one runs, how long it then needs to cool down, and what it
+/// does to a husk standing on it (per second).
+pub const TRAP_PRICE: u32 = 1000;
+pub const TRAP_SECONDS: f32 = 25.0;
+pub const TRAP_COOLDOWN: f32 = 45.0;
+pub const TRAP_DPS: f32 = 2500.0;
+/// Relay beacons: points for switching one on, and for everyone once all of them are.
+pub const RELAY_POINTS: u32 = 250;
+pub const RELAY_BONUS: u32 = 1500;
 /// Seconds a downed robot lasts without help.
 pub const BLEED: f32 = 30.0;
 const REVIVE: f32 = 4.0;
@@ -230,6 +245,12 @@ pub struct HordeState {
     /// Seconds of the crate on clearance left.
     pub sale: f32,
     pub kills: u32,
+    /// How far the generator has been cranked (0..1) while the power is still off.
+    pub charge: f32,
+    /// Per arc grate: seconds of running left (> 0), of cooling down (< 0), or ready (0).
+    pub traps: Vec<f32>,
+    /// Bitmask of relay beacons switched on.
+    pub relays: u8,
 }
 
 impl HordeState {
@@ -247,6 +268,16 @@ impl HordeState {
 
     pub fn door_open(&self, index: usize) -> bool {
         self.doors & (1 << index) != 0
+    }
+
+    pub fn relay_on(&self, index: usize) -> bool {
+        self.relays & (1 << index) != 0
+    }
+
+    /// An arc grate's state: (running, seconds left of running or cooling).
+    pub fn trap(&self, index: usize) -> (bool, f32) {
+        let t = self.traps.get(index).copied().unwrap_or(0.0);
+        (t > 0.0, t.abs())
     }
 
     /// What the salvage crate costs right now.
@@ -470,7 +501,7 @@ fn setup_horde(mut commands: Commands, role: Res<crate::state::NetRole>, map: Re
     if *role == crate::state::NetRole::Client {
         return;
     }
-    state.horde = HordeState { rest: FIRST_REST, planks: vec![PLANKS; layout.windows.len()], crate_for: NOBODY, forge_for: NOBODY, ..default() };
+    state.horde = HordeState { rest: FIRST_REST, planks: vec![PLANKS; layout.windows.len()], traps: vec![0.0; layout.traps.len()], crate_for: NOBODY, forge_for: NOBODY, ..default() };
     state.phase = Phase::Night;
     state.daylight = NIGHT_LIGHT;
     commands.insert_resource(HordeNav::build(&map, layout, 0));
@@ -570,7 +601,12 @@ pub enum Interact {
     CrateTake,
     Forge,
     ForgeTake,
+    /// Hold: crank the generator.
     Power,
+    /// Switch an arc grate on.
+    Trap(usize),
+    /// Switch a relay beacon on.
+    Relay(usize),
     /// Hold: board a window back up.
     Repair(usize),
     /// Hold: get a downed teammate up.
@@ -579,7 +615,7 @@ pub enum Interact {
 
 impl Interact {
     pub fn held(self) -> bool {
-        matches!(self, Interact::Repair(_) | Interact::Revive(_))
+        matches!(self, Interact::Repair(_) | Interact::Revive(_) | Interact::Power)
     }
 }
 
@@ -649,6 +685,16 @@ pub fn interaction(layout: &HordeLayout, state: &HordeState, me: u8, feet: Vec3,
     {
         consider(1, power.pos, 1.6, Interact::Power);
     }
+    for (i, trap) in layout.traps.iter().enumerate() {
+        if zone_open(trap.zone) {
+            consider(1, trap.panel.pos, 1.6, Interact::Trap(i));
+        }
+    }
+    for (i, relay) in layout.relays.iter().enumerate() {
+        if zone_open(relay.zone) && !state.relay_on(i) {
+            consider(1, relay.pos, 1.6, Interact::Relay(i));
+        }
+    }
     for (i, window) in layout.windows.iter().enumerate() {
         if state.planks.get(i).is_some_and(|p| *p < PLANKS) && zone_open(window.zone) {
             consider(2, window.inside, 1.9, Interact::Repair(i));
@@ -705,7 +751,29 @@ pub fn describe(layout: &HordeLayout, state: &HordeState, catalog: &Catalog, me:
             }
         }
         Interact::ForgeTake => (format!("TAKE {}", weapon_name(state.forge_weapon as usize)), None),
-        Interact::Power => ("RESTORE POWER".to_string(), None),
+        Interact::Power => {
+            if state.charge > 0.0 {
+                (format!("CRANK THE GENERATOR - {:.0}%", state.charge * 100.0), None)
+            } else {
+                ("CRANK THE GENERATOR - RESTORES POWER".to_string(), None)
+            }
+        }
+        Interact::Trap(i) => {
+            let (running, left) = state.trap(i);
+            if !state.power {
+                ("ARC GRATE - NEEDS POWER".to_string(), None)
+            } else if running {
+                (format!("ARC GRATE - LIVE {:.0}", left.ceil()), None)
+            } else if left > 0.0 {
+                (format!("ARC GRATE - COOLING {:.0}", left.ceil()), None)
+            } else {
+                ("ARC GRATE - FRIES HUSKS ON IT".to_string(), Some(TRAP_PRICE))
+            }
+        }
+        Interact::Relay(_) => {
+            let on = state.relays.count_ones();
+            (format!("SWITCH ON RELAY - {on}/{} ONLINE", layout.relays.len()), None)
+        }
         Interact::Repair(_) => ("REBUILD BARRICADE".to_string(), None),
         Interact::Revive(id) => (format!("REVIVE {}", names(id)), None),
     }
@@ -915,14 +983,53 @@ fn horde_commands(
                 give_weapon(&content, survivor, &mut arsenal, weapon);
                 fx.write(FxEvent::Cue { to: id, sfx: Sfx::Streak });
             }
-            Interact::Power => {
+            Interact::Trap(i) => {
+                let Some(trap) = layout.traps.get(i) else { continue };
                 if !h.power {
-                    h.power = true;
-                    fx.write(FxEvent::notice("POWER RESTORED"));
-                    fx.write(FxEvent::Sound { sfx: Sfx::Radar, at: None });
+                    deny(&mut fx, "THE POWER IS OFF");
+                    continue;
+                }
+                if h.traps.get(i).is_none_or(|t| *t != 0.0) {
+                    deny(&mut fx, "NOT READY");
+                    continue;
+                }
+                if !h.pay(id, TRAP_PRICE) {
+                    deny(&mut fx, "NOT ENOUGH POINTS");
+                    continue;
+                }
+                h.traps[i] = TRAP_SECONDS;
+                fx.write(FxEvent::tell(id, "ARC GRATE LIVE"));
+                fx.write(FxEvent::Sound { sfx: Sfx::Radar, at: Some(trap.panel.pos) });
+                fx.write(FxEvent::Cue { to: id, sfx: Sfx::Buy });
+            }
+            Interact::Relay(i) => {
+                let Some(relay) = layout.relays.get(i).copied() else { continue };
+                if h.relay_on(i) {
+                    continue;
+                }
+                h.relays |= 1 << i;
+                h.earn(id, RELAY_POINTS);
+                let on = h.relays.count_ones() as usize;
+                let all = layout.relays.len();
+                fx.write(FxEvent::Sound { sfx: Sfx::Medal, at: Some(relay.pos) });
+                if on < all {
+                    fx.write(FxEvent::notice(format!("RELAY {on} OF {all} ONLINE")));
+                } else {
+                    // The whole network: points for everyone, and a power-up at the last beacon.
+                    let ids: Vec<u8> = h.survivors.iter().map(|s| s.id).collect();
+                    for who in ids {
+                        h.earn(who, RELAY_BONUS);
+                    }
+                    let kind = pick_drop(horde.last_drop, &mut rng);
+                    horde.last_drop = kind;
+                    let h = &mut state.horde;
+                    h.drops.push(Drop { kind, at: relay.pos + Vec3::new(relay.facing.x, 0.0, relay.facing.y) * 2.0 + Vec3::Y * 0.9, ttl: 40.0 });
+                    fx.write(FxEvent::notice(format!("RELAY NETWORK ONLINE - {RELAY_BONUS} POINTS EACH")));
+                    fx.write(FxEvent::Sound { sfx: Sfx::Streak, at: None });
                 }
             }
-            Interact::Repair(_) | Interact::Revive(_) => {}
+            // Held: the generator, boards and revives are worked in `survivors`.
+            Interact::Power | Interact::Repair(_) | Interact::Revive(_) => {}
         }
     }
 }
@@ -1031,6 +1138,26 @@ fn rounds(
             }
         }
         _ => {}
+    }
+
+    // Arc grates: fry whatever stands on a live one, then cool down.
+    for (i, trap) in layout.traps.iter().enumerate() {
+        let Some(t) = h.traps.get_mut(i) else { continue };
+        if *t > 0.0 {
+            *t -= dt;
+            for (entity, transform) in &husks {
+                let at = transform.translation;
+                if trap.covers(at.xz()) && at.y < layout.ground + 1.2 {
+                    hits.write(Hit::plain(entity, TRAP_DPS * dt, None));
+                }
+            }
+            if *t <= 0.0 {
+                *t = -TRAP_COOLDOWN;
+                fx.write(FxEvent::Sound { sfx: Sfx::DryFire, at: Some(trap.panel.pos) });
+            }
+        } else if *t < 0.0 {
+            *t = (*t + dt).min(0.0);
+        }
     }
 
     // Power-ups: blink out after a while, or get picked up.
@@ -1306,6 +1433,24 @@ fn survivors(
         let close = where_.iter().filter(|(o, p, a, d)| *o != id && *a && *d && p.distance(at) < 2.2).min_by(|a, b| a.1.distance(at).total_cmp(&b.1.distance(at)));
         if let Some((patient, ..)) = close {
             revivers.insert(*patient, id);
+            continue;
+        }
+        // The generator: cranked a little more every moment Use is held on it.
+        if let Some(power) = layout.power.as_ref()
+            && !state.horde.power
+            && power.pos.xz().distance(at.xz()) < 1.8
+            && (power.pos.y - at.y).abs() < 1.6
+        {
+            let before = state.horde.charge;
+            state.horde.charge = (before + dt / CRANK_SECONDS).min(1.0);
+            if (before * 4.0).floor() != (state.horde.charge * 4.0).floor() {
+                fx.write(FxEvent::Sound { sfx: Sfx::Build, at: Some(power.pos + Vec3::Y) });
+            }
+            if state.horde.charge >= 1.0 {
+                state.horde.power = true;
+                fx.write(FxEvent::notice("POWER RESTORED - PERKS, THE REFORGE AND THE GRATES ARE LIVE"));
+                fx.write(FxEvent::Sound { sfx: Sfx::Radar, at: None });
+            }
             continue;
         }
         // Boards: one every so often, points for each (capped per round).

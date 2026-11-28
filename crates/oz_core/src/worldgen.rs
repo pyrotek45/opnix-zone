@@ -24,7 +24,7 @@ mod themes;
 mod zombie_maps;
 
 pub use themes::Theme;
-pub use zombie_maps::{CHALK_FRAME, SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeWindow, HordeZone, WallBuy, chalk_fit, perk_id};
+pub use zombie_maps::{CHALK_FRAME, SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeTrap, HordeWindow, HordeZone, WallBuy, chalk_fit, perk_id};
 use shapes::{Furnish, Plan, Roof};
 
 use crate::{collide::{Aabb, Ramp, StaticWorld}, economy::Ore, model::{Hull, Paint}, noise, rng::Rng};
@@ -319,7 +319,7 @@ impl WorldRecipe {
             Layout::MediumTown => 58.0 * MEDIUM_TOWN_SCALE,
             Layout::OfficeTower => 72.0,
             Layout::SpaceStation => 86.0,
-            Layout::CinderWorks | Layout::Blackfen => 40.0,
+            Layout::CinderWorks | Layout::Blackfen => 70.0,
             _ => 112.0,
         }
     }
@@ -350,7 +350,9 @@ impl WorldRecipe {
             Layout::MediumTown => (96.0 * MEDIUM_TOWN_SCALE, 68.0 * MEDIUM_TOWN_SCALE),
             Layout::OfficeTower => (100.0, 84.0),
             Layout::SpaceStation => (104.0, 96.0),
-            Layout::CinderWorks | Layout::Blackfen => (72.0, 60.0),
+            // The horde maps' compounds sit off centre; room round them for the husks' lanes.
+            Layout::CinderWorks => (96.0, 80.0),
+            Layout::Blackfen => (80.0, 70.0),
             _ => (150.0, 128.0),
         };
         Self { layout, weather, half_extent, main_radius, ..Self::town(seed, biome) }
