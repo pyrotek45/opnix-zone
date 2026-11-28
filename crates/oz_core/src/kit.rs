@@ -97,8 +97,8 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             action: Action::Semi,
             mag: 12,
             infinite_reserve: true,
-            damage: 26.0,
-            interval: 0.18,
+            damage: 27.0,
+            interval: 0.16,
             reload: 0.85,
             spread: 0.012,
             ads_spread: 0.4,
@@ -123,7 +123,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "REEF SMG",
-            blurb: "Stick magazine, folding stock. Shreds anything up close.",
+            blurb: "Stick magazine, folding stock. Four rounds and they drop: owns anything inside twelve metres.",
             price: Cost::credits(180),
             class: GunClass::Smg,
             caliber: Caliber::Pistol,
@@ -131,13 +131,13 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 30,
             reserve: 90,
             ammo_price: 30,
-            damage: 20.0,
-            interval: 0.075,
+            damage: 25.0,
+            interval: 0.068,
             reload: 1.3,
-            spread: 0.022,
+            spread: 0.02,
             ads_spread: 0.45,
-            range: 20.0,
-            recoil: 0.34,
+            range: 12.0,
+            recoil: 0.3,
             ads_fov: 58.0,
             sound: 1,
             weight: 2.6,
@@ -157,7 +157,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "TIDE SHOTGUN",
-            blurb: "Pump-action. Owns a room, useless past ten metres.",
+            blurb: "Pump-action. One pump drops anyone across a room; a tight pattern still bites at fifteen metres aimed.",
             price: Cost::credits(260),
             class: GunClass::Shotgun,
             caliber: Caliber::Shell,
@@ -166,14 +166,14 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 7,
             reserve: 28,
             ammo_price: 35,
-            damage: 20.0,
-            interval: 0.75,
+            damage: 22.0,
+            interval: 0.7,
             reload: 0.42,
-            pellets: 8,
-            spread: 0.1,
-            ads_spread: 0.7,
-            range: 9.0,
-            recoil: 1.5,
+            pellets: 9,
+            spread: 0.06,
+            ads_spread: 0.65,
+            range: 8.0,
+            recoil: 1.6,
             ads_fov: 60.0,
             sound: 2,
             weight: 3.4,
@@ -218,7 +218,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "ARC LANCE",
-            blurb: "Charged rail shot. One trigger pull, one body down.",
+            blurb: "Charged rail shot on a fast semi-auto cycle. Two to the body, one to the head at any range.",
             price: Cost::new(560, 0, 30, 0),
             class: GunClass::Sniper,
             caliber: Caliber::Energy,
@@ -226,12 +226,12 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 6,
             reserve: 18,
             ammo_price: 60,
-            damage: 110.0,
-            interval: 0.75,
+            damage: 90.0,
+            interval: 0.6,
             reload: 1.5,
             spread: 0.05,
             ads_spread: 0.04,
-            range: 100.0,
+            range: 80.0,
             recoil: 1.2,
             ads_fov: 40.0,
             sound: 4,
@@ -256,7 +256,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "SUNBURST LAUNCHER",
-            blurb: "Four-shot revolving grenade launcher. A direct hit kills; the reload takes forever.",
+            blurb: "Four-shot revolving grenade launcher. Anyone within three metres of the blast is gone, the ring past it is badly hurt; the reload takes forever.",
             price: Cost::new(700, 0, 25, 10),
             class: GunClass::Launcher,
             caliber: Caliber::Rocket,
@@ -264,14 +264,14 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 4,
             reserve: 4,
             ammo_price: 90,
-            damage: 125.0,
-            interval: 1.1,
+            damage: 160.0,
+            interval: 1.0,
             reload: 4.5,
             spread: 0.008,
             range: 60.0,
-            splash: 4.5,
+            splash: 6.5,
             recoil: 1.9,
-            mode: FireMode::Projectile { speed: 40.0, gravity: 8.5 },
+            mode: FireMode::Projectile { speed: 44.0, gravity: 8.5 },
             ads_fov: 55.0,
             sound: 5,
             weight: 8.2,
@@ -303,8 +303,8 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 100,
             reserve: 200,
             ammo_price: 120,
-            damage: 26.0,
-            interval: 0.08,
+            damage: 30.0,
+            interval: 0.1,
             reload: 3.4,
             spread: 0.04,
             ads_spread: 0.4,
@@ -334,7 +334,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "LONGSHOT RIFLE",
-            blurb: "Bolt-action. One clean hit to the head ends it.",
+            blurb: "Bolt-action. One round to the chest or the head ends it.",
             price: Cost::new(620, 25, 10, 0),
             class: GunClass::Sniper,
             caliber: Caliber::Magnum,
@@ -342,7 +342,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 5,
             reserve: 20,
             ammo_price: 55,
-            damage: 95.0,
+            damage: 105.0,
             interval: 1.2,
             reload: 2.2,
             spread: 0.1,
@@ -372,7 +372,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "TRIDENT BURST",
-            blurb: "Three-round bursts. One clean burst drops a target.",
+            blurb: "Three-round bursts that hold their punch at range. Two bursts drop a target; land one in the head and one is enough.",
             price: Cost::new(450, 25, 5, 0),
             class: GunClass::Rifle,
             caliber: Caliber::Rifle,
@@ -380,12 +380,12 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 30,
             reserve: 90,
             ammo_price: 45,
-            damage: 34.0,
-            interval: 0.06,
+            damage: 28.0,
+            interval: 0.05,
             reload: 1.45,
             spread: 0.018,
             ads_spread: 0.25,
-            range: 50.0,
+            range: 55.0,
             recoil: 0.5,
             ads_fov: 48.0,
             sound: 3,
@@ -404,7 +404,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "HARBOR REVOLVER",
-            blurb: "Six heavy rounds. Two to the body, one to the head.",
+            blurb: "Six heavy rounds. Two to the body out past forty metres, one to the head.",
             price: Cost::credits(240),
             class: GunClass::Pistol,
             caliber: Caliber::Magnum,
@@ -412,12 +412,12 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 6,
             reserve: 24,
             ammo_price: 30,
-            damage: 55.0,
+            damage: 60.0,
             interval: 0.4,
             reload: 1.9,
             spread: 0.016,
             ads_spread: 0.3,
-            range: 35.0,
+            range: 40.0,
             recoil: 1.3,
             ads_fov: 56.0,
             sound: 8,
@@ -450,8 +450,8 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 15,
             reserve: 45,
             ammo_price: 45,
-            damage: 55.0,
-            interval: 0.24,
+            damage: 52.0,
+            interval: 0.3,
             reload: 1.6,
             spread: 0.03,
             ads_spread: 0.1,
@@ -477,7 +477,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "BREACHER",
-            blurb: "Drum-fed automatic shotgun for clearing rooms.",
+            blurb: "Drum-fed automatic shotgun: two quick blasts clear a doorway, point-blank one does.",
             price: Cost::new(520, 20, 10, 0),
             class: GunClass::Shotgun,
             caliber: Caliber::Shell,
@@ -489,9 +489,9 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             interval: 0.24,
             reload: 2.2,
             pellets: 8,
-            spread: 0.12,
-            ads_spread: 0.75,
-            range: 7.0,
+            spread: 0.07,
+            ads_spread: 0.7,
+            range: 6.0,
             recoil: 1.25,
             ads_fov: 62.0,
             sound: 2,
@@ -523,12 +523,12 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 50,
             reserve: 150,
             ammo_price: 35,
-            damage: 14.0,
-            interval: 0.05,
+            damage: 17.0,
+            interval: 0.048,
             reload: 1.6,
-            spread: 0.02,
+            spread: 0.019,
             ads_spread: 0.45,
-            range: 14.0,
+            range: 10.0,
             recoil: 0.24,
             ads_fov: 60.0,
             sound: 1,
@@ -562,7 +562,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             reserve: 60,
             ammo_price: 50,
             damage: 42.0,
-            interval: 0.12,
+            interval: 0.15,
             reload: 1.75,
             spread: 0.02,
             ads_spread: 0.3,
@@ -596,8 +596,8 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 30,
             reserve: 90,
             ammo_price: 45,
-            damage: 28.0,
-            interval: 0.09,
+            damage: 27.0,
+            interval: 0.095,
             reload: 1.6,
             spread: 0.017,
             ads_spread: 0.3,
@@ -631,7 +631,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 24,
             reserve: 96,
             ammo_price: 30,
-            damage: 15.0,
+            damage: 17.0,
             interval: 0.055,
             reload: 1.15,
             spread: 0.03,
@@ -661,7 +661,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "FOXHOLE SMG",
-            blurb: "Wartime drum gun. Fifty rounds, wood and steel, hits hard.",
+            blurb: "Wartime drum gun. Fifty heavy rounds: three to the body up close.",
             price: Cost::credits(240),
             class: GunClass::Smg,
             caliber: Caliber::Pistol,
@@ -669,12 +669,12 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 50,
             reserve: 100,
             ammo_price: 40,
-            damage: 22.0,
-            interval: 0.095,
+            damage: 34.0,
+            interval: 0.1,
             reload: 2.3,
             spread: 0.024,
             ads_spread: 0.4,
-            range: 24.0,
+            range: 13.0,
             recoil: 0.36,
             ads_fov: 58.0,
             sound: 1,
@@ -710,7 +710,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             reserve: 90,
             ammo_price: 40,
             damage: 26.0,
-            interval: 0.08,
+            interval: 0.088,
             reload: 1.2,
             spread: 0.018,
             ads_spread: 0.32,
@@ -744,8 +744,8 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 8,
             reserve: 32,
             ammo_price: 40,
-            damage: 70.0,
-            interval: 0.6,
+            damage: 75.0,
+            interval: 0.45,
             reload: 0.45,
             spread: 0.035,
             ads_spread: 0.12,
@@ -773,7 +773,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "GOLIATH RIFLE",
-            blurb: "Anti-materiel rifle. One shot to the chest, if you can carry it.",
+            blurb: "Anti-materiel rifle. Whatever it hits goes down, if you can carry it.",
             price: Cost::new(900, 40, 20, 5),
             class: GunClass::Sniper,
             caliber: Caliber::Magnum,
@@ -781,7 +781,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 5,
             reserve: 15,
             ammo_price: 70,
-            damage: 140.0,
+            damage: 150.0,
             interval: 1.0,
             reload: 2.8,
             spread: 0.12,
@@ -863,7 +863,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             reserve: 24,
             ammo_price: 50,
             damage: 80.0,
-            interval: 0.95,
+            interval: 0.9,
             reload: 1.9,
             spread: 0.08,
             ads_spread: 0.012,
@@ -931,7 +931,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "MAULER DOUBLE",
-            blurb: "Side-by-side double barrel. Two enormous blasts, then two shells in.",
+            blurb: "Side-by-side double barrel. Each barrel drops anyone inside ten metres, then two shells in.",
             price: Cost::credits(300),
             class: GunClass::Shotgun,
             caliber: Caliber::Shell,
@@ -940,13 +940,13 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 2,
             reserve: 16,
             ammo_price: 30,
-            damage: 19.0,
+            damage: 22.0,
             interval: 0.16,
             reload: 0.8,
             pellets: 10,
-            spread: 0.11,
-            ads_spread: 0.75,
-            range: 10.0,
+            spread: 0.07,
+            ads_spread: 0.7,
+            range: 8.0,
             recoil: 1.9,
             ads_fov: 62.0,
             sound: 2,
@@ -971,7 +971,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "RIPTIDE AUTO-12",
-            blurb: "Magazine-fed semi-auto shotgun. Fast follow-ups, quick reloads.",
+            blurb: "Magazine-fed semi-auto shotgun. Two fast blasts at mid range, one point-blank.",
             price: Cost::new(480, 20, 5, 0),
             class: GunClass::Shotgun,
             caliber: Caliber::Shell,
@@ -980,12 +980,12 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             reserve: 32,
             ammo_price: 40,
             damage: 15.0,
-            interval: 0.28,
+            interval: 0.25,
             reload: 2.0,
             pellets: 8,
-            spread: 0.1,
-            ads_spread: 0.7,
-            range: 11.0,
+            spread: 0.055,
+            ads_spread: 0.65,
+            range: 9.0,
             recoil: 1.3,
             ads_fov: 60.0,
             sound: 2,
@@ -1010,7 +1010,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
         },
         WeaponDef {
             name: "WARHORSE HAND CANNON",
-            blurb: "Gas-operated magnum pistol. Seven heavy rounds, a brutal kick.",
+            blurb: "Gas-operated magnum pistol. Seven heavy rounds, two to the body up close, a brutal kick.",
             price: Cost::credits(280),
             class: GunClass::Pistol,
             caliber: Caliber::Magnum,
@@ -1023,7 +1023,7 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             reload: 1.6,
             spread: 0.018,
             ads_spread: 0.28,
-            range: 32.0,
+            range: 25.0,
             recoil: 1.7,
             ads_fov: 55.0,
             sound: 8,
@@ -1093,12 +1093,12 @@ pub fn standard_guns() -> Vec<WeaponDef> {
             mag: 40,
             reserve: 160,
             ammo_price: 30,
-            damage: 16.0,
+            damage: 20.0,
             interval: 0.058,
             reload: 1.4,
             spread: 0.019,
             ads_spread: 0.42,
-            range: 17.0,
+            range: 11.0,
             recoil: 0.26,
             ads_fov: 58.0,
             sound: 1,
@@ -1207,11 +1207,44 @@ mod tests {
     }
 
     #[test]
-    fn the_launcher_is_slow_to_reload_and_small() {
+    fn the_launcher_hits_hard_but_is_slow_to_reload_and_small() {
         let guns = standard_guns();
         let launcher = &guns[gun::LAUNCHER];
         assert!(launcher.reload >= 4.0 && launcher.mag <= 4 && launcher.reserve <= 4);
-        assert!(launcher.splash <= 5.0 && launcher.damage <= 130.0);
+        // A big blast, but not a map-wide one: still smaller than a frag's reach.
+        assert!((6.0..=7.5).contains(&launcher.splash) && (140.0..=180.0).contains(&launcher.damage));
+    }
+
+    #[test]
+    fn falloff_keeps_full_damage_to_range_then_eases_to_the_class_floor() {
+        use crate::arsenal::falloff;
+        for class in [GunClass::Pistol, GunClass::Smg, GunClass::Rifle, GunClass::Shotgun, GunClass::Sniper, GunClass::Lmg] {
+            assert_eq!(falloff(class, 20.0, 5.0), 1.0);
+            assert_eq!(falloff(class, 20.0, 20.0), 1.0);
+            assert!(falloff(class, 20.0, 40.0) < 1.0 && falloff(class, 20.0, 40.0) > class.falloff_floor());
+            assert!((falloff(class, 20.0, 60.0) - class.falloff_floor()).abs() < 1e-5);
+            assert!((falloff(class, 20.0, 600.0) - class.falloff_floor()).abs() < 1e-5);
+        }
+        assert!(GunClass::Shotgun.falloff_floor() < GunClass::Smg.falloff_floor());
+        assert!(GunClass::Smg.falloff_floor() < GunClass::Rifle.falloff_floor());
+        assert!(GunClass::Rifle.falloff_floor() < GunClass::Sniper.falloff_floor());
+    }
+
+    #[test]
+    fn the_pellet_pattern_is_a_fixed_ring_not_a_lottery() {
+        use crate::arsenal::{PELLET_INNER, pellet_offset};
+        for n in [8u8, 9, 10] {
+            for spin in [0.0f32, 1.3, 4.0] {
+                for jitter in [(-1.0, -1.0), (0.0, 0.0), (1.0, 1.0)] {
+                    let offsets: Vec<f32> = (0..n).map(|i| pellet_offset(i, n, spin, jitter)).map(|(x, y)| (x * x + y * y).sqrt()).collect();
+                    assert_eq!(offsets[0], 0.0, "one pellet down the middle");
+                    // Half the pattern sits on the inner ring, the rest at the edge; nothing strays past it.
+                    let inner = offsets.iter().filter(|r| **r <= PELLET_INNER * 1.11).count();
+                    assert!(inner >= n as usize / 2, "{n} pellets: {offsets:?}");
+                    assert!(offsets.iter().all(|r| *r <= 1.1 + 1e-4));
+                }
+            }
+        }
     }
 
     /// Where a ray first enters a part (treated as its box), if it does.

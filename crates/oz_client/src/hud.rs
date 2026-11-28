@@ -846,7 +846,7 @@ fn update_shapes(
             Some(oz_core::content::PerkEffect::Hipfire(scale)) if !aiming => scale,
             _ => 1.0,
         };
-        stats.spread * if aiming { stats.ads_spread } else { hip * oz_sim::weapons::HIP_WIDTH } * stance::steadiness(input.stance) * oz_sim::weapons::bloom(mover.speed, mover.grounded, aiming)
+        oz_sim::weapons::shot_cone(def.class, &stats, aiming, hip, input.stance, mover.speed, mover.grounded)
     });
     // The ticks sit on the edge of where a shot can land, as seen from here: blind fire
     // throws its shots wide (as the simulation does), and the size is measured on screen.

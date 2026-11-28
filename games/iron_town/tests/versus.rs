@@ -1442,3 +1442,155 @@ fn a_door_swinging_onto_someone_never_traps_them() {
     let through = (me_at(&mut app) - spec.center).dot(across);
     assert!(through > 0.8, "did not get through the open door: {through:.2} m past it");
 }
+
+// Weapon roles, end to end in a live match: a real shooter, a real target and the real
+// firing system (pellet rays, falloff, hit spheres, lag compensation, blasts).
+
+/// A live 1v1 with the enemy bot frozen (no brain) so the test moves it.
+fn duel() -> (App, Entity, Entity) {
+    let mut app = app();
+    let mut rules = deathmatch_rules(5);
+    rules.team_size = 1;
+    app.world_mut().resource_mut::<PendingMatch>().0 = Some(MatchSetup::offline(rules, "TEST"));
+    for _ in 0..4 {
+        app.update();
+    }
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Lobby(LobbyAction::Start) });
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(app.world().resource::<MatchState>().phase, Phase::Live);
+    let world = app.world_mut();
+    let target = world.query_filtered::<Entity, With<Bot>>().single(world).unwrap();
+    world.entity_mut(target).remove::<Bot>();
+    let me = world.query_filtered::<Entity, With<LocalPlayer>>().single(world).unwrap();
+    (app, me, target)
+}
+
+/// An open, level sightline in the plaza: (shooter's feet, target's feet) `distance` apart.
+fn sightline(app: &App, distance: f32) -> (Vec3, Vec3) {
+    let statics = app.world().resource::<Statics>().clone();
+    let map = app.world().resource::<Map>().clone();
+    let clear = |a: Vec3, b: Vec3| statics.raycast(a, (b - a).normalize(), a.distance(b)).is_none();
+    (-16..16)
+        .flat_map(|x| (-16..16).map(move |z| (x as f32 * 1.5, z as f32 * 1.5)))
+        .map(|(x, z)| (map.ground(x, z - distance), map.ground(x, z)))
+        .find(|(s, t)| (t.y - s.y).abs() < 0.2 && [0.3, 1.0, 1.62].iter().all(|h| clear(*s + Vec3::Y * EYE, *t + Vec3::Y * *h)))
+        .expect("an open sightline")
+}
+
+fn place(app: &mut App, entity: Entity, at: Vec3) {
+    app.world_mut().get_mut::<Transform>(entity).unwrap().translation = at;
+}
+
+fn arm(app: &mut App, me: Entity, weapon: usize) {
+    let world = app.world_mut();
+    let defs = world.resource::<oz_sim::session::Content>().weapons.clone();
+    let mut arsenal = world.get_mut::<Arsenal>(me).unwrap();
+    oz_sim::weapons::grant_weapon(&mut arsenal, &defs, weapon);
+    arsenal.current = weapon as u8;
+    arsenal.reload = 0.0;
+    world.get_mut::<PlayerInput>(me).unwrap().weapon = weapon as u8;
+}
+
+/// Resets the target to `hp`, aims from `from` at `aim`, pulls the trigger once and lets
+/// `settle` seconds pass. Returns the target's health afterwards (0 or less is dead).
+#[allow(clippy::too_many_arguments)]
+fn shoot(app: &mut App, me: Entity, target: Entity, aim: Vec3, aiming: bool, hp: f32, view: Option<f32>, settle: f32) -> f32 {
+    let world = app.world_mut();
+    *world.get_mut::<Health>(target).unwrap() = Health { hp, max: hp };
+    world.get_mut::<Player>(target).unwrap().protect = 0.0;
+    world.get_mut::<Player>(target).unwrap().lost = 0;
+    let eye = world.get::<Transform>(me).unwrap().translation + Vec3::Y * EYE;
+    let to = aim - eye;
+    match view {
+        Some(t) => world.entity_mut(me).insert(oz_sim::lagcomp::ViewTime(t)),
+        None => world.entity_mut(me).remove::<oz_sim::lagcomp::ViewTime>(),
+    };
+    let hold = if aiming { buttons::AIM } else { 0 };
+    let mut input = world.get_mut::<PlayerInput>(me).unwrap();
+    input.yaw = f32::atan2(-to.x, -to.z);
+    input.pitch = (to.y / to.length()).asin();
+    input.buttons = hold;
+    let mut arsenal = world.get_mut::<Arsenal>(me).unwrap();
+    arsenal.cooldown = 0.0;
+    let current = arsenal.current as usize;
+    arsenal.weapons[current].ammo = arsenal.weapons[current].ammo.max(2);
+    app.update();
+    app.world_mut().get_mut::<PlayerInput>(me).unwrap().buttons = hold | buttons::FIRE;
+    app.update();
+    app.world_mut().get_mut::<PlayerInput>(me).unwrap().buttons = hold;
+    for _ in 0..((settle / FRAME) as usize).max(1) {
+        app.update();
+    }
+    let hp = app.world().get::<Health>(target).unwrap().hp;
+    // Back on its feet for the next shot.
+    *app.world_mut().get_mut::<Health>(target).unwrap() = Health::full(100.0);
+    hp
+}
+
+#[test]
+fn a_pump_shotgun_one_shots_from_the_hip_across_a_room() {
+    let (mut app, me, target) = duel();
+    let (shooter, at) = sightline(&app, 6.0);
+    place(&mut app, me, shooter);
+    place(&mut app, target, at);
+    arm(&mut app, me, oz_core::kit::gun::SHOTGUN);
+    for _ in 0..4 {
+        app.update();
+    }
+    for attempt in 0..8 {
+        let left = shoot(&mut app, me, target, at + Vec3::Y * 1.05, false, 100.0, None, 0.1);
+        assert!(left <= 0.0, "blast {attempt} at 6 m left the target on {left:.0}");
+    }
+}
+
+#[test]
+fn every_sniper_takes_a_head_off_in_one_shot_even_lag_compensated() {
+    let (mut app, me, target) = duel();
+    let (shooter, at) = sightline(&app, 10.0);
+    place(&mut app, me, shooter);
+    let defs = app.world().resource::<oz_sim::session::Content>().weapons.clone();
+    for (index, def) in defs.iter().enumerate().filter(|(_, d)| d.class == oz_core::arsenal::GunClass::Sniper) {
+        arm(&mut app, me, index);
+        place(&mut app, target, at);
+        for _ in 0..12 {
+            app.update();
+        }
+        // Heavy armour, aimed down the sights at the head.
+        let live = shoot(&mut app, me, target, at + Vec3::Y * 1.62, true, 150.0, None, 0.1);
+        assert!(live <= 0.0, "{} headshot left {live:.0}", def.name);
+        // A guest saw it here a moment ago; it has since stepped aside. The rewound shot lands.
+        place(&mut app, target, at);
+        for _ in 0..4 {
+            app.update();
+        }
+        let seen = app.world().resource::<Time>().elapsed_secs();
+        for _ in 0..4 {
+            app.update();
+        }
+        place(&mut app, target, at + Vec3::X * 2.0);
+        for _ in 0..3 {
+            app.update();
+        }
+        let rewound = shoot(&mut app, me, target, at + Vec3::Y * 1.62, true, 150.0, Some(seen), 0.1);
+        assert!(rewound <= 0.0, "{} lag-compensated headshot left {rewound:.0}", def.name);
+    }
+}
+
+#[test]
+fn a_grenade_at_their_feet_kills_and_the_blast_spares_the_shooter() {
+    let (mut app, me, target) = duel();
+    let (shooter, at) = sightline(&app, 12.0);
+    place(&mut app, me, shooter);
+    place(&mut app, target, at);
+    arm(&mut app, me, oz_core::kit::gun::LAUNCHER);
+    for _ in 0..10 {
+        app.update();
+    }
+    // Into the ground a metre and a half short of them: the blast, not a direct hit, does it.
+    let short = at + (shooter - at).normalize() * 1.5 + Vec3::Y * 0.4;
+    let left = shoot(&mut app, me, target, short, true, 100.0, None, 1.0);
+    assert!(left <= 0.0, "a grenade 1.5 m away left the target on {left:.0}");
+    assert!(app.world().get::<Health>(me).unwrap().hp > 99.0, "the shooter is out of the blast");
+}
