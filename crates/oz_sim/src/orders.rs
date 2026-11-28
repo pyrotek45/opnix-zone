@@ -226,8 +226,13 @@ pub fn process_commands(
                 None
             }
             PlayerCommand::Loadout(loadout) => {
+                // Co-op modes have no classes: a class sent from the lobby as the match switched
+                // over (online, the guest can still be a step behind) is simply not needed.
+                if !rules.pvp {
+                    continue;
+                }
                 let valid = |index: u8| (index as usize) < content.weapons.len();
-                if !rules.pvp || !valid(loadout.primary) || !valid(loadout.secondary) || loadout.primary == loadout.secondary {
+                if !valid(loadout.primary) || !valid(loadout.secondary) || loadout.primary == loadout.secondary {
                     deny(&mut fx, "INVALID LOADOUT");
                     continue;
                 }
