@@ -165,7 +165,7 @@ pub fn fire_weapons(
     mut rng: ResMut<SimRng>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health, Option<&ViewTime>, Option<&crate::player::Mover>)>,
+    mut players: Query<(Entity, &mut Player, &Transform, &PlayerInput, &mut Arsenal, &mut Health, Option<&ViewTime>, Option<&crate::player::Mover>, Option<&crate::net::Remote>)>,
     solids: Query<(&Transform, &Solid), (Or<(With<Structure>, With<crate::breakables::Door>, With<crate::breakables::ClutterPiece>)>, Without<OreNode>)>,
     mut ores: Query<(&Transform, &mut OreNode)>,
     (mut hits, mut traces, mut noises, mut aircraft): (EventWriter<Hit>, EventWriter<crate::breakables::Trace>, ResMut<crate::bots::Noises>, Query<(Entity, &Transform, &mut crate::killstreak::Aircraft), Without<Player>>),
@@ -176,7 +176,7 @@ pub fn fire_weapons(
     let bodies: Vec<Body> = if rules.pvp {
         players
             .iter()
-            .filter(|(.., health, _, _)| health.alive())
+            .filter(|(.., health, _, _, _)| health.alive())
             .map(|(entity, player, transform, input, ..)| Body {
                 entity,
                 id: player.id,
@@ -185,8 +185,8 @@ pub fn fire_weapons(
                 stance: input.stance,
                 yaw: input.yaw,
                 lean: crate::player::lean_offset(&statics, transform.translation, input),
-                hunker: input.cover != 0 && input.stance == stance::CROUCH && !input.held(crate::player::buttons::AIM),
-                blind: input.held(crate::player::buttons::BLIND).then(|| crate::player::shot_origin(&statics, transform.translation, input) - Vec3::Y * 0.1),
+                hunker: crate::lagcomp::hunkered(input),
+                blind: input.held(crate::player::buttons::BLIND).then(|| crate::lagcomp::blind_arm(&statics, transform.translation, input)),
                 lost: player.lost,
                 name: player.name.clone(),
             })
@@ -200,7 +200,7 @@ pub fn fire_weapons(
     let lobby = state.phase == Phase::Lobby;
 
     let now = time.elapsed_secs();
-    for (entity, mut player, transform, input, mut arsenal, mut health, view, mover) in &mut players {
+    for (entity, mut player, transform, input, mut arsenal, mut health, view, mover, remote) in &mut players {
         // Plain reborrow so separate fields can be borrowed at once.
         let arsenal = &mut *arsenal;
         arsenal.cooldown = (arsenal.cooldown - dt).max(0.0);
@@ -221,7 +221,10 @@ pub fn fire_weapons(
             arsenal.burst = 0;
             continue;
         }
-        let eye = crate::player::shot_origin(&statics, transform.translation, input);
+        // A guest shoots from where it really is: its latest report, not the host's
+        // slightly delayed playback of it (that would put the muzzle a step behind).
+        let feet = remote.and_then(|r| r.latest()).map_or(transform.translation, |(at, _)| at);
+        let eye = crate::player::shot_origin(&statics, feet, input);
         let look = input.look();
         let me = bodies.iter().position(|body| body.entity == entity);
         // Lag compensation: remote shooters hit the world as they saw it.
@@ -235,7 +238,16 @@ pub fn fire_weapons(
             bodies
                 .iter()
                 .filter_map(|b| match history.pose_at(at, b.entity) {
-                    Some(pose) if pose.alive => Some(Body { feet: pose.feet, stance: pose.stance, yaw: pose.yaw, lean: pose.lean, name: b.name.clone(), ..*b }),
+                    Some(pose) if pose.alive => Some(Body {
+                        feet: pose.feet,
+                        stance: pose.stance,
+                        yaw: pose.yaw,
+                        lean: pose.lean,
+                        hunker: pose.hunker,
+                        blind: pose.blind.map(|arm| pose.feet + arm),
+                        name: b.name.clone(),
+                        ..*b
+                    }),
                     Some(_) => None,
                     None => Some(Body { name: b.name.clone(), ..*b }),
                 })
@@ -580,7 +592,7 @@ pub fn fire_weapons(
     }
 
     for (at, radius, team) in resupply {
-        for (_, player, transform, _, mut arsenal, health, _, _) in &mut players {
+        for (_, player, transform, _, mut arsenal, health, ..) in &mut players {
             if player.team == team && health.alive() && transform.translation.distance(at) <= radius {
                 top_up(&mut arsenal, &content.weapons);
             }
@@ -589,7 +601,7 @@ pub fn fire_weapons(
 
     for (victim, damage, attacker, burn, part) in struck {
         let attacker = &bodies[attacker];
-        if let Ok((_, mut player, _, _, _, mut health, _, _)) = players.get_mut(victim) {
+        if let Ok((_, mut player, _, _, _, mut health, ..)) = players.get_mut(victim) {
             if burn > 0.0 {
                 player.burn = burn;
                 player.burn_time = BURN_SECONDS;

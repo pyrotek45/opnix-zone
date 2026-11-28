@@ -38,6 +38,10 @@ pub struct Pose {
     pub alive: bool,
     /// Where leaning moved the head (see [`crate::player::lean_offset`]).
     pub lean: Vec3,
+    /// Crouched in cover, hunkered down.
+    pub hunker: bool,
+    /// Firing blind: where the exposed gun arm was, relative to the feet.
+    pub blind: Option<Vec3>,
 }
 
 #[derive(Resource, Default)]
@@ -90,7 +94,9 @@ impl LagHistory {
                         if pa.feet.distance(pb.feet) > 4.0 {
                             return Some(if k < 0.5 { pa } else { pb });
                         }
-                        Some(Pose { feet: pa.feet.lerp(pb.feet, k), stance: if k < 0.5 { pa.stance } else { pb.stance }, yaw: pb.yaw, alive: pa.alive && pb.alive, lean: pa.lean.lerp(pb.lean, k), ..pb })
+                        let near = if k < 0.5 { pa } else { pb };
+                        let turn = (pb.yaw - pa.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                        Some(Pose { feet: pa.feet.lerp(pb.feet, k), yaw: pa.yaw + turn * k, alive: pa.alive && pb.alive, lean: pa.lean.lerp(pb.lean, k), ..near })
                     }
                     (one, other) => one.or(other),
                 }
@@ -120,26 +126,50 @@ impl LagHistory {
     }
 }
 
-/// Authority: records every player's true position this frame.
-/// Remote players are recorded at their latest reported position, not the smoothed one.
+/// Authority: records every player as the world sees them this frame - the very
+/// transforms (and stances) that go out in this frame's snapshot. For players
+/// connected from elsewhere that is their played-back position, not their latest
+/// report: guests are shown the host's copy, so that is what they aim at.
 pub fn record_history(
     time: Res<Time>,
     statics: Res<crate::session::Statics>,
     link: Res<crate::net::NetLink>,
     grid: Res<Grid>,
     mut history: ResMut<LagHistory>,
-    players: Query<(Entity, &Transform, &PlayerInput, &Health, Option<&Remote>), With<Player>>,
+    players: Query<(Entity, &Transform, &PlayerInput, &Health, Has<Remote>), With<Player>>,
 ) {
     let poses = players
         .iter()
         .map(|(entity, transform, input, health, remote)| {
-            let (feet, yaw) = remote.and_then(|r| r.latest()).unwrap_or((transform.translation, input.yaw));
-            Pose { entity, feet, stance: input.stance, yaw, alive: health.alive(), lean: crate::player::lean_offset(&statics, feet, &PlayerInput { yaw, ..*input }) }
+            let feet = transform.translation;
+            // Remote players face the way their playback turns them (what snapshots carry).
+            let yaw = if remote { transform.rotation.to_euler(EulerRot::YXZ).0 } else { input.yaw };
+            let input = PlayerInput { yaw, ..*input };
+            Pose {
+                entity,
+                feet,
+                stance: input.stance,
+                yaw,
+                alive: health.alive(),
+                lean: crate::player::lean_offset(&statics, feet, &input),
+                hunker: hunkered(&input),
+                blind: input.held(crate::player::buttons::BLIND).then(|| blind_arm(&statics, feet, &input) - feet),
+            }
         })
         .collect();
     // Enemies are only worth remembering when someone is shooting at them from across the network.
     let enemies = if link.remote_players() > 0 { grid.items() } else { Vec::new() };
     history.record_with_enemies(time.elapsed_secs(), poses, enemies);
+}
+
+/// Crouched in cover and not aiming over it: hunkered lower.
+pub fn hunkered(input: &PlayerInput) -> bool {
+    input.cover != 0 && input.stance == crate::player::stance::CROUCH && !input.held(crate::player::buttons::AIM)
+}
+
+/// Where a blind-firing player's gun arm sticks out.
+pub fn blind_arm(statics: &oz_core::collide::StaticWorld, feet: Vec3, input: &PlayerInput) -> Vec3 {
+    crate::player::shot_origin(statics, feet, input) - Vec3::Y * 0.1
 }
 
 #[cfg(test)]
@@ -150,7 +180,7 @@ mod tests {
     fn rewinds_between_frames_and_respects_teleports() {
         let mut world = World::new();
         let e = world.spawn_empty().id();
-        let pose = |x: f32| Pose { entity: e, feet: Vec3::new(x, 0.0, 0.0), stance: 0, yaw: 0.0, alive: true, lean: Vec3::ZERO };
+        let pose = |x: f32| Pose { entity: e, feet: Vec3::new(x, 0.0, 0.0), stance: 0, yaw: 0.0, alive: true, lean: Vec3::ZERO, hunker: false, blind: None };
         let mut history = LagHistory::default();
         for i in 0..=10 {
             history.record(i as f32 * 0.1, vec![pose(i as f32)]);

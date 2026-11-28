@@ -3,7 +3,7 @@
 use crate::{
     combat::Grid,
     nav::Nav,
-    net::{NetIds, NetLink, Remote},
+    net::{NetIds, NetLink},
     player::{Arsenal, Health, LocalPlayer, Mover, Player, PlayerInput, spawn_point},
     state::{MatchPhase, MatchState, NetRole, Phase, Rules, SimRng},
     structures::OreNode,
@@ -263,7 +263,7 @@ pub fn start_pending_match(
         let now = time.elapsed_secs();
         for seat in &carry.seats {
             let spawn = spawn_point(&map, seat.id, rules.pvp.then_some(seat.team));
-            commands.spawn((player_bundle(&catalog, &rules, &map, seat.id, seat.name.clone(), seat.team), ids.next(), Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now)));
+            commands.spawn((player_bundle(&catalog, &rules, &map, seat.id, seat.name.clone(), seat.team), ids.next(), crate::net::remote_seat(now, spawn)));
         }
     }
     if let NetLink::Host(host) = &mut setup.link {
