@@ -33,6 +33,7 @@ pub mod bindings;
 pub mod bushes;
 pub mod career;
 pub mod chat;
+pub mod clipboard;
 pub mod cover;
 pub mod debuglog;
 pub mod devshots;

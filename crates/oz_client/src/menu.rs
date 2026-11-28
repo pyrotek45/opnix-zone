@@ -104,8 +104,10 @@ impl Plugin for MenuPlugin {
 
 /// A new match drops you into it; a relaunched lobby keeps you in the lobby, or wherever
 /// you were in its menus (the armory, your name, settings).
-fn enter_match(mut screen: ResMut<Screen>, relaunched: Res<Relaunched>, mut dirty: ResMut<UiDirty>, focused: Res<ui::Focused>, mut request: ResMut<ui::FocusRequest>) {
-    if !relaunched.0 {
+fn enter_match(mut screen: ResMut<Screen>, relaunched: Res<Relaunched>, rules: Option<Res<Rules>>, mut dirty: ResMut<UiDirty>, focused: Res<ui::Focused>, mut request: ResMut<ui::FocusRequest>) {
+    // A co-op match started from the lobby drops everyone into it.
+    let coop = rules.is_some_and(|rules| !rules.pvp);
+    if !relaunched.0 || coop {
         *screen = Screen::None;
     } else if !matches!(*screen, Screen::Loadout | Screen::Gunsmith { .. } | Screen::Name | Screen::Settings | Screen::Controls) {
         *screen = Screen::Lobby;
@@ -169,7 +171,14 @@ fn make_rules(modes: &Modes, menu: &MenuState) -> Option<Rules> {
 }
 
 /// Typed characters go to whichever text field is being edited.
-fn type_text(mut keys: EventReader<KeyboardInput>, mut menu: ResMut<MenuState>, mut settings: ResMut<Settings>, mut dirty: ResMut<UiDirty>, screen: Res<Screen>) {
+fn type_text(mut keys: EventReader<KeyboardInput>, held: Res<ButtonInput<KeyCode>>, mut menu: ResMut<MenuState>, mut settings: ResMut<Settings>, mut dirty: ResMut<UiDirty>, screen: Res<Screen>, mut acts: EventWriter<ActEvent>) {
+    // Ctrl+V (Cmd+V) on the join screen pastes the code, editing the field or not.
+    let ctrl = held.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
+    if *screen == Screen::Join && ctrl && held.just_pressed(KeyCode::KeyV) {
+        acts.write(ActEvent(Act::Paste));
+        keys.clear();
+        return;
+    }
     let Some(field) = menu.editing.filter(|_| *screen == Screen::Join) else {
         keys.clear();
         menu.bypass_change_detection().editing = None;
@@ -209,6 +218,7 @@ fn watch_match(
     mut dirty: ResMut<UiDirty>,
     mut shown: Local<bool>,
     mut last_phase: Local<Option<Phase>>,
+    mut last_second: Local<i32>,
 ) {
     let active = *phase.get() == MatchPhase::Active;
     let lost = active && state.as_ref().is_some_and(|state| state.over());
@@ -225,6 +235,16 @@ fn watch_match(
         _ => {}
     }
     *last_phase = now;
+    // The results count down to the lobby: redraw them each second.
+    if *screen == Screen::GameOver
+        && let Some(state) = state.as_ref()
+    {
+        let seconds = (if state.phase == Phase::Won { state.timer.max(state.back_in) } else { state.back_in }).ceil() as i32;
+        if *last_second != seconds {
+            *last_second = seconds;
+            dirty.0 = true;
+        }
+    }
     let pause = active && *role == NetRole::Offline && matches!(*screen, Screen::Pause | Screen::Settings | Screen::Controls | Screen::Name);
     if pause != time.is_paused() {
         if pause { time.pause() } else { time.unpause() }
@@ -302,6 +322,14 @@ fn menu_actions(
                 spectate.enabled = !spectate.enabled;
                 *screen = Screen::None;
             }
+            Act::Paste => match crate::clipboard::paste() {
+                Some(text) => {
+                    settings.last_address = sanitize(&text, 64);
+                    menu.editing = None;
+                    menu.status = "PASTED - PRESS CONNECT".into();
+                }
+                None => menu.status = "NOTHING TO PASTE".into(),
+            },
             Act::Connect => {
                 settings.save();
                 if oz_net::rendezvous::normalize_code(&settings.last_address).is_some() {
@@ -422,7 +450,8 @@ fn build_menu(
         Screen::Join => {
             let field = |name: &str, value: &str, editing: bool| format!("{name:<10}{value}{}", if editing { "_" } else { "" });
             let status = match &*join {
-                JoinStatus::Idle => ("CLICK A FIELD TO EDIT IT, THEN CONNECT".to_string(), ui::DIM),
+                JoinStatus::Idle if !menu.status.is_empty() => (menu.status.clone(), ui::ACCENT),
+                JoinStatus::Idle => ("CLICK A FIELD TO TYPE (CTRL+V PASTES), OR PASTE THE CODE, THEN CONNECT".to_string(), ui::DIM),
                 JoinStatus::Connecting => ("CONNECTING...".to_string(), ui::ACCENT),
                 JoinStatus::Finding(what) => (what.clone(), ui::ACCENT),
                 JoinStatus::Failed(why) => (why.clone(), ui::WARN),
@@ -431,7 +460,11 @@ fn build_menu(
                 ui::label(root, "JOIN GAME", 34.0, ui::TEXT);
                 root.spawn(ui::panel(560.0)).with_children(|panel| {
                     ui::button(panel, order, field("NAME", &settings.callsign, false), Act::EditName);
-                    ui::button(panel, order, field("CODE / IP", &settings.last_address, menu.editing == Some(Field::Address)), Act::Edit(Field::Address));
+                    // The code field with a PASTE button beside it (the lobby's code copies with a click).
+                    panel.spawn(ui::row(8.0)).with_children(|row| {
+                        ui::sized_button(row, order, field("CODE / IP", &settings.last_address, menu.editing == Some(Field::Address)), Act::Edit(Field::Address), None, Val::Px(384.0));
+                        ui::sized_button(row, order, "PASTE", Act::Paste, None, Val::Px(120.0));
+                    });
                     ui::label(panel, "THE JOIN CODE FROM THE HOST'S LOBBY (LIKE K7Q-4MZ), OR AN IP ADDRESS", 13.0, ui::DIM);
                     ui::button(panel, order, "CONNECT", Act::Connect);
                     ui::label(panel, status.0, 14.0, status.1);
@@ -453,27 +486,37 @@ fn build_menu(
             let mut root = if in_match { ui::root(&mut commands, 0.75) } else { ui::root_left(&mut commands, 0.0) };
             root.with_children(|root| {
                 ui::label(root, "SETTINGS", 34.0, ui::TEXT);
-                root.spawn(ui::panel(560.0)).with_children(|panel| {
+                // Two columns of slim rows, so every setting and BACK fit a 720-line screen.
+                root.spawn(ui::panel(1000.0)).with_children(|panel| {
                     ui::button(panel, order, format!("NAME               {}", settings.callsign), Act::EditName);
-                    let mut value = |text: String, setting: Setting| {
-                        let (left, right) = set(setting);
-                        ui::stepper(panel, order, text, left, right);
-                    };
-                    value(format!("LOOK SENSITIVITY   <  {:.1}  >", settings.sensitivity), Setting::Sensitivity);
-                    value(format!("AIM SENSITIVITY    <  {:.2}  >", settings.ads_sensitivity), Setting::AdsSensitivity);
-                    value(format!("FIELD OF VIEW      <  {:.0}  >", settings.fov), Setting::Fov);
-                    value(format!("FPS / PING         <  {}  >", on_off(settings.net_stats)), Setting::NetStats);
-                    value(format!("INVERT Y           <  {}  >", on_off(settings.invert_y)), Setting::InvertY);
-                    value(format!("PIXEL SIZE         <  {}  >", settings.pixel_size), Setting::PixelSize);
-                    value(format!("RETRO DITHER       <  {}  >", on_off(settings.dither)), Setting::Dither);
-                    value(format!("SHADOWS            <  {}  >", on_off(settings.shadows)), Setting::Shadows);
-                    value(format!("FULLSCREEN         <  {}  >", on_off(settings.fullscreen)), Setting::Fullscreen);
-                    value(format!("VSYNC              <  {}  >", on_off(settings.vsync)), Setting::Vsync);
-                    value(format!("VOLUME             <  {:.0}%  >", settings.volume * 100.0), Setting::Volume);
-                    value(format!("EFFECTS            <  {}  >", if settings.full_effects { "FULL" } else { "REDUCED" }), Setting::Effects);
-                    value(format!("AIM ASSIST (PAD)   <  {}  >", on_off(settings.aim_assist)), Setting::AimAssist);
-                    value(format!("STICK CURVE        <  {}  >", if settings.dynamic_curve { "DYNAMIC" } else { "STANDARD" }), Setting::AimCurve);
-                    ui::label(panel, "A BIGGER PIXEL SIZE RENDERS FEWER PIXELS: THE FASTEST WAY TO GAIN FRAME RATE.", 13.0, ui::DIM);
+                    let rows = [
+                        (format!("LOOK SENSITIVITY   <  {:.1}  >", settings.sensitivity), Setting::Sensitivity),
+                        (format!("AIM SENSITIVITY    <  {:.2}  >", settings.ads_sensitivity), Setting::AdsSensitivity),
+                        (format!("FIELD OF VIEW      <  {:.0}  >", settings.fov), Setting::Fov),
+                        (format!("INVERT Y           <  {}  >", on_off(settings.invert_y)), Setting::InvertY),
+                        (format!("AIM ASSIST (PAD)   <  {}  >", on_off(settings.aim_assist)), Setting::AimAssist),
+                        (format!("STICK CURVE        <  {}  >", if settings.dynamic_curve { "DYNAMIC" } else { "STANDARD" }), Setting::AimCurve),
+                        (format!("VOLUME             <  {:.0}%  >", settings.volume * 100.0), Setting::Volume),
+                        (format!("PIXEL SIZE         <  {}  >", settings.pixel_size), Setting::PixelSize),
+                        (format!("RETRO DITHER       <  {}  >", on_off(settings.dither)), Setting::Dither),
+                        (format!("SHADOWS            <  {}  >", on_off(settings.shadows)), Setting::Shadows),
+                        (format!("EFFECTS            <  {}  >", if settings.full_effects { "FULL" } else { "REDUCED" }), Setting::Effects),
+                        (format!("FULLSCREEN         <  {}  >", on_off(settings.fullscreen)), Setting::Fullscreen),
+                        (format!("VSYNC              <  {}  >", on_off(settings.vsync)), Setting::Vsync),
+                        (format!("FPS / PING         <  {}  >", on_off(settings.net_stats)), Setting::NetStats),
+                    ];
+                    let half = rows.len().div_ceil(2);
+                    panel.spawn(Node { column_gap: Val::Px(12.0), ..default() }).with_children(|columns| {
+                        for chunk in rows.chunks(half) {
+                            columns.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(6.0), flex_grow: 1.0, flex_basis: Val::Px(0.0), ..default() }).with_children(|column| {
+                                for (text, setting) in chunk {
+                                    let (left, right) = set(*setting);
+                                    ui::slim(column, order, text.clone(), right, Some(left), false, Val::Percent(100.0));
+                                }
+                            });
+                        }
+                    });
+                    ui::label(panel, "CLICK  <  >  OR SCROLL THE WHEEL OVER A SETTING TO CHANGE IT.  A BIGGER PIXEL SIZE RENDERS FEWER PIXELS: THE FASTEST WAY TO GAIN FRAME RATE.", 13.0, ui::DIM);
                     ui::button(panel, order, "CONTROLS", Act::Go(Screen::Controls));
                     ui::button(panel, order, "BACK", Act::Back);
                 });
@@ -486,6 +529,9 @@ fn build_menu(
                 NetLink::None => "SOLO - TIME IS FROZEN".into(),
             };
             let versus = state.as_deref().is_some_and(|s| matches!(s.phase, Phase::Live | Phase::Lobby | Phase::Won));
+            // The host ends a match for everyone: back to the same lobby.
+            let host = !matches!(&*link, NetLink::Client(_));
+            let end_versus = host && rules.as_deref().is_some_and(|r| r.pvp) && state.as_deref().is_some_and(|s| matches!(s.phase, Phase::Live | Phase::Won));
             let back_to_lobby = can_go_back_to_lobby(&modes, rules.as_deref(), &link);
             ui::root(&mut commands, 0.6).with_children(|root| {
                 ui::label(root, "PAUSED", 34.0, ui::TEXT);
@@ -496,8 +542,8 @@ fn build_menu(
                     }
                     ui::button(panel, order, if spectate.enabled { "STOP SPECTATING" } else { "SPECTATE" }, Act::ToggleSpectate);
                     ui::button(panel, order, "SETTINGS", Act::Go(Screen::Settings));
-                    if back_to_lobby {
-                        ui::button(panel, order, "END - BACK TO THE LOBBY", Act::Lobby(LobbyAction::BackToLobby));
+                    if end_versus || back_to_lobby {
+                        ui::button(panel, order, "END MATCH - EVERYONE TO THE LOBBY", Act::Lobby(LobbyAction::EndMatch));
                     }
                     ui::button(panel, order, "LEAVE MATCH", Act::Leave);
                     ui::label(panel, net, 13.0, ui::DIM);
@@ -555,7 +601,10 @@ fn build_menu(
                             });
                         }
                         let seconds = state.timer.max(0.0).ceil();
-                        ui::label(panel, format!("BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
+                        ui::label(panel, format!("EVERYONE GOES BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
+                        if !matches!(&*link, NetLink::Client(_)) {
+                            ui::button(panel, order, "BACK TO THE LOBBY NOW", Act::Lobby(LobbyAction::EndMatch));
+                        }
                         ui::button(panel, order, "LEAVE MATCH", Act::Leave);
                     });
                 });
@@ -563,14 +612,16 @@ fn build_menu(
                 ui::root(&mut commands, 0.7).with_children(|root| {
                     ui::label(root, headline, 40.0, tint);
                     ui::label(root, summary, 18.0, ui::TEXT);
-                    if versus {
-                        let seconds = state.as_deref().map_or(0.0, |s| s.timer.max(0.0)).ceil();
-                        ui::label(root, format!("BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
+                    // A co-op match from the lobby goes back to it too (see `versus::back_to_lobby`).
+                    let coop_lobby = rules.as_deref().is_some_and(|r| !r.pvp) && has_lobby(&modes);
+                    if versus || coop_lobby {
+                        let seconds = state.as_deref().map_or(0.0, |s| if versus { s.timer } else { s.back_in }.max(0.0)).ceil();
+                        ui::label(root, format!("EVERYONE GOES BACK TO THE LOBBY IN {seconds}"), 15.0, ui::DIM);
                     }
-                    let back_to_lobby = can_go_back_to_lobby(&modes, rules.as_deref(), &link);
+                    let host = !matches!(&*link, NetLink::Client(_));
                     root.spawn(ui::panel(420.0)).with_children(|panel| {
-                        if back_to_lobby {
-                            ui::button(panel, order, "BACK TO THE LOBBY", Act::Lobby(LobbyAction::BackToLobby));
+                        if host && (versus || coop_lobby) {
+                            ui::button(panel, order, "BACK TO THE LOBBY NOW", Act::Lobby(LobbyAction::EndMatch));
                         }
                         ui::button(panel, order, "LEAVE MATCH", Act::Leave);
                         if !versus {

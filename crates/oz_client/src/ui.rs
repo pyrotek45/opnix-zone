@@ -153,6 +153,10 @@ pub enum Act {
     ResetBindings,
     /// Try the host we lost again.
     Reconnect,
+    /// Lobby: copy the join code to the clipboard.
+    CopyCode,
+    /// Join screen: fill the code / address field from the clipboard.
+    Paste,
 }
 
 /// Ask for focus to land on the button with this action once it exists (screens use
@@ -310,7 +314,7 @@ pub fn label(parent: &mut ChildSpawnerCommands, text: impl Into<String>, size: f
 }
 
 fn button_node(width: Val) -> impl Bundle {
-    (Button, Node { width, padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)), border: UiRect::all(Val::Px(2.0)), ..default() }, BackgroundColor(BUTTON), BorderColor(BORDER))
+    (Button, Node { width, padding: UiRect::axes(Val::Px(14.0), Val::Px(7.0)), border: UiRect::all(Val::Px(2.0)), align_items: AlignItems::Center, ..default() }, BackgroundColor(BUTTON), BorderColor(BORDER))
 }
 
 /// A full-width button.
@@ -325,7 +329,81 @@ pub fn stepper(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl 
 
 pub fn sized_button(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, width: Val) {
     order.0 += 1;
-    parent.spawn((button_node(width), Clickable { act, left, order: order.0 })).with_children(|button| label(button, text, 17.0, TEXT));
+    let value = left.is_some();
+    parent.spawn((button_node(width), Clickable { act, left, order: order.0 })).with_children(|button| fill(button, text.into(), 17.0, TEXT, value));
+}
+
+/// A big button holding a code to read out or copy: a small title, the code in large
+/// high-contrast type, and a hint (e.g. "CLICK TO COPY") under it.
+#[allow(clippy::too_many_arguments)]
+pub fn code_button(parent: &mut ChildSpawnerCommands, order: &mut Order, act: Act, title: &str, code: &str, hint: &str, hint_color: Color, width: Val, cell: IVec2) {
+    order.0 += 1;
+    parent
+        .spawn((
+            Button,
+            Node {
+                width,
+                padding: UiRect::axes(Val::Px(16.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(2.0),
+                ..default()
+            },
+            BackgroundColor(BUTTON),
+            BorderColor(BORDER),
+            Clickable { act, left: None, order: order.0 },
+            GridPos(cell),
+        ))
+        .with_children(|button| {
+            label(button, title, 13.0, ACCENT);
+            label(button, code, 40.0, Color::WHITE);
+            label(button, hint, 13.0, hint_color);
+        });
+}
+
+/// One of the two arrows on a value button: the mouse clicks `<` to step back and `>` to
+/// step forward (clicking anywhere else on the row steps forward too).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepArrow {
+    pub forward: bool,
+}
+
+const ARROW: Color = Color::srgba(0.14, 0.22, 0.26, 0.95);
+const ARROW_HOVER: Color = Color::srgb(0.55, 0.45, 0.2);
+
+/// A button's text. A value button written "NAME  <  VALUE  >" gets real arrows to click
+/// either side of its value, with the value centred between them.
+fn fill(button: &mut ChildSpawnerCommands, text: String, size: f32, color: Color, value: bool) {
+    let parts = value.then(|| text.find('<').zip(text.rfind('>')).filter(|(lt, gt)| lt < gt)).flatten();
+    let Some((lt, gt)) = parts else {
+        return label(button, text, size, color);
+    };
+    let (name, shown, rest) = (&text[..lt], text[lt + 1..gt].trim(), text[gt + 1..].trim());
+    let arrow = |button: &mut ChildSpawnerCommands, forward: bool| {
+        button
+            .spawn((
+                Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)), border: UiRect::all(Val::Px(1.0)), justify_content: JustifyContent::Center, ..default() },
+                BackgroundColor(ARROW),
+                BorderColor(BORDER),
+                Interaction::default(),
+                bevy::ui::FocusPolicy::Pass,
+                StepArrow { forward },
+            ))
+            .with_children(|arrow| label(arrow, if forward { ">" } else { "<" }, size, color));
+    };
+    if !name.is_empty() {
+        // Names come padded to a common length: give them a common width too, so the arrows
+        // of a column of settings line up whatever the letters.
+        let width = name.chars().count() as f32 * size * 0.6;
+        button.spawn(Node { width: Val::Px(width), flex_shrink: 0.0, ..default() }).with_children(|cell| label(cell, name.trim_end().to_string(), size, color));
+    }
+    arrow(button, false);
+    button.spawn(Node { flex_grow: 1.0, justify_content: JustifyContent::Center, padding: UiRect::horizontal(Val::Px(6.0)), ..default() }).with_children(|middle| label(middle, shown.to_string(), size, color));
+    arrow(button, true);
+    if !rest.is_empty() {
+        button.spawn(Node { margin: UiRect::left(Val::Px(6.0)), ..default() }).with_children(|tail| label(tail, rest.to_string(), size, color));
+    }
 }
 
 /// A button that keeps its place in the focus order but paints itself as selected.
@@ -340,7 +418,8 @@ pub fn chip(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Int
 #[allow(clippy::too_many_arguments)]
 pub fn grid_button(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, width: Val, col: i32, row: i32) {
     order.0 += 1;
-    parent.spawn((button_node(width), Clickable { act, left, order: order.0 }, GridPos(IVec2::new(col, row)))).with_children(|button| label(button, text, 17.0, TEXT));
+    let value = left.is_some();
+    parent.spawn((button_node(width), Clickable { act, left, order: order.0 }, GridPos(IVec2::new(col, row)))).with_children(|button| fill(button, text.into(), 17.0, TEXT, value));
 }
 
 /// A slim button for long lists (the armory): less padding, smaller type.
@@ -353,9 +432,10 @@ pub fn slim(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Int
 pub fn slim_at(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl Into<String>, act: Act, left: Option<Act>, selected: bool, width: Val, cell: Option<IVec2>) {
     order.0 += 1;
     let color = if selected { GOOD } else { TEXT };
+    let value = left.is_some();
     let mut button = parent.spawn((
         Button,
-        Node { width, padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)), border: UiRect::all(Val::Px(2.0)), ..default() },
+        Node { width, padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)), border: UiRect::all(Val::Px(2.0)), align_items: AlignItems::Center, ..default() },
         BackgroundColor(BUTTON),
         BorderColor(BORDER),
         Clickable { act, left, order: order.0 },
@@ -363,7 +443,7 @@ pub fn slim_at(parent: &mut ChildSpawnerCommands, order: &mut Order, text: impl 
     if let Some(cell) = cell {
         button.insert(GridPos(cell));
     }
-    button.with_children(|button| label(button, text, 16.0, color));
+    button.with_children(|button| fill(button, text.into(), 16.0, color, value));
 }
 
 /// A greyed-out row that cannot be focused.
@@ -396,7 +476,9 @@ fn interact(
     controls: Res<Controls>,
     mut focus: ResMut<Focus>,
     mut buttons: Query<(&Interaction, &Clickable, &mut BackgroundColor, &mut BorderColor, &GlobalTransform, Option<&GridPos>)>,
-    changed: Query<(&Interaction, &Clickable), Changed<Interaction>>,
+    changed: Query<(Entity, &Interaction, &Clickable), Changed<Interaction>>,
+    mut arrows: Query<(&Interaction, &StepArrow, &ChildOf, &mut BackgroundColor), Without<Clickable>>,
+    scroll: Option<Res<bevy::input::mouse::AccumulatedMouseScroll>>,
     mut acts: EventWriter<ActEvent>,
     mut sounds: EventWriter<PlaySfx>,
     mut focused: ResMut<Focused>,
@@ -422,15 +504,38 @@ fn interact(
     let mut now = before;
     let mut fired = false;
 
-    for (interaction, clickable) in &changed {
+    for (entity, interaction, clickable) in &changed {
         match interaction {
             Interaction::Hovered => now = rank(clickable.order),
             Interaction::Pressed => {
                 now = rank(clickable.order);
-                acts.write(ActEvent(clickable.act.clone()));
+                // A value button: its `<` arrow steps back, anywhere else steps forward.
+                let back = arrows.iter().any(|(i, arrow, parent, _)| parent.parent() == entity && !arrow.forward && *i == Interaction::Pressed);
+                let act = if back { clickable.left.clone().unwrap_or(clickable.act.clone()) } else { clickable.act.clone() };
+                acts.write(ActEvent(act));
                 fired = true;
             }
             Interaction::None => {}
+        }
+    }
+    // The mouse wheel over a value button steps it (up: forward, down: back).
+    let wheel = scroll.map_or(0.0, |s| s.delta.y);
+    if wheel != 0.0
+        && let Some((_, clickable, ..)) = buttons.iter().find(|(i, c, ..)| **i == Interaction::Hovered && c.left.is_some())
+    {
+        let act = if wheel > 0.0 { clickable.act.clone() } else { clickable.left.clone().unwrap_or(clickable.act.clone()) };
+        now = rank(clickable.order);
+        acts.write(ActEvent(act));
+        fired = true;
+    }
+    // The arrow under the mouse lights up.
+    for (interaction, _, _, mut background) in &mut arrows {
+        let fill = match interaction {
+            Interaction::None => ARROW,
+            _ => ARROW_HOVER,
+        };
+        if background.0 != fill {
+            background.0 = fill;
         }
     }
     let nav = controls.ui;

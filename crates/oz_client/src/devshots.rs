@@ -30,6 +30,9 @@ pub struct DevShotsPlugin;
 impl Plugin for DevShotsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, autostart.run_if(in_state(MatchPhase::Active)));
+        if std::env::var("OPNIX_UI_SHOT").is_ok() {
+            app.add_systems(Update, ui_shot);
+        }
         if std::env::var("OPNIX_POSE_CAM").is_ok() {
             app.add_systems(Update, pose_cam.after(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
         }
@@ -50,6 +53,95 @@ fn autostart(screen: Res<Screen>, state: Res<MatchState>, players: Query<&Player
     *asked = now;
     if let Ok(me) = players.single() {
         orders.write(CommandEvent { player: me.id, command: PlayerCommand::Lobby(LobbyAction::Start) });
+    }
+}
+
+/// `OPNIX_UI_SHOT=path.png`: photographs a menu screen, then quits.
+/// * `OPNIX_UI_SCREEN=join|settings|controls` opens that screen from the main menu first;
+/// * otherwise, once in the lobby, `OPNIX_UI_LOBBY=mode-1,mapkind,size+1,map+1,newmap,copy,page1`
+///   steps through those lobby actions (each once the lobby has settled on the last);
+/// * the picture is taken `OPNIX_UI_DELAY` seconds (default 3) after the last step.
+#[allow(clippy::too_many_arguments)]
+fn ui_shot(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    mut screen: ResMut<Screen>,
+    state: Option<Res<MatchState>>,
+    players: Query<&Player, With<LocalPlayer>>,
+    mut orders: EventWriter<CommandEvent>,
+    mut acts: EventWriter<crate::ui::ActEvent>,
+    mut exit: EventWriter<AppExit>,
+    mut progress: Local<(usize, f32, bool)>,
+) {
+    let Ok(path) = std::env::var("OPNIX_UI_SHOT") else { return };
+    let now = time.elapsed_secs();
+    let step = progress.0;
+    if progress.2 {
+        if now - progress.1 > 2.0 {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    let delay = std::env::var("OPNIX_UI_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(3.0f32);
+    let wanted = std::env::var("OPNIX_UI_SCREEN").ok();
+    let ready = match wanted.as_deref() {
+        Some(name) => {
+            let target = match name {
+                "join" => Screen::Join,
+                "controls" => Screen::Controls,
+                _ => Screen::Settings,
+            };
+            if *screen == Screen::Main && now > 3.0 {
+                *screen = target.clone();
+                progress.1 = now;
+            }
+            *screen == target
+        }
+        None => {
+            let settled = state.as_ref().is_some_and(|s| s.phase == Phase::Lobby && s.change_in <= 0.0 && !s.reroll && s.countdown <= 0.0);
+            if !(settled && *screen == Screen::Lobby) {
+                progress.1 = now;
+                return;
+            }
+            let steps: Vec<String> = std::env::var("OPNIX_UI_LOBBY").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
+            if step < steps.len() {
+                if now - progress.1 > 2.5
+                    && let Ok(me) = players.single()
+                {
+                    let action = match steps[step].as_str() {
+                        "mode-1" => Some(LobbyAction::Mode(-1)),
+                        "mode+1" => Some(LobbyAction::Mode(1)),
+                        "mapkind" => Some(LobbyAction::MapKind),
+                        "size-1" => Some(LobbyAction::MapSize(-1)),
+                        "size+1" => Some(LobbyAction::MapSize(1)),
+                        "map+1" => Some(LobbyAction::Map(1)),
+                        "map-1" => Some(LobbyAction::Map(-1)),
+                        "newmap" => Some(LobbyAction::NewMap),
+                        "copy" => {
+                            acts.write(crate::ui::ActEvent(crate::ui::Act::CopyCode));
+                            None
+                        }
+                        "page1" => {
+                            acts.write(crate::ui::ActEvent(crate::ui::Act::LobbyPage(1)));
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        orders.write(CommandEvent { player: me.id, command: PlayerCommand::Lobby(action) });
+                    }
+                    progress.0 += 1;
+                    progress.1 = now;
+                }
+                return;
+            }
+            true
+        }
+    };
+    if ready && now - progress.1 > delay {
+        commands.spawn(Screenshot::primary_window()).observe(save_ppm(path));
+        progress.2 = true;
+        progress.1 = now;
     }
 }
 
