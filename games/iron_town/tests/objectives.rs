@@ -74,6 +74,7 @@ fn bots_take_points_and_win_domination() {
     let mut captures = 0;
     let mut owners: Vec<u8> = vec![NEUTRAL; 3];
     let mut kills_seen = 0;
+    let mut defended = 0.0;
     while state(&app).phase != Phase::Won {
         app.update();
         seconds += FRAME;
@@ -85,12 +86,23 @@ fn bots_take_points_and_win_domination() {
             }
         }
         kills_seen = now.roster.iter().map(|r| r.kills as u32).sum::<u32>();
+        // Bots holding a point their team owns, standing on it.
+        let world = app.world_mut();
+        for (p, t, bot) in world.query::<(&Player, &Transform, &Bot)>().iter(world) {
+            if let Some((i, true)) = bot.objective
+                && now.obj.points.get(i as usize).is_some_and(|point| point.owner == p.team && point.holds(t.translation))
+            {
+                defended += FRAME;
+            }
+        }
         assert!(seconds < 900.0, "bots never finished domination; scores {:?}, owners {owners:?}", now.scores);
     }
     let end = state(&app);
     println!("domination decided {:?} after {seconds:.0} s: {captures} captures, {kills_seen} kills", end.scores);
     assert_eq!(end.scores[end.winner as usize], 60);
     assert!(captures >= 2, "the points barely changed hands ({captures} captures)");
+    println!("bot-seconds spent holding points the team owns: {defended:.0}");
+    assert!(defended > 4.0, "nobody ever stayed to defend a point ({defended:.1} bot-seconds)");
     // Points come from the flags: a team's score is not its kills.
     assert!(end.scores[0] + end.scores[1] >= 60);
 }
@@ -150,7 +162,7 @@ fn bots_play_search_and_destroy_rounds_to_a_winner() {
     // Sides swap at half time (after two rounds of a first-to-three).
     assert_eq!(attackers_by_round[0], attackers_by_round[1]);
     assert_ne!(attackers_by_round[1], attackers_by_round[2], "sides should have swapped");
-    let _ = planted;
+    assert!(planted >= 1, "nobody ever planted the bomb: {reasons:?}");
 }
 
 /// Makes the human unkillable and puts them somewhere.

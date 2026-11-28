@@ -1,4 +1,5 @@
-//! Headless tests for the tactical layer: terrorist hunt, vaulting, cooking
+//! Headless tests for the tactical layer: terrorist hunt (and how fast hostiles answer a
+//! shot from afar), bots going for guns and ammo, vaulting, cooking
 //! grenades and melee.
 
 use bevy::{prelude::*, state::app::StatesPlugin, time::TimeUpdateStrategy};
@@ -429,4 +430,161 @@ fn bots_jump_only_standing_and_never_get_down_in_mid_air() {
         }
     }
     println!("{jumps} jump presses, {rising} rising bot-frames checked");
+}
+
+/// The angle between where a body faces (`yaw`) and the way to `to` from `from`.
+fn off_facing(yaw: f32, from: Vec3, to: Vec3) -> f32 {
+    let d = to - from;
+    let wanted = f32::atan2(-d.x, -d.z);
+    ((wanted - yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs()
+}
+
+fn keep_me_alive(app: &mut App) {
+    app.world_mut().query_filtered::<&mut Health, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().hp = 5000.0;
+}
+
+/// A clear spot on the ground about `distance` from `from`, trying directions round from `dir`.
+fn open_ground(app: &mut App, from: Vec3, dir: Vec2, distance: f32) -> Option<Vec3> {
+    let map = app.world().resource::<Map>().0.clone();
+    let statics = app.world().resource::<Statics>().0.clone();
+    (0..16).find_map(|i| {
+        let d = Vec2::from_angle(i as f32 * std::f32::consts::TAU / 16.0).rotate(dir.normalize_or(Vec2::X)) * distance;
+        let (x, z) = (from.x + d.x, from.z + d.y);
+        let y = oz_sim::player::ground_under(&map, &statics, x, z, from.y + 0.5);
+        let at = Vec3::new(x, y, z);
+        let clear = (1..=8).all(|k| {
+            let p = from.lerp(at, k as f32 / 8.0);
+            !statics.blocked(p.x, p.z, y, 1.8, 0.4)
+        });
+        (map.in_bounds(x, z) && (y - from.y).abs() < 0.3 && clear).then_some(at)
+    })
+}
+
+#[test]
+fn a_hostile_shot_once_from_80_m_turns_on_the_shooter_at_once() {
+    let mut app = app();
+    start(&mut app, hunt_rules(5));
+    run(&mut app, 1.0);
+    let map = app.world().resource::<Map>().0.clone();
+    let base = map.team_spawns[0][0];
+    // A hostile standing calm at its post, and a spot 80 m off behind it (out of its view).
+    let hostiles: Vec<(Entity, Vec3, f32)> = app
+        .world_mut()
+        .query::<(Entity, &Player, &Transform, &PlayerInput)>()
+        .iter(app.world())
+        .filter(|(_, p, ..)| p.team == 1)
+        .map(|(e, _, t, i)| (e, t.translation, i.yaw))
+        .collect();
+    let (bot, at, yaw, shooter) = hostiles
+        .iter()
+        .find_map(|(e, at, yaw)| {
+            let behind = Vec2::new(yaw.sin(), yaw.cos());
+            (0..8).find_map(|i| {
+                let d = Vec2::from_angle(i as f32 * 0.4 * if i % 2 == 0 { 1.0 } else { -1.0 }).rotate(behind) * 80.0;
+                let (x, z) = (at.x + d.x, at.z + d.y);
+                (map.in_bounds(x, z) && Vec2::new(x, z).distance(base) > 30.0).then(|| (*e, *at, *yaw, Vec3::new(x, map.height(x, z), z)))
+            })
+        })
+        .expect("a hostile with room behind it");
+    assert!(off_facing(yaw, at, shooter) > 1.2, "the shooter should start out of the hostile's view");
+    place_me(&mut app, shooter, 0.0);
+    keep_me_alive(&mut app);
+    // One round from 80 m clips it.
+    let eye = shooter + Vec3::Y * EYE;
+    app.world_mut().get_mut::<Health>(bot).unwrap().hp -= 18.0;
+    app.world_mut().send_event(FxEvent::Shot { by: 0, sound: 0, from: eye, to: at + Vec3::Y * 1.1, beam: false, tracer: oz_core::model::Paint::Gold, quiet: false, local: false });
+    let (mut turned, mut acted) = (None, None);
+    let mut seconds = 0.0;
+    while seconds < 0.5 {
+        app.update();
+        seconds += FRAME;
+        keep_me_alive(&mut app);
+        let (feet, input) = {
+            let world = app.world_mut();
+            let (t, i) = world.query::<(&Transform, &PlayerInput)>().get(world, bot).unwrap();
+            (t.translation, *i)
+        };
+        if turned.is_none() && off_facing(input.yaw, feet, shooter) < 0.35 {
+            turned = Some(seconds);
+        }
+        if acted.is_none() && (feet.distance(at) > 0.3 || input.movement.length() > 0.3 || input.held(buttons::FIRE)) {
+            acted = Some(seconds);
+        }
+    }
+    println!("turned to face the shooter after {turned:?} s, moved or fired after {acted:?} s");
+    assert!(turned.is_some(), "the hostile never turned toward where the shot came from");
+    assert!(acted.is_some(), "the hostile stood still after being shot");
+}
+
+#[test]
+fn a_scavenger_with_a_pistol_goes_and_gets_a_rifle() {
+    use oz_sim::loot::{Loot, LootSpot, Pickup};
+    let mut app = app();
+    let mut rules = iron_town::scavenge_rules(15);
+    rules.team_size = 1;
+    start(&mut app, rules);
+    // Nothing lying about but the one rifle.
+    let clutter: Vec<Entity> = app.world_mut().query_filtered::<Entity, Or<(With<Pickup>, With<LootSpot>)>>().iter(app.world()).collect();
+    for e in clutter {
+        app.world_mut().despawn(e);
+    }
+    run(&mut app, 0.2);
+    let content = app.world().resource::<Content>().clone();
+    let rifle = content.weapons.iter().position(|w| w.class == oz_core::arsenal::GunClass::Rifle && w.frame.is_some()).expect("a rifle") as u8;
+    let (bot, feet) = app.world_mut().query::<(Entity, &Player, &Transform, &Bot)>().iter(app.world()).find(|(_, p, ..)| p.team == 1).map(|(e, _, t, _)| (e, t.translation)).unwrap();
+    let owned = |app: &mut App| {
+        let arsenal = app.world().get::<Arsenal>(bot).unwrap();
+        (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).collect::<Vec<_>>()
+    };
+    assert_eq!(owned(&mut app).len(), 1, "the bot starts with only its pistol");
+    let spot = open_ground(&mut app, feet, Vec2::X, 9.0).expect("open ground near the bot");
+    let def = &content.weapons[rifle as usize];
+    app.world_mut().spawn((MatchEntity, Pickup { loot: Loot::Weapon { index: rifle, parts: def.defaults, ammo: def.mag, reserve: def.mag * 2 }, life: None }, Transform::from_translation(spot)));
+    let mut seconds = 0.0;
+    while !owned(&mut app).contains(&(rifle as usize)) {
+        keep_me_alive(&mut app);
+        app.update();
+        seconds += FRAME;
+        assert!(seconds < 15.0, "the bot never went for the rifle 9 m away (it is at {})", app.world().get::<Transform>(bot).unwrap().translation);
+    }
+    println!("picked the rifle up after {seconds:.1} s");
+    run(&mut app, 1.0);
+    assert_eq!(app.world().get::<Arsenal>(bot).unwrap().current, rifle, "and fights with it");
+}
+
+#[test]
+fn a_bot_out_of_ammo_goes_for_an_ammo_box() {
+    use oz_sim::loot::{Loot, Pickup};
+    let mut app = app();
+    let mut rules = deathmatch_rules(8);
+    rules.team_size = 1;
+    start(&mut app, rules);
+    run(&mut app, 0.5);
+    let content = app.world().resource::<Content>().clone();
+    let (bot, feet) = app.world_mut().query::<(Entity, &Player, &Transform, &Bot)>().iter(app.world()).find(|(_, p, ..)| p.team == 1).map(|(e, _, t, _)| (e, t.translation)).unwrap();
+    // Every gun that needs ammo is empty, magazine and reserve.
+    let guns: Vec<usize> = {
+        let mut arsenal = app.world_mut().get_mut::<Arsenal>(bot).unwrap();
+        let guns: Vec<usize> = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i) && !content.weapons[*i].infinite_reserve).collect();
+        for i in &guns {
+            arsenal.weapons[*i].ammo = 0;
+            arsenal.weapons[*i].reserve = 0;
+        }
+        guns
+    };
+    assert!(!guns.is_empty());
+    let spot = open_ground(&mut app, feet, Vec2::Y, 8.0).expect("open ground near the bot");
+    app.world_mut().spawn((MatchEntity, Pickup { loot: Loot::Ammo, life: Some(30.0) }, Transform::from_translation(spot)));
+    let stocked = |app: &mut App| {
+        let arsenal = app.world().get::<Arsenal>(bot).unwrap();
+        guns.iter().any(|i| arsenal.weapons[*i].reserve > 0)
+    };
+    let mut seconds = 0.0;
+    while !stocked(&mut app) {
+        keep_me_alive(&mut app);
+        app.update();
+        seconds += FRAME;
+        assert!(seconds < 15.0, "the dry bot never fetched the ammo box 8 m away");
+    }
+    println!("restocked after {seconds:.1} s");
 }

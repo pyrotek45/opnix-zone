@@ -403,6 +403,8 @@ pub struct HordeBot {
     goal: Vec3,
     aim: Vec2,
     pulse: bool,
+    /// Seconds before it presses Use at a wall buy again.
+    use_wait: f32,
 }
 
 /// Where a closed door stands (on every machine), and the boards on a window.
@@ -2012,6 +2014,7 @@ fn horde_bots(
     mut bots: Query<(&Player, &Transform, &mut PlayerInput, &mut Arsenal, &Health, &mut HordeBot), With<Bot>>,
     people: Query<(&Player, &Transform, &Health), Without<HordeBot>>,
     husks: Query<(&Transform, &Enemy), With<Husk>>,
+    mut orders: EventWriter<CommandEvent>,
 ) {
     let Some(mut nav) = nav else { return };
     let dt = sim_dt(&time);
@@ -2030,17 +2033,22 @@ fn horde_bots(
         input.light = state.daylight < 0.5;
         input.stance = if down { stance::PRONE } else { stance::STAND };
         let mut held = 0u8;
-        // Better guns as the rounds go by (bots never shop).
+        // How good a gun is to a bot: its class, and better again reforged.
+        let tier = |w: usize| content.weapons.get(w).map_or(0.0, |d| crate::bots::gun_value(d.class)) + if is_upgraded(&content, w) { 1.5 } else { 0.0 };
+        let loaded = |arsenal: &Arsenal, w: usize| content.weapons.get(w).is_some_and(|d| d.infinite_reserve || arsenal.weapons[w].ammo > 0 || arsenal.weapons[w].reserve > 0);
+        let best_owned = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i)).map(tier).fold(0.0f32, f32::max);
+        // Bots buy their guns and ammo off the walls with their points (below). Only a
+        // bot that has fallen well behind the rounds is handed something to keep up.
         let wanted = match round {
-            0..=2 => gun::PISTOL,
-            3..=5 => gun::SMG,
-            6..=9 => gun::CARBINE,
-            10..=14 => gun::MINIGUN,
+            0..=4 => gun::PISTOL,
+            5..=7 => gun::SMG,
+            8..=11 => gun::CARBINE,
+            12..=16 => gun::MINIGUN,
             _ => upgraded(&content, gun::CARBINE).unwrap_or(gun::CARBINE),
         };
-        if !down && !arsenal.owns(wanted) && wanted < arsenal.weapons.len() {
+        if !down && wanted < arsenal.weapons.len() && tier(wanted) > best_owned + 0.1 {
             for (i, weapon) in arsenal.weapons.iter_mut().enumerate() {
-                if i != gun::PISTOL {
+                if i != gun::PISTOL && tier(i) < tier(wanted) {
                     *weapon = WeaponState::fresh(&content.weapons[i]);
                 }
             }
@@ -2048,14 +2056,18 @@ fn horde_bots(
             arsenal.current = wanted as u8;
         }
         if !down {
-            input.weapon = if arsenal.owns(wanted) { wanted as u8 } else { arsenal.current };
-            let current = input.weapon as usize;
-            if let (Some(w), Some(def)) = (arsenal.weapons.get_mut(current), content.weapons.get(current))
+            // The sidearm never runs dry (everything else is bought off the walls).
+            if let (Some(w), Some(def)) = (arsenal.weapons.get_mut(gun::PISTOL), content.weapons.get(gun::PISTOL))
+                && w.owned
                 && w.reserve < def.mag
             {
-                w.reserve = def.reserve;
+                w.reserve = def.reserve.max(def.mag);
             }
+            // The best gun carried that still has rounds in it.
+            let pick = (0..arsenal.weapons.len()).filter(|i| arsenal.owns(*i) && loaded(&arsenal, *i)).max_by(|a, b| tier(*a).total_cmp(&tier(*b)));
+            input.weapon = pick.map_or(arsenal.current, |i| i as u8);
         }
+        brain.use_wait -= dt;
 
         // Shoot the closest husk in sight.
         let eye = me + Vec3::Y * input.eye();
@@ -2085,7 +2097,7 @@ fn horde_bots(
             };
             input.yaw = turn(input.yaw, yaw, dt * 7.0);
             input.pitch = turn(input.pitch, pitch, dt * 7.0);
-            let on = (input.yaw - yaw).abs() < 0.12;
+            let on = ((input.yaw - yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs() < 0.12;
             let auto = content.weapons.get(input.weapon as usize).is_some_and(|d| d.auto());
             brain.pulse = !brain.pulse;
             if on && (auto || brain.pulse) {
@@ -2115,6 +2127,35 @@ fn horde_bots(
                     .filter(|at| at.distance(me) < 9.0 && leader.is_none_or(|l| l.distance(*at) < 12.0))
                     .min_by(|a, b| a.distance(me).total_cmp(&b.distance(me)))
             });
+            // Points to spend and nothing in its face: a better gun off the wall, or ammo for
+            // the one it has running low - at a wall buy near the squad.
+            let points = state.horde.survivor(player.id).map_or(0, |s| s.points);
+            let calm = target.is_none() || !enemies.iter().any(|(p, _)| p.distance(me) < 8.0);
+            let shop = map.horde.as_deref().filter(|_| calm && !threat).and_then(|layout| {
+                let open = layout.open_zones(state.horde.doors);
+                layout
+                    .buys
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| open & (1 << b.zone) != 0)
+                    .filter_map(|(i, b)| {
+                        let w = b.weapon as usize;
+                        let up = upgraded(&content, w).filter(|u| arsenal.owns(*u));
+                        let value = match up.or(arsenal.owns(w).then_some(w)) {
+                            Some(owned) => {
+                                let def = content.weapons.get(owned)?;
+                                let price = if up.is_some() { UPGRADED_AMMO } else { b.price / 2 };
+                                (arsenal.weapons[owned].reserve < def.mag * 2 && points >= price).then_some(3.0)?
+                            }
+                            None => (points >= b.price && tier(w) > best_owned + 0.3).then(|| tier(w) - best_owned + 1.0)?,
+                        };
+                        let n = Vec3::new(b.normal.x, 0.0, b.normal.y);
+                        let anchor = Vec3::new(b.pos.x, b.pos.y - 1.2, b.pos.z) + n * 0.6;
+                        let d = anchor.distance(me);
+                        (d < 35.0 && leader.is_none_or(|l| l.distance(anchor) < 30.0)).then_some((i, anchor, n, value - d / 20.0))
+                    })
+                    .max_by(|a, b| a.3.total_cmp(&b.3))
+            });
             let goal = match (patient, leader) {
                 (Some((id, at)), _) if at.distance(me) < 40.0 => {
                     if at.distance(me) < 1.6 && !threat {
@@ -2123,6 +2164,23 @@ fn horde_bots(
                         None
                     } else {
                         Some((at, 0.8))
+                    }
+                }
+                _ if shop.is_some() => {
+                    let (i, anchor, n, _) = shop.unwrap_or((0, me, Vec3::Z, 0.0));
+                    if anchor.xz().distance(me.xz()) < 0.9 {
+                        // Face the wall and buy.
+                        input.yaw = f32::atan2(n.x, n.z);
+                        input.pitch = 0.0;
+                        let look = Vec3::new(-input.yaw.sin(), 0.0, -input.yaw.cos());
+                        let at_it = map.horde.as_deref().and_then(|layout| interaction(layout, &state.horde, player.id, me, look, &downed));
+                        if at_it == Some(Interact::WallBuy(i)) && brain.use_wait <= 0.0 {
+                            brain.use_wait = 1.0;
+                            orders.write(CommandEvent { player: player.id, command: PlayerCommand::Mode(act::USE) });
+                        }
+                        None
+                    } else {
+                        Some((anchor, 0.3))
                     }
                 }
                 _ if repair.is_some() => {
@@ -2152,9 +2210,12 @@ fn horde_bots(
                 let next = brain.path.first().copied().unwrap_or(goal);
                 wish = (next - me).xz().normalize_or_zero();
             }
-            // Back off a husk in its face.
-            if let Some((p, _)) = enemies.iter().filter(|(p, _)| p.distance(me) < 2.2).min_by(|a, b| a.0.distance(me).total_cmp(&b.0.distance(me))) {
-                wish = (wish + (me - *p).xz().normalize_or_zero() * 1.5).normalize_or_zero();
+            // Kite: back off husks closing in, sidestepping as it goes, shooting all the while.
+            if let Some((p, _)) = enemies.iter().filter(|(p, _)| p.distance(me) < 4.5).min_by(|a, b| a.0.distance(me).total_cmp(&b.0.distance(me))) {
+                let away = (me - *p).xz().normalize_or_zero();
+                let urgency = if p.distance(me) < 2.2 { 1.5 } else { 0.8 };
+                let side = if player.id % 2 == 0 { 0.4 } else { -0.4 };
+                wish = (wish + away * urgency + away.perp() * side).normalize_or_zero();
             }
             if target.is_none() && wish.length() > 0.1 {
                 input.yaw = f32::atan2(-wish.x, -wish.y);
