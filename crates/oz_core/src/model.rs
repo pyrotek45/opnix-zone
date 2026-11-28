@@ -25,15 +25,35 @@ pub enum Paint {
     Glow, Spark, Red, Green, Blue, Violet, Aether, White,
     /// A dark, faintly glowing display surface (robot faces, terminals).
     Screen,
+    // Interior and street finishes (lit), added after the rest so older indices hold.
+    /// Honey-coloured floorboards.
+    Planks,
+    /// Pale blue-grey floor and wall tiles (kitchens, bathrooms).
+    Tile,
+    /// Deep wine carpet (bedrooms, offices).
+    Carpet,
+    /// Sea-green linoleum (shops, halls).
+    Lino,
+    /// Red-brown brick.
+    Brick,
+    /// Dark blue-grey stone and slate.
+    Slate,
+    /// Warm off-white trim, linen and paint.
+    Cream,
+    /// Dark navy fabric (sofas, upholstery, awnings).
+    Navy,
+    /// Mustard yellow (cushions, signs, playground paint).
+    Mustard,
 }
 
 impl Paint {
-    pub const ALL: [Paint; 27] = [
+    pub const ALL: [Paint; 36] = [
         Paint::Dark, Paint::Metal, Paint::Gold, Paint::Wood, Paint::Teal, Paint::Coral, Paint::Purple,
         Paint::Shell, Paint::Bone, Paint::Steel, Paint::Rock, Paint::Leaf, Paint::LeafLight,
         Paint::Concrete, Paint::Rust, Paint::Sand, Paint::Iron, Paint::Copper,
         Paint::Glow, Paint::Spark, Paint::Red, Paint::Green, Paint::Blue, Paint::Violet, Paint::Aether, Paint::White,
-        Paint::Screen,
+        Paint::Screen, Paint::Planks, Paint::Tile, Paint::Carpet, Paint::Lino, Paint::Brick, Paint::Slate, Paint::Cream, Paint::Navy,
+        Paint::Mustard,
     ];
 
     /// sRGB colour as `0xRRGGBB`.
@@ -48,12 +68,21 @@ impl Paint {
             Paint::Glow => 0xffcb65, Paint::Spark => 0xffedbb, Paint::Red => 0xff535e,
             Paint::Green => 0x7fffa0, Paint::Blue => 0x63ddff, Paint::Violet => 0xc58bff,
             Paint::Aether => 0x9df7e4, Paint::White => 0xffffff, Paint::Screen => 0x0c2430,
+            Paint::Planks => 0xb27a45, Paint::Tile => 0xb4cbd0, Paint::Carpet => 0x7a3149, Paint::Lino => 0x4f8a7c,
+            Paint::Brick => 0x9a4636, Paint::Slate => 0x4a5562, Paint::Cream => 0xeee0c2, Paint::Navy => 0x2c3a63,
+            Paint::Mustard => 0xd9a43a,
         }
     }
 
     pub fn rgb(self) -> [f32; 3] {
         let h = self.hex();
         [(h >> 16) as u8 as f32 / 255.0, (h >> 8) as u8 as f32 / 255.0, h as u8 as f32 / 255.0]
+    }
+
+    /// How far apart two paints look: distance between their sRGB colours (0..=441).
+    pub fn contrast(self, other: Paint) -> f32 {
+        let (a, b) = (self.rgb(), other.rgb());
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() * 255.0
     }
 
     /// Unlit paints ignore lighting and read as glowing, even at night.

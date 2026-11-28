@@ -13,17 +13,18 @@ use glam::{Vec2, Vec3};
 use std::f32::consts::TAU;
 
 /// Level heights, valley to summit.
-const LEVELS: [f32; 5] = [1.2, 6.2, 11.2, 16.2, 21.2];
+pub(super) const LEVELS: [f32; 5] = [1.2, 6.2, 11.2, 16.2, 21.2];
 /// Where each cliff stands (z), between level i and i + 1.
-const CLIFFS: [f32; 4] = [-62.0, -24.0, 14.0, 52.0];
+pub(super) const CLIFFS: [f32; 4] = [-62.0, -24.0, 14.0, 52.0];
 /// Ramps (x) up each cliff: the switchback road climbs from the valley's ends toward the middle.
 const RAMPS: [&[f32]; 4] = [&[-70.0, 70.0], &[-84.0, 84.0], &[-48.0, 48.0], &[-22.0, 22.0]];
-/// Stairways (x) cut into each cliff.
-const STAIRS: [&[f32]; 4] = [&[0.0], &[-30.0, 30.0], &[0.0, -92.0, 92.0], &[-70.0, 70.0]];
+/// Stairways (x) cut into each cliff - clear of the buildings at their feet and tops (the
+/// valley's flight once ran up through the chapel).
+pub(super) const STAIRS: [&[f32]; 4] = [&[9.0], &[-30.0, 30.0], &[0.0, -92.0, 92.0], &[-70.0, 70.0]];
 /// The bases: either end of the middle terrace.
 const BASE: (f32, f32) = (104.0, -5.0);
 const RAMP_HALF: f32 = 5.0;
-const STEP_RUN: f32 = 0.42;
+pub(super) const STEP_RUN: f32 = 0.42;
 
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -102,21 +103,71 @@ impl World {
             }
             // Stairs cut into the face: eighteen steps up to the cliff top.
             for &s in STAIRS[i] {
-                let n = ((hi - lo) / 0.29).ceil() as usize;
-                let rise = (hi - lo) / n as f32;
-                let front = b - 1.6;
-                for k in 0..n {
-                    let z1 = front - (n - 1 - k) as f32 * STEP_RUN;
-                    let top = lo + (k + 1) as f32 * rise;
-                    self.solid(Aabb::span(Vec3::new(s - 1.3, lo - 0.4, z1 - STEP_RUN), Vec3::new(s + 1.3, top, z1)), if k % 2 == 0 { Paint::Concrete } else { Paint::Rock });
-                }
-                // Thin hand rails either side.
-                for side in [-1.0, 1.0] {
-                    let x = s + side * 1.35;
-                    self.decor(Aabb::span(Vec3::new(x - 0.04, lo + 1.0, front - n as f32 * STEP_RUN), Vec3::new(x + 0.04, hi + 1.0, front)), Paint::Iron);
-                }
+                self.cliff_stairs(s, b, lo, hi);
             }
         }
+    }
+
+    /// A flight of steps up a cliff face at `x`, from the terrace at `lo` to the top at `hi`:
+    /// solid steps from the ground up, kerbed cheeks either side that run down into the ground
+    /// (low cover, drawn as one smooth sloping wall), hand rails on posts, a landing pad at the
+    /// foot and a gravel path out from it.
+    fn cliff_stairs(&mut self, s: f32, b: f32, lo: f32, hi: f32) {
+        let n = ((hi - lo) / 0.29).ceil() as usize;
+        let rise = (hi - lo) / n as f32;
+        let front = b - 1.6;
+        let foot = front - n as f32 * STEP_RUN;
+        for k in 0..n {
+            let z1 = front - (n - 1 - k) as f32 * STEP_RUN;
+            let top = lo + (k + 1) as f32 * rise;
+            self.solid(Aabb::span(Vec3::new(s - 1.3, lo - 0.6, z1 - STEP_RUN), Vec3::new(s + 1.3, top, z1)), if k % 2 == 0 { Paint::Concrete } else { Paint::Rock });
+            // Nosing on each tread.
+            self.trim(Vec3::new(s - 1.3, top - 0.04, z1 - STEP_RUN - 0.01), Vec3::new(s + 1.3, top + 0.005, z1 - STEP_RUN + 0.05), Paint::Slate);
+        }
+        // The cheeks: hidden kerbs a step's height over the treads, drawn as one sloping wall
+        // from below the ground at the foot to the cliff top.
+        for side in [-1.0f32, 1.0] {
+            let (a, c) = (s + side * 1.3, s + side * 1.62);
+            let (x0, x1) = (a.min(c), a.max(c));
+            for k in 0..n {
+                let z1 = front - (n - 1 - k) as f32 * STEP_RUN;
+                let top = lo + (k + 1) as f32 * rise + 0.35;
+                self.blocks.push(super::Block { aabb: Aabb::span(Vec3::new(x0, lo - 0.6, z1 - STEP_RUN), Vec3::new(x1, top, z1)), paint: Paint::Rock, solid: true, hidden: true });
+            }
+            let mut points = Vec::new();
+            for x in [x0 - 0.02, x1 + 0.02] {
+                points.extend([
+                    Vec3::new(x, lo - 0.6, foot - 0.02),
+                    Vec3::new(x, lo + rise + 0.37, foot - 0.02),
+                    Vec3::new(x, lo - 0.6, front + 0.3),
+                    Vec3::new(x, hi + 0.37, front + 0.3),
+                    Vec3::new(x, hi + 0.37, front - STEP_RUN),
+                ]);
+            }
+            self.roofs.push(crate::model::Hull { paint: Paint::Concrete, points, anim: crate::model::Anim::None });
+            // A hand rail on posts along the cheek.
+            let rail_x = s + side * 1.46;
+            let at = |z: f32| {
+                let k = ((z - foot) / STEP_RUN).clamp(0.0, n as f32 - 0.01);
+                lo + (k.floor() + 1.0) * rise + 0.35
+            };
+            let posts = 5;
+            for j in 0..=posts {
+                let z = foot + 0.2 + (front - foot - 0.4) * j as f32 / posts as f32;
+                let y = at(z);
+                self.trim_rod(Vec3::new(rail_x, y, z), Vec3::new(rail_x, y + 0.9, z), 0.03, Paint::Iron);
+            }
+            let (za, zb) = (foot + 0.2, front - 0.2);
+            self.trim_rod(Vec3::new(rail_x, at(za) + 0.9, za), Vec3::new(rail_x, at(zb) + 0.9, zb), 0.035, Paint::Iron);
+        }
+        // A paved landing at the foot and a gravel path on out across the terrace.
+        let g = self.height(s, foot - 1.0);
+        self.flat(s - 1.7, s + 1.7, foot - 1.6, foot, g + 0.01, Paint::Concrete);
+        self.road(Vec2::new(s, foot - 1.6), Vec2::new(s, foot - 9.0), 1.8, Paint::Sand, false);
+        // And at the top, the path goes on north.
+        self.road(Vec2::new(s, b + 1.8), Vec2::new(s, b + 8.0), 1.8, Paint::Sand, false);
+        self.scree(Vec2::new(s - 2.6, foot + 0.8), 1.2, 6, Paint::Rock);
+        self.scree(Vec2::new(s + 2.6, foot + 0.8), 1.2, 6, Paint::Rock);
     }
 
     /// One run of cliff from `x0` to `x1` at cliff `b`: the face, and sometimes a parapet on top.
@@ -124,16 +175,30 @@ impl World {
     fn cliff_block(&mut self, rng: &mut Rng, x0: f32, x1: f32, b: f32, lo: f32, hi: f32, i: usize) {
         let front = b - 1.6 - rng.range(0.0, 0.7);
         let paint = if rng.chance(0.5) { Paint::Rock } else { Paint::Concrete };
+        let from = self.blocks.len();
         self.solid(Aabb::span(Vec3::new(x0, lo - 0.6, front), Vec3::new(x1, hi, b + 1.6)), paint);
-        // Strata: paint-thin lines across the face.
-        for k in 1..3 {
-            let y = lo + (hi - lo) * k as f32 / 3.0 + rng.range(-0.3, 0.3);
-            self.decor(Aabb::span(Vec3::new(x0, y, front - 0.03), Vec3::new(x1, y + 0.08, front)), Paint::Dark);
+        // Strata: the old paint-thin lines are drawn as the rock's two tones now.
+        for _ in 1..3 {
+            let _ = rng.range(-0.3, 0.3);
         }
         let stairs = STAIRS[i].iter().any(|s| x1 > s - 2.2 && x0 < s + 2.2);
         if !stairs && rng.chance(0.45) && x1 - x0 > 2.0 {
             let (a, c) = (x0 + rng.range(0.0, 0.6), x1 - rng.range(0.0, 0.6));
             self.solid(Aabb::span(Vec3::new(a, hi - 0.1, front), Vec3::new(c, hi + COVER_HEIGHT, front + 0.9)), Paint::Rock);
+        }
+        // Drawn as weathered rock, its strata showing as a darker band, with scree at the foot.
+        let face_paint = if paint == Paint::Concrete { Paint::Slate } else { Paint::Rock };
+        self.rock_skin(from, face_paint);
+        let mut detail = self.detail_rng(Vec2::new(x0, b), 0xc1f);
+        let band = lo + (hi - lo) * detail.range(0.35, 0.6);
+        self.trim(Vec3::new(x0 + 0.05, band, front - 0.06), Vec3::new(x1 - 0.05, band + 0.22, front + 0.2), Paint::Slate);
+        if detail.chance(0.6) && !stairs {
+            self.scree(Vec2::new((x0 + x1) * 0.5, front - 0.9), (x1 - x0) * 0.4, 5, Paint::Rock);
+        }
+        // Moss and a shrub or two along the top.
+        if detail.chance(0.5) && !stairs {
+            let p = Vec2::new(detail.range(x0 + 0.5, x1 - 0.5), b + 2.6);
+            self.flowers(p, &mut detail);
         }
     }
 
@@ -168,15 +233,48 @@ impl World {
     /// Road up a ramp, laid smooth on the slope.
     fn ramp_road(&mut self, x: f32, z0: f32, z1: f32) {
         self.drape(Vec2::new(x - 3.0, z0), Vec2::new(x + 3.0, z1), 0.024, Paint::Dark);
-        // Crash barriers down both sides: cover.
+        // Crash barriers down both sides: cover, in metre-long pieces that follow the slope
+        // (hidden), drawn as one smooth concrete barrier on top of them.
         for s in [-1.0, 1.0] {
             let bx = x + s * 3.6;
             let mut z = z0 + 1.0;
             while z < z1 - 1.0 {
-                let g = self.height(bx, z + 1.0).max(self.height(bx, z)).max(self.height(bx, z + 2.0));
-                let low = self.height(bx, z).min(self.height(bx, z + 2.0));
-                self.solid(Aabb::span(Vec3::new(bx - 0.15, low - 0.3, z), Vec3::new(bx + 0.15, g + COVER_HEIGHT, z + 2.0)), Paint::Metal);
-                z += 2.0;
+                let (ha, hb) = (self.height(bx, z), self.height(bx, z + 1.0));
+                let low = ha.min(hb);
+                self.blocks.push(super::Block { aabb: Aabb::span(Vec3::new(bx - 0.15, low - 0.3, z), Vec3::new(bx + 0.15, ha.max(hb) + COVER_HEIGHT, z + 1.0)), paint: Paint::Metal, solid: true, hidden: true });
+                let mut points = Vec::new();
+                for (zz, h) in [(z, ha), (z + 1.0, hb)] {
+                    points.extend([
+                        Vec3::new(bx - 0.32, low - 0.3, zz),
+                        Vec3::new(bx + 0.32, low - 0.3, zz),
+                        Vec3::new(bx - 0.3, h + 0.25, zz),
+                        Vec3::new(bx + 0.3, h + 0.25, zz),
+                        Vec3::new(bx - 0.13, h + COVER_HEIGHT + 0.02, zz),
+                        Vec3::new(bx + 0.13, h + COVER_HEIGHT + 0.02, zz),
+                    ]);
+                }
+                self.roofs.push(crate::model::Hull { paint: Paint::Concrete, points, anim: crate::model::Anim::None });
+                // A reflector stripe every few metres.
+                if (z - z0) as i32 % 4 == 1 {
+                    self.trim(Vec3::new(bx - 0.18, ha + 0.9, z + 0.45), Vec3::new(bx + 0.18, ha + 1.0, z + 0.55), Paint::Gold);
+                }
+                z += 1.0;
+            }
+        }
+        // Retaining walls where the ramp's sides fall away to the terrace below: down from the
+        // ramp's edge to the ground, between the ramp and the cliff on either side.
+        for s in [-1.0, 1.0] {
+            let wx = x + s * (RAMP_HALF + 0.4);
+            let mut z = z0;
+            while z < z1 {
+                let top = self.height(x + s * 3.0, z + 0.5).max(self.height(x + s * 3.0, z));
+                let low = self.lowest(Vec2::new(wx, z + 0.5), Vec2::new(1.0, 0.5));
+                if top - low > 0.6 {
+                    let from = self.blocks.len();
+                    self.solid(Aabb::span(Vec3::new(wx - 0.5, low - 0.4, z), Vec3::new(wx + 0.5, top + 0.1, z + 1.0)), Paint::Rock);
+                    self.rock_skin(from, Paint::Rock);
+                }
+                z += 1.0;
             }
         }
     }
@@ -394,6 +492,19 @@ impl World {
             }
             self.props.push(Prop { kind: PropKind::Bush, pos: Vec3::new(p.x, self.height(p.x, p.y), p.y), yaw: rng.range(0.0, TAU), scale: rng.range(0.7, 1.2) });
             bushes += 1;
+        }
+        // Wild flowers and ferns in the grass, and rocky scree where the ground is high.
+        let mut wild = self.detail_rng(Vec2::new(3.0, 7.0), 0xf10);
+        for _ in 0..420 {
+            let p = Vec2::new(wild.range(-118.0, 118.0), wild.range(-104.0, 110.0));
+            if CLIFFS.iter().any(|b| (p.y - b).abs() < 3.0) || self.near_road(p, 0.6) || self.occupied(p, 0.6) || self.height(p.x, p.y) < self.water + 0.6 {
+                continue;
+            }
+            if p.y > 60.0 && wild.chance(0.5) {
+                self.scree(p, 1.4, 4, Paint::Rock);
+            } else {
+                self.flowers(p, &mut wild);
+            }
         }
         for _ in 0..5200 {
             let p = Vec2::new(rng.range(-120.0, 120.0), rng.range(-110.0, 110.0));

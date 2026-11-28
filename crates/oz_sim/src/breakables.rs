@@ -3,7 +3,8 @@
 //!
 //! * **Doors** open and close (walk up and press Use; bots shoulder through
 //!   them) and can be shot or blown off their hinges.
-//! * **Windows** are glass: any bullet or blast through one shatters it.
+//! * **Windows** are glass: any bullet or blast through one shatters it - house windows and
+//!   car windows alike (a car's glass goes with the car, too).
 //! * **Clutter** - bins, benches, mailboxes, crate stacks, parked cars and
 //!   barrels - is cover until it is shot apart; barrels and cars explode,
 //!   and one blast can set off the next.
@@ -326,8 +327,8 @@ pub fn break_things(
                 continue;
             }
             let center = spec.center + Vec3::Y * spec.height * 0.5;
-            let half = if spec.along_x { Vec3::new(spec.width * 0.5, spec.height * 0.5, 0.2) } else { Vec3::new(0.2, spec.height * 0.5, spec.width * 0.5) };
-            if ray_box(trace.origin, trace.dir, center, half, trace.reach + 0.05).is_some() {
+            let (at, half) = spec.hit_box(&map.clutter);
+            if ray_box(trace.origin, trace.dir, at, half, trace.reach + 0.05).is_some() {
                 state.panes[index] = 1;
                 fx.write(FxEvent::Sound { sfx: Sfx::Shatter, at: Some(center) });
             }
@@ -359,7 +360,7 @@ pub fn break_things(
         }
         let body = transform.translation + Vec3::Y * 0.5;
         for (index, spec) in map.windows.iter().enumerate() {
-            if state.panes.get(index) != Some(&0) {
+            if state.panes.get(index) != Some(&0) || spec.vehicle.is_some() {
                 continue;
             }
             let center = spec.center + Vec3::Y * spec.height * 0.5;
@@ -393,6 +394,16 @@ pub fn break_things(
             if distance < radius + solid.half.max_element() {
                 hurt_clutter(&mut piece, 150.0 * (1.0 - (distance / (radius + 1.0)).min(1.0)), 255, &mut state, &mut fx, &mut chain);
             }
+        }
+    }
+
+    // A car shot to pieces or burning loses whatever glass it had left.
+    for (index, spec) in map.windows.iter().enumerate() {
+        if let Some(car) = spec.vehicle
+            && state.panes.get(index) == Some(&0)
+            && state.clutter.get(car as usize).is_some_and(|hp| *hp <= BURNING)
+        {
+            state.panes[index] = 1;
         }
     }
 

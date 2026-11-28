@@ -82,7 +82,11 @@ fn prop_model(prop: &Prop) -> BlockModel {
             }
             model
         }
-        PropKind::Rock => BlockModel::new().shard(Paint::Rock, [0.0, s * 0.24, 0.0], [s, s * 0.65, s * 0.8]),
+        PropKind::Rock => BlockModel::new()
+            .shard(Paint::Rock, [0.0, s * 0.24, 0.0], [s, s * 0.65, s * 0.8])
+            .shard(Paint::Slate, [s * 0.3, s * 0.38, -s * 0.15], [s * 0.55, s * 0.42, s * 0.5])
+            .shard(Paint::Leaf, [-s * 0.2, s * 0.5, s * 0.1], [s * 0.4, s * 0.08, s * 0.35])
+            .shard(Paint::Rock, [-s * 0.6, s * 0.05, s * 0.4], [s * 0.3, s * 0.2, s * 0.25]),
         PropKind::Ruin => BlockModel::new().cube(Paint::Concrete, [0.0, 0.9 * s, 0.0], [3.2 * s, 1.8 * s, 0.7 * s]).cube(Paint::Rust, [0.0, 1.84 * s, 0.0], [3.3 * s, 0.12, 0.8 * s]),
         PropKind::Pylon => BlockModel::new().cube(Paint::Concrete, [0.0, 1.9 * s, 0.0], [1.4, 3.8 * s, 1.4]).cube(Paint::Teal, [0.0, 3.8 * s + 0.08, 0.0], [1.5, 0.16, 1.5]).cube(
             Paint::Glow,
@@ -91,21 +95,60 @@ fn prop_model(prop: &Prop) -> BlockModel {
         ),
         PropKind::Crate => BlockModel::new().cube(Paint::Teal, [0.0, 0.55, 0.0], [1.25, 1.1, 1.25]).cube(Paint::Gold, [0.0, 0.56, 0.636], [0.84, 0.16, 0.035]),
         PropKind::Tree => {
-            // A trunk with a branch, and a crown of chunky leaf clusters.
-            let mut model = BlockModel::new().cylinder(Paint::Wood, [0.0, s * 0.35, 0.0], [0.34, s * 0.7, 0.34]).segment(Paint::Wood, [0.0, s * 0.5, 0.0], [0.6, s * 0.75, 0.2], 0.14);
-            for n in 0..7 {
-                let angle = n as f32 * 2.39996 + prop.yaw;
-                let r = if n == 0 { 0.0 } else { s * 0.28 };
-                let at = [angle.cos() * r, s * (0.82 + 0.1 * (n % 3) as f32), angle.sin() * r];
-                let size = s * (0.42 - 0.03 * (n % 3) as f32);
-                model = model.shard(if n % 3 == 0 { Paint::LeafLight } else { Paint::Leaf }, at, [size, size * 0.8, size]);
+            // Three kinds, picked by the tree's own turn: a round broadleaf, a pale birch, a tall poplar.
+            let kind = ((prop.yaw * 1000.0) as i32).rem_euclid(3);
+            let bark = if kind == 1 { Paint::Cream } else { Paint::Wood };
+            let mut model = BlockModel::new().cylinder(bark, [0.0, s * 0.35, 0.0], [0.34, s * 0.7, 0.34]).segment(bark, [0.0, s * 0.5, 0.0], [0.6, s * 0.75, 0.2], 0.14);
+            if kind == 1 {
+                for k in 0..4 {
+                    model = model.cube(Paint::Dark, [0.0, s * (0.15 + 0.13 * k as f32), 0.0], [0.36, 0.05, 0.2 + 0.05 * (k % 2) as f32]);
+                }
+            }
+            // Roots flaring at the foot.
+            for k in 0..3 {
+                let a = k as f32 * TAU / 3.0 + prop.yaw;
+                model = model.segment(Paint::Wood, [0.0, 0.35, 0.0], [a.cos() * 0.45, 0.0, a.sin() * 0.45], 0.12);
+            }
+            let (light, dark) = if kind == 1 { (Paint::LeafLight, Paint::Lino) } else { (Paint::LeafLight, Paint::Leaf) };
+            if kind == 2 {
+                // A poplar: a tall narrow column of foliage.
+                for n in 0..5 {
+                    let y = s * (0.55 + 0.11 * n as f32);
+                    let r = s * (0.24 - 0.03 * (n as f32 - 1.5).abs());
+                    model = model.shard(if n % 2 == 0 { dark } else { light }, [0.0, y, 0.0], [r, s * 0.16, r]);
+                }
+            } else {
+                for n in 0..7 {
+                    let angle = n as f32 * 2.39996 + prop.yaw;
+                    let r = if n == 0 { 0.0 } else { s * 0.28 };
+                    let at = [angle.cos() * r, s * (0.82 + 0.1 * (n % 3) as f32), angle.sin() * r];
+                    let size = s * (0.42 - 0.03 * (n % 3) as f32);
+                    model = model.shard(if n % 3 == 0 { light } else { dark }, at, [size, size * 0.8, size]);
+                }
             }
             model
         }
-        PropKind::Bush => BlockModel::new().shard(Paint::Leaf, [0.0, 0.45 * s, 0.0], [1.0 * s, 0.7 * s, 0.9 * s]).shard(Paint::LeafLight, [0.35 * s, 0.6 * s, 0.2], [0.6 * s, 0.5 * s, 0.6 * s]),
-        PropKind::Lamp => {
-            BlockModel::new().cube(Paint::Dark, [0.0, 1.9, 0.0], [0.12, 3.8, 0.12]).cube(Paint::Dark, [0.25, 3.75, 0.0], [0.6, 0.08, 0.1]).cube(Paint::Glow, [0.45, 3.65, 0.0], [0.28, 0.1, 0.18])
+        PropKind::Bush => {
+            let mut model = BlockModel::new()
+                .shard(Paint::Leaf, [0.0, 0.45 * s, 0.0], [1.0 * s, 0.7 * s, 0.9 * s])
+                .shard(Paint::LeafLight, [0.35 * s, 0.6 * s, 0.2], [0.6 * s, 0.5 * s, 0.6 * s])
+                .shard(Paint::Lino, [-0.3 * s, 0.35 * s, -0.25 * s], [0.55 * s, 0.4 * s, 0.5 * s]);
+            // Some flower; some carry berries.
+            let bloom = [Paint::Coral, Paint::Mustard, Paint::Cream, Paint::Purple][((prop.yaw * 100.0) as i32).rem_euclid(4) as usize];
+            if ((prop.yaw * 37.0) as i32).rem_euclid(3) != 0 {
+                for n in 0..6 {
+                    let a = n as f32 * 2.1 + prop.yaw;
+                    model = model.shard(bloom, [a.cos() * 0.42 * s, (0.55 + 0.12 * (n % 3) as f32) * s, a.sin() * 0.38 * s], [0.1, 0.1, 0.1]);
+                }
+            }
+            model
         }
+        PropKind::Lamp => BlockModel::new()
+            .cylinder(Paint::Dark, [0.0, 0.25, 0.0], [0.28, 0.5, 0.28])
+            .cylinder(Paint::Dark, [0.0, 1.9, 0.0], [0.12, 3.8, 0.12])
+            .segment(Paint::Dark, [0.0, 3.6, 0.0], [0.5, 3.8, 0.0], 0.07)
+            .cube(Paint::Dark, [0.5, 3.75, 0.0], [0.4, 0.12, 0.24])
+            .cube(Paint::Glow, [0.5, 3.67, 0.0], [0.3, 0.04, 0.18]),
     }
 }
 
@@ -187,6 +230,12 @@ fn build_scene(
         let key = ((at.x / PROP_REGION).floor() as i32, (at.z / PROP_REGION).floor() as i32);
         let (lit, unlit) = regions.entry(key).or_default();
         art.add_hull(if roof.paint.unlit() { unlit } else { lit }, roof, Transform::IDENTITY);
+    }
+    // Dressing: trims, frames, cushions, wires and flowers - small, so merged like the rest.
+    for part in &map.dressing {
+        let key = ((part.pos.x / PROP_REGION).floor() as i32, (part.pos.z / PROP_REGION).floor() as i32);
+        let (lit, unlit) = regions.entry(key).or_default();
+        art.add_part(if part.paint.unlit() { unlit } else { lit }, &crate::art::seated(part), Transform::IDENTITY);
     }
     // Roads, pavements and painted ground, lying on the terrain.
     for (paint, triangle) in &map.paving {

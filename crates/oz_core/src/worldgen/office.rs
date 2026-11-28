@@ -52,7 +52,8 @@ impl World {
     pub(super) fn office_tower(&mut self, rng: &mut Rng) {
         let g = self.highest(Vec2::ZERO, Vec2::new(X1, Z1)) + 0.12;
         self.solid(Aabb::span(Vec3::new(X0, g - 2.5, Z0), Vec3::new(X1, g, Z1)), Paint::Concrete);
-        self.decor(Aabb::span(Vec3::new(X0 + T, g, Z0 + T), Vec3::new(X1 - T, g + 0.012, Z1 - T)), Paint::Bone);
+        self.decor(Aabb::span(Vec3::new(X0 + T, g, Z0 + T), Vec3::new(X1 - T, g + 0.012, Z1 - T)), Paint::Tile);
+        self.note_room(Paint::Tile, Paint::Steel);
 
         // The shell: walls of windows, doors on the ground floor, trims at every floor line.
         let long = X1 - X0;
@@ -96,7 +97,11 @@ impl World {
             if k < FLOORS {
                 cut.push(ATRIUM);
             }
-            let finish = if k < FLOORS { Some((if k % 2 == 1 { Paint::Steel } else { Paint::Teal }, T)) } else { None };
+            let finish = if k < FLOORS { Some((if k % 2 == 1 { Paint::Carpet } else { Paint::Lino }, T)) } else { None };
+            if let Some((floor, _)) = finish {
+                self.note_room(floor, Paint::Concrete);
+                self.note_room(floor, Paint::Bone);
+            }
             self.slab((X0, X1, Z0, Z1), top, &cut, finish);
             // Ceiling panels flush under the slab (0.2 thick).
             let under = top - 0.22;
