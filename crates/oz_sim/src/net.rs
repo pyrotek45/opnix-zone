@@ -45,7 +45,7 @@ use std::{
     time::Duration,
 };
 
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 /// How long the host remembers someone who dropped, so they can reconnect into the same seat.
 pub const REJOIN_WINDOW: f32 = 600.0;
 /// How far behind the host's clock clients play back remote entities.
@@ -80,6 +80,49 @@ impl NetIds {
 #[derive(Component, Clone, Debug, Default)]
 pub struct Remote {
     samples: VecDeque<(f32, Vec3, f32)>,
+    /// Players on clients: stance, aim and the rest of the pose, played back on the same
+    /// clock as the position so a crouch shows up where (and when) the host had it.
+    looks: VecDeque<(f32, Look)>,
+    /// Where playback last put the entity (see [`smooth_remote`]); on the host, anything
+    /// else having moved a remote player since means the authority teleported them.
+    pub placed: Option<Vec3>,
+}
+
+/// A remote player's pose bits from a snapshot (see [`EntState`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Look {
+    pub flags: u8,
+    pub pitch: i8,
+    pub aux: u8,
+    pub limbs: u8,
+    pub extra: u8,
+}
+
+/// Host: authority moves of a remote player (respawns, round resets, team swaps). Owner
+/// movement is trusted, so without this the guest's next position report would drag them
+/// straight back to where they were (where they died). Each move gets a number; the guest
+/// jumps there on hearing it and echoes the number back, and until then its reports are ignored.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Warp {
+    pub seq: u16,
+    pub at: Vec3,
+    /// The last number the guest has confirmed.
+    pub acked: u16,
+}
+
+impl Warp {
+    pub fn new(at: Vec3) -> Self {
+        Self { seq: 1, at, acked: 0 }
+    }
+
+    pub fn pending(&self) -> bool {
+        self.acked != self.seq
+    }
+}
+
+/// Host: what a player connected from elsewhere carries on top of [`player_bundle`].
+pub fn remote_seat(now: f32, spawn: Vec3) -> impl Bundle {
+    (Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now), Warp::new(spawn))
 }
 
 impl Remote {
@@ -102,6 +145,28 @@ impl Remote {
 
     pub fn latest(&self) -> Option<(Vec3, f32)> {
         self.samples.back().map(|(_, pos, yaw)| (*pos, *yaw))
+    }
+
+    /// Forgets every sample: the entity is at `pos` from `time` on (a teleport).
+    pub fn reset(&mut self, time: f32, pos: Vec3, yaw: f32) {
+        self.samples.clear();
+        self.samples.push_back((time, pos, yaw));
+        self.placed = Some(pos);
+    }
+
+    pub fn push_look(&mut self, time: f32, look: Look) {
+        if self.looks.back().is_some_and(|(t, _)| *t >= time) {
+            self.looks.pop_back();
+        }
+        self.looks.push_back((time, look));
+        while self.looks.len() > 12 {
+            self.looks.pop_front();
+        }
+    }
+
+    /// The pose in force at `time`: the newest one sent no later than then.
+    pub fn look_at(&self, time: f32) -> Option<Look> {
+        self.looks.iter().rev().find(|(t, _)| *t <= time).or(self.looks.front()).map(|(_, look)| *look)
     }
 
     /// Position and yaw at `time`, interpolated between the samples around it.
@@ -167,10 +232,12 @@ pub enum C2S {
         token: u64,
     },
     /// `view` is the server time of the world the client is showing (for lag compensation).
+    /// `warp` is the last [`Warp`] the client has jumped to; `pos` only counts once it is current.
     Input {
         input: PlayerInput,
         pos: Vec3,
         view: f32,
+        warp: u16,
     },
     Command(PlayerCommand),
     /// `sent` comes back in a pong; `rtt` reports the last measured round trip in ms.
@@ -266,8 +333,9 @@ pub struct Private {
     pub limbs: [u8; 4],
     /// The perk in effect (client effects like thermal need it).
     pub perk: u8,
-    /// Set while dead so the client lands on the respawn point.
-    pub teleport: Option<Vec3>,
+    /// The latest authority move of this player ([`Warp`]): its number and where to.
+    pub warp: u16,
+    pub warp_at: Vec3,
 }
 
 /// Position quantisation derived from the map size (about 1 cm on a 320 m map).
@@ -332,8 +400,24 @@ pub struct HostLink {
     rendezvous_timer: f32,
     /// Players who dropped recently, kept so they can take their seat back.
     departed: Vec<Departed>,
+    /// Players whose connection just dropped: their robot stays in the match for
+    /// [`HostLink::grace`] seconds, so a quick reconnect picks up exactly where it left off.
+    orphans: Vec<Orphan>,
+    /// Seconds a dropped player's robot waits for them before it is taken out of the match.
+    pub grace: f32,
     /// Relaunches so far (see [`S2C::Relaunch`]).
     pub epoch: u32,
+}
+
+/// How long a dropped guest's robot stays in the match by default.
+pub const ORPHAN_GRACE: f32 = 12.0;
+
+/// A player whose connection dropped, still in the match (see [`HostLink::orphans`]).
+#[derive(Clone, Copy, Debug)]
+struct Orphan {
+    token: u64,
+    id: u8,
+    left_at: f32,
 }
 
 /// Everything needed to put a reconnecting player back where they were.
@@ -424,6 +508,8 @@ pub struct ClientLink {
     entities: HashMap<u32, (Entity, bool)>,
     /// The host's relaunch count this client is in step with.
     pub epoch: u32,
+    /// The last [`Warp`] applied to our own player.
+    warp: u16,
 }
 
 #[derive(Resource, Default)]
@@ -478,6 +564,8 @@ pub fn host_setup_with(rules: Rules, player_name: impl Into<String>, addr: &str,
         rendezvous: board.map(|board| Rendezvous::host(board, rendezvous::new_code())),
         rendezvous_timer: 0.0,
         departed: Vec::new(),
+        orphans: Vec::new(),
+        grace: ORPHAN_GRACE,
         epoch: 0,
     });
     Ok(MatchSetup { rules, role: NetRole::Host, link, player_name: player_name.into(), local_player: (!dedicated).then_some(0), local_team: 0, carry: None })
@@ -630,6 +718,7 @@ pub fn poll_joining(time: Res<Time>, joining: Option<ResMut<Joining>>, mut pendi
                 latched: 0,
                 entities: HashMap::default(),
                 epoch,
+                warp: 0,
             });
             pending.0 = Some(MatchSetup { rules, role: NetRole::Client, link, player_name: name, local_player: Some(player), local_team: team, carry: None });
             commands.insert_resource(JoinStatus::Idle);
@@ -650,7 +739,7 @@ pub fn host_receive(
     state: Res<MatchState>,
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
-    mut players: Query<(Entity, &mut Player, &mut PlayerInput, &mut Remote, &Arsenal)>,
+    mut players: Query<(Entity, &mut Player, &mut PlayerInput, &mut Remote, &Arsenal, Option<&mut Warp>)>,
     // Everyone not driven over the network (local player, bots); remote players come from `players`.
     everyone: Query<(&Player, Has<crate::bots::Bot>), Without<Remote>>,
     mut orders: EventWriter<CommandEvent>,
@@ -679,6 +768,26 @@ pub fn host_receive(
     for addr in joiners.into_iter().flatten() {
         link.host.punch(addr);
     }
+    // A remote player nobody is connected as (a seat carried over a relaunch whose guest
+    // never came back): give them the same grace as anyone who drops.
+    let seated: Vec<u8> = link.peers.values().copied().chain(link.orphans.iter().map(|o| o.id)).collect();
+    for (_, player, ..) in players.iter().filter(|(_, player, ..)| !seated.contains(&player.id)) {
+        link.orphans.push(Orphan { token: 0, id: player.id, left_at: now });
+    }
+    // Dropped players who did not make it back in time leave the match (their seat, team and
+    // score are remembered for a while longer in case they still return).
+    let grace = link.grace;
+    let expired: Vec<Orphan> = link.orphans.iter().copied().filter(|o| now - o.left_at >= grace).collect();
+    link.orphans.retain(|o| now - o.left_at < grace);
+    for orphan in expired {
+        if let Some((entity, player, _, _, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == orphan.id) {
+            fx.write(FxEvent::notice(format!("{} LEFT", player.name)));
+            if orphan.token != 0 {
+                link.departed.push(Departed::from_player(orphan.token, player, arsenal, now));
+            }
+            commands.entity(entity).despawn();
+        }
+    }
     // Peers that went quiet are dropped as if they had disconnected.
     let stale: Vec<PeerId> = link.peers.keys().copied().filter(|peer| link.host.silent_for(*peer).is_some_and(|d| d > HOST_TIMEOUT)).collect();
     let mut events = link.host.poll();
@@ -694,23 +803,50 @@ pub fn host_receive(
                     link.host.send(peer, &S2C::Refused("VERSION MISMATCH".into()));
                     continue;
                 }
-                // The same install connecting again while its old connection lingers: drop the old one.
+                // The same install connecting again while its old connection lingers: drop the old
+                // one, and hand its robot straight over to the new connection below.
                 if token != 0 {
                     let old: Vec<PeerId> = link.tokens.iter().filter(|(p, t)| **t == token && **p != peer).map(|(p, _)| *p).collect();
                     for old_peer in old {
                         link.host.kick(old_peer);
                         link.tokens.remove(&old_peer);
-                        if let Some(id) = link.peers.remove(&old_peer)
-                            && let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id)
-                        {
-                            link.departed.push(Departed::from_player(token, player, arsenal, now));
-                            commands.entity(entity).despawn();
+                        if let Some(id) = link.peers.remove(&old_peer) {
+                            link.orphans.retain(|o| o.id != id);
+                            link.orphans.push(Orphan { token, id, left_at: now });
                         }
                     }
                 }
+                // Back while the robot is still in the match: take it over as it is (where it
+                // stands, its health, ammo, score and team), the host jumps the guest there.
+                let waiting = (token != 0).then(|| link.orphans.iter().position(|o| o.token == token)).flatten();
+                if let Some(index) = waiting
+                    && let Some((entity, player, mut input, mut remote, _, warp)) = players.iter_mut().find(|(_, player, ..)| player.id == link.orphans[index].id)
+                {
+                    let orphan = link.orphans.remove(index);
+                    let at = remote.placed.or(remote.latest().map(|(at, _)| at)).unwrap_or_default();
+                    remote.reset(now, at, input.yaw);
+                    input.buttons = 0;
+                    match warp {
+                        Some(mut warp) => {
+                            warp.seq = warp.seq.wrapping_add(1).max(1);
+                            warp.at = at;
+                        }
+                        None => {
+                            commands.entity(entity).insert(Warp::new(at));
+                        }
+                    }
+                    commands.entity(entity).insert(crate::lagcomp::ViewTime(now));
+                    link.peers.insert(peer, orphan.id);
+                    link.tokens.insert(peer, token);
+                    link.full_timer = 0.0;
+                    link.host.send(peer, &S2C::Welcome { player: orphan.id, team: player.team, rules: rules.clone(), epoch: link.epoch });
+                    fx.write(FxEvent::notice(format!("{} RECONNECTED", player.name)));
+                    continue;
+                }
                 link.departed.retain(|d| now - d.left_at < REJOIN_WINDOW);
                 let back = (token != 0).then(|| link.departed.iter().position(|d| d.token == token)).flatten().map(|i| link.departed.remove(i));
-                let free = |id: u8| !link.peers.values().any(|used| *used == id);
+                let held: Vec<u8> = link.orphans.iter().map(|o| o.id).collect();
+                let free = |id: u8| !link.peers.values().any(|used| *used == id) && !held.contains(&id);
                 let id = match back.as_ref().map(|d| d.id).filter(|id| free(*id)) {
                     Some(id) => id,
                     None => {
@@ -737,7 +873,7 @@ pub fn host_receive(
                 };
                 let bundle = player_bundle(&content, &rules, &map, id, name.clone(), team);
                 let spawn = crate::player::spawn_point(&map, id, rules.pvp.then_some(team));
-                let entity = commands.spawn((bundle, ids.next(), Remote::at(now, spawn, 0.0), crate::lagcomp::ViewTime(now))).id();
+                let entity = commands.spawn((bundle, ids.next(), remote_seat(now, spawn))).id();
                 if let Some(seat) = back.clone() {
                     let gear_count = content.gear.get(seat.gear as usize).map_or(0, |g| g.count);
                     commands.entity(entity).queue(move |mut entity: EntityWorldMut| seat.restore(&mut entity, gear_count));
@@ -755,10 +891,18 @@ pub fn host_receive(
                     continue;
                 };
                 match message {
-                    C2S::Input { input, pos, view } => {
-                        if let Some((entity, _, mut current, mut remote, _)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
+                    C2S::Input { input, pos, view, warp } => {
+                        if let Some((entity, _, mut current, mut remote, _, moved)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
                             *current = input;
-                            if pos.is_finite() {
+                            // Reports from before the guest heard about a teleport would undo it.
+                            let current_warp = match moved {
+                                Some(mut moved) => {
+                                    moved.acked = warp;
+                                    !moved.pending()
+                                }
+                                None => true,
+                            };
+                            if pos.is_finite() && current_warp {
                                 remote.push(now, pos, input.yaw);
                             }
                             if view.is_finite() {
@@ -783,12 +927,19 @@ pub fn host_receive(
                 let Some(id) = link.peers.remove(&peer) else {
                     continue;
                 };
-                if let Some((entity, player, _, _, arsenal)) = players.iter().find(|(_, player, ..)| player.id == id) {
-                    fx.write(FxEvent::notice(format!("{} LEFT", player.name)));
-                    if token != 0 {
-                        link.departed.push(Departed::from_player(token, player, arsenal, now));
+                if let Some((entity, player, mut input, _, arsenal, _)) = players.iter_mut().find(|(_, player, ..)| player.id == id) {
+                    if token != 0 && link.grace > 0.0 {
+                        // Their robot stands still and waits a little for them to come back.
+                        fx.write(FxEvent::notice(format!("{} LOST CONNECTION", player.name)));
+                        *input = PlayerInput { yaw: input.yaw, pitch: input.pitch, stance: input.stance, weapon: input.weapon, ..default() };
+                        link.orphans.push(Orphan { token, id, left_at: now });
+                    } else {
+                        fx.write(FxEvent::notice(format!("{} LEFT", player.name)));
+                        if token != 0 {
+                            link.departed.push(Departed::from_player(token, &player, arsenal, now));
+                        }
+                        commands.entity(entity).despawn();
                     }
-                    commands.entity(entity).despawn();
                 }
             }
         }
@@ -802,7 +953,7 @@ pub fn host_send(
     mut link: ResMut<NetLink>,
     rules: Res<Rules>,
     state: Res<MatchState>,
-    players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput)>,
+    players: Query<(&NetId, &Player, &Transform, &Health, &Arsenal, &PlayerInput, Option<&Warp>)>,
     enemies: Query<(&NetId, &Enemy, &Transform, &Health)>,
     (shots, mines, drones, pickups): (Query<(&NetId, &Projectile, &Transform)>, Query<(&NetId, &crate::combat::Mine, &Transform)>, Query<(&NetId, &crate::killstreak::Aircraft, &Transform)>, Query<(&NetId, &crate::loot::Pickup, &Transform)>),
     structures: Query<(&NetId, &Structure, &Transform, &Health)>,
@@ -847,7 +998,7 @@ pub fn host_send(
 
     let q = Quant::new(&rules);
     let mut entities = Vec::with_capacity(players.iter().len() + enemies.iter().len() + shots.iter().len());
-    for (id, player, transform, health, arsenal, input) in &players {
+    for (id, player, transform, health, arsenal, input, _) in &players {
         let pitch = pack_pitch(input.pitch);
         entities.push(EntState {
             id: id.0,
@@ -944,9 +1095,8 @@ pub fn host_send(
 
     let peers: Vec<(PeerId, u8)> = link.peers.iter().map(|(peer, id)| (*peer, *id)).collect();
     for (peer, id) in peers {
-        if let Some((_, player, transform, health, arsenal, _)) = players.iter().find(|(_, player, ..)| player.id == id) {
-            // Just-spawned players are also pinned so they start at their base.
-            let teleport = (!health.alive() || player.respawn > 0.0 || player.life < 0.4).then_some(transform.translation);
+        if let Some((_, player, _, health, arsenal, _, warp)) = players.iter().find(|(_, player, ..)| player.id == id) {
+            let (warp, warp_at) = warp.map_or((0, Vec3::ZERO), |w| (w.seq, w.at));
             link.host.send_latest(
                 peer,
                 &S2C::You(Private {
@@ -962,7 +1112,8 @@ pub fn host_send(
                     lost: player.lost,
                     limbs: player.limb_hp.map(|hp| (hp / crate::player::LIMB_HP * 255.0).clamp(0.0, 255.0) as u8),
                     perk: player.perk,
-                    teleport,
+                    warp,
+                    warp_at,
                 }),
             );
         }
@@ -981,11 +1132,11 @@ pub fn client_receive(
     mut rules: ResMut<Rules>,
     mut state: ResMut<MatchState>,
     mut commands: Commands,
-    mut local: Query<(&mut Health, &mut Arsenal, &mut Player, &mut Transform), With<LocalPlayer>>,
+    mut local: Query<(&mut Health, &mut Arsenal, &mut Player, &mut Transform, Option<&mut crate::player::Mover>), With<LocalPlayer>>,
     mut remotes: Query<(&mut Remote, Option<&mut Health>, Option<&mut Enemy>, Option<&mut Structure>, Option<&mut OreNode>, Option<&mut PlayerInput>, Option<&mut Player>), Without<LocalPlayer>>,
     mut fx: EventWriter<FxEvent>,
     mut next: ResMut<NextState<MatchPhase>>,
-    (mut was_dead, mut pending): (Local<bool>, ResMut<PendingMatch>),
+    mut pending: ResMut<PendingMatch>,
 ) {
     let NetLink::Client(link) = &mut *net else {
         return;
@@ -1023,7 +1174,7 @@ pub fn client_receive(
                     && entry.name != link.name
                 {
                     link.name = entry.name.clone();
-                    if let Ok((_, _, mut player, _)) = local.single_mut() {
+                    if let Ok((_, _, mut player, ..)) = local.single_mut() {
                         player.name = entry.name.clone();
                     }
                 }
@@ -1051,17 +1202,11 @@ pub fn client_receive(
                         if let Some(mut ore) = ore {
                             ore.amount = ore.max * e.hp as f32 / 255.0;
                         }
-                        if let Some(mut input) = input {
-                            input.weapon = e.aux & 0x3f;
-                            input.pitch = unpack_pitch(e.pitch);
-                            input.stance = e.flags & crate::player::flags::STANCE;
-                            input.lean = crate::player::flags::lean(e.flags);
-                            input.cover = e.limbs >> 4;
-                            input.light = e.extra & 1 != 0;
+                        // Players' pose plays back with their position (see `smooth_remote`).
+                        if input.is_some() {
+                            remote.push_look(snapshot.time, Look { flags: e.flags, pitch: e.pitch, aux: e.aux, limbs: e.limbs, extra: e.extra });
                         }
                         if let Some(mut player) = player {
-                            player.flags = e.flags;
-                            player.lost = e.limbs & 0x0F;
                             player.team = e.aux >> 6;
                             if let Some(entry) = snapshot.state.roster.iter().find(|r| r.id == player.id)
                                 && player.name != entry.name
@@ -1071,7 +1216,11 @@ pub fn client_receive(
                         }
                         continue;
                     }
-                    let base = (MatchEntity, NetId(e.id), Remote::at(snapshot.time, pos, yaw), Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)));
+                    let mut remote = Remote::at(snapshot.time, pos, yaw);
+                    if e.kind == kind::PLAYER {
+                        remote.push_look(snapshot.time, Look { flags: e.flags, pitch: e.pitch, aux: e.aux, limbs: e.limbs, extra: e.extra });
+                    }
+                    let base = (MatchEntity, NetId(e.id), remote, Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)));
                     let hp = e.hp as f32 / 255.0;
                     let entity = match e.kind {
                         kind::PLAYER => commands
@@ -1134,7 +1283,7 @@ pub fn client_receive(
                 });
             }
             ClientEvent::Message(S2C::You(private)) => {
-                if let Ok((mut health, mut arsenal, mut player, mut transform)) = local.single_mut() {
+                if let Ok((mut health, mut arsenal, mut player, mut transform, mover)) = local.single_mut() {
                     *health = private.health;
                     *arsenal = private.arsenal;
                     player.respawn = private.respawn;
@@ -1148,12 +1297,16 @@ pub fn client_receive(
                     player.lost = private.lost;
                     player.limb_hp = private.limbs.map(|v| v as f32 / 255.0 * crate::player::LIMB_HP);
                     player.perk = private.perk;
-                    // While dead the host owns our position, so we wake up at the spawn point.
-                    if let Some(at) = private.teleport {
-                        transform.translation = at;
-                        *was_dead = true;
-                    } else if *was_dead {
-                        *was_dead = false;
+                    // The host moved us (a respawn, a new round): jump there, and say so in our input.
+                    if private.warp != link.warp {
+                        link.warp = private.warp;
+                        transform.translation = private.warp_at;
+                        if let Some(mut mover) = mover {
+                            mover.vertical = 0.0;
+                            mover.vault = None;
+                            mover.climbing = false;
+                            mover.last = private.warp_at;
+                        }
                     }
                 }
             }
@@ -1177,6 +1330,8 @@ pub fn client_receive(
         link.entities.clear();
         link.epoch = epoch;
         link.latched = 0;
+        // The new match numbers its moves from the start again.
+        link.warp = 0;
         let (name, player) = (link.name.clone(), link.player);
         pending.0 = Some(MatchSetup {
             rules,
@@ -1215,20 +1370,59 @@ pub fn client_send(time: Res<Time>, clock: Res<ServerClock>, mut link: ResMut<Ne
         // Anything pressed since the last send counts, so a quick tap still fires.
         let sent = PlayerInput { buttons: input.buttons | link.latched, ..*input };
         link.latched = 0;
-        link.client.send(&C2S::Input { input: sent, pos: transform.translation, view: clock.view(now) });
+        link.client.send(&C2S::Input { input: sent, pos: transform.translation, view: clock.view(now), warp: link.warp });
     }
     link.client.flush();
 }
 
 /// Plays networked entities back from their sample buffers, a little in the past.
-pub fn smooth_remote(time: Res<Time>, role: Res<NetRole>, clock: Res<ServerClock>, mut remotes: Query<(&mut Transform, &Remote)>) {
+/// On clients, other players' stance, aim and flags play back on the same clock, so the
+/// body you see (and shoot at) is the one the host had at that moment - which is exactly
+/// what lag compensation rewinds to (see [`crate::lagcomp`]).
+pub fn smooth_remote(time: Res<Time>, role: Res<NetRole>, clock: Res<ServerClock>, mut remotes: Query<(&mut Transform, &mut Remote, Option<&mut PlayerInput>, Option<&mut Player>)>) {
     let now = time.elapsed_secs();
-    let playback = if *role == NetRole::Client { clock.view(now) } else { now - HOST_INTERPOLATION };
-    for (mut transform, remote) in &mut remotes {
+    let client = *role == NetRole::Client;
+    let playback = if client { clock.view(now) } else { now - HOST_INTERPOLATION };
+    for (mut transform, mut remote, input, player) in &mut remotes {
         if let Some((pos, yaw)) = remote.sample(playback) {
             transform.translation = pos;
             transform.rotation = Quat::from_rotation_y(yaw);
+            remote.placed = Some(pos);
         }
+        if !client {
+            continue;
+        }
+        let (Some(mut input), Some(mut player), Some(look)) = (input, player, remote.look_at(playback)) else { continue };
+        input.weapon = look.aux & 0x3f;
+        input.pitch = unpack_pitch(look.pitch);
+        input.stance = look.flags & crate::player::flags::STANCE;
+        input.lean = crate::player::flags::lean(look.flags);
+        input.cover = look.limbs >> 4;
+        input.light = look.extra & 1 != 0;
+        if player.flags != look.flags {
+            player.flags = look.flags;
+        }
+        player.lost = look.limbs & 0x0F;
+    }
+}
+
+/// Host: notices the simulation moving a remote player (a respawn, a round reset, a team
+/// swap) and turns it into a [`Warp`] the guest has to acknowledge. Until it does, playback
+/// holds them where the authority put them.
+pub fn detect_warps(time: Res<Time>, mut players: Query<(&Transform, &mut Remote, &mut Warp, &Player, &Health)>) {
+    let now = time.elapsed_secs();
+    for (transform, mut remote, mut warp, player, health) in &mut players {
+        let at = transform.translation;
+        let moved = remote.placed.is_some_and(|placed| placed.distance(at) > 0.3);
+        // A respawn on the very spot (or a fresh life anywhere) is a move all the same.
+        let reborn = health.alive() && player.life == 0.0 && warp.at.distance(at) > 0.01;
+        if !moved && !reborn {
+            continue;
+        }
+        warp.seq = warp.seq.wrapping_add(1).max(1);
+        warp.at = at;
+        let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
+        remote.reset(now, at, yaw);
     }
 }
 
@@ -1294,6 +1488,29 @@ mod tests {
     fn entity_state_is_compact() {
         let state = EntState { id: 1, kind: 1, sub: 2, pos: [1, 2, 3], yaw: 4, pitch: -3, hp: 5, aux: 6, flags: 7, limbs: 9, extra: 1 };
         assert_eq!(bincode::serialize(&state).unwrap().len(), 19);
+    }
+
+    #[test]
+    fn looks_play_back_on_the_position_clock() {
+        let mut remote = Remote::at(0.0, Vec3::ZERO, 0.0);
+        remote.push_look(0.0, Look { flags: 1, ..default() });
+        remote.push_look(0.1, Look { flags: 2, ..default() });
+        assert_eq!(remote.look_at(0.05).unwrap().flags, 1);
+        assert_eq!(remote.look_at(0.1).unwrap().flags, 2);
+        assert_eq!(remote.look_at(-1.0).unwrap().flags, 1);
+        remote.reset(1.0, Vec3::X * 40.0, 0.0);
+        assert_eq!(remote.sample(0.5).unwrap().0, Vec3::X * 40.0);
+        assert_eq!(remote.placed, Some(Vec3::X * 40.0));
+    }
+
+    #[test]
+    fn warps_wait_for_the_guest() {
+        let mut warp = Warp::new(Vec3::ZERO);
+        assert!(warp.pending());
+        warp.acked = 1;
+        assert!(!warp.pending());
+        warp.seq = 2;
+        assert!(warp.pending());
     }
 
     #[test]

@@ -918,7 +918,7 @@ pub fn vitals(
 ) {
     let dt = sim_dt(&time);
     // Where every living fighter is, so respawns can pick the safest spot.
-    let fighters: Vec<(u8, Vec3)> = players.iter().filter(|(_, h, ..)| h.alive()).map(|(p, _, t, ..)| (p.team, t.translation)).collect();
+    let mut fighters: Vec<(u8, Vec3)> = players.iter().filter(|(_, h, ..)| h.alive()).map(|(p, _, t, ..)| (p.team, t.translation)).collect();
     for (mut player, mut health, mut transform, mut arsenal, mut input) in &mut players {
         if health.alive() {
             // The other team's base is off limits: no camping where people spawn.
@@ -979,11 +979,14 @@ pub fn vitals(
             if rules.pvp {
                 // Pick the base spot furthest from any enemy, and shield the player briefly.
                 let enemies: Vec<Vec3> = fighters.iter().filter(|(team, _)| *team != player.team).map(|(_, at)| *at).collect();
+                let friends: Vec<Vec3> = fighters.iter().filter(|(team, _)| *team == player.team).map(|(_, at)| *at).collect();
                 transform.translation = if rules.domination {
                     crate::objective::domination_spawn(&map, &statics, player.team, player.id, &state.obj.points, &enemies)
                 } else {
-                    safest_spawn(&map, player.team, &enemies)
+                    clear_spawn(&map, player.team, player.id, &enemies, &friends)
                 };
+                // Whoever comes back next this frame does not land on top of this one.
+                fighters.push((player.team, transform.translation));
                 player.protect = if rules.hunt { 5.0 } else { 2.5 };
             }
         }
@@ -1044,16 +1047,33 @@ pub fn in_enemy_base(map: &GameMap, team: u8, at: Vec3) -> bool {
 
 /// The team spawn point furthest from the nearest enemy.
 pub fn safest_spawn(map: &GameMap, team: u8, enemies: &[Vec3]) -> Vec3 {
+    clear_spawn(map, team, 0, enemies, &[])
+}
+
+/// The team spawn point furthest from the nearest enemy that nobody is standing on.
+/// Enemies further off than [`SAFE_DISTANCE`] all count the same, so with nobody near a
+/// player's base, players spread over its spots (by id) instead of stacking on one.
+pub fn clear_spawn(map: &GameMap, team: u8, id: u8, enemies: &[Vec3], friends: &[Vec3]) -> Vec3 {
     let spawns = &map.team_spawns[(team as usize).min(1)];
+    let count = spawns.len().max(1);
+    let score = |(i, at): &(usize, Vec3)| {
+        let threat = enemies.iter().map(|e| e.distance(*at)).fold(f32::MAX, f32::min).min(SAFE_DISTANCE);
+        let crowded = friends.iter().filter(|f| f.xz().distance(at.xz()) < 1.2).count() as f32;
+        // A small, id-based preference among otherwise equal spots.
+        let turn = ((i + count - (id as usize / 2) % count) % count) as f32;
+        threat - crowded * 50.0 - turn * 0.01
+    };
     spawns
         .iter()
-        .map(|p| map.ground(p.x, p.y))
-        .max_by(|a, b| {
-            let nearest = |at: &Vec3| enemies.iter().map(|e| e.distance(*at)).fold(f32::MAX, f32::min);
-            nearest(a).total_cmp(&nearest(b))
-        })
-        .unwrap_or_else(|| spawn_point(map, 0, Some(team)))
+        .enumerate()
+        .map(|(i, p)| (i, map.ground(p.x, p.y)))
+        .max_by(|a, b| score(a).total_cmp(&score(b)))
+        .map(|(_, at)| at)
+        .unwrap_or_else(|| spawn_point(map, id, Some(team)))
 }
+
+/// Enemies at least this far from a spawn spot make it as safe as it gets.
+pub const SAFE_DISTANCE: f32 = 70.0;
 
 pub fn max_health(catalog: &Catalog, state: &MatchState, player: &Player) -> f32 {
     let bonus = match perk(catalog, player) {
