@@ -720,9 +720,17 @@ fn bait(
     mut players: Query<(&Player, &mut Transform, &mut PlayerInput), With<LocalPlayer>>,
     enemies: Query<(&Player, &Transform, &PlayerInput), Without<LocalPlayer>>,
     mut done: Local<bool>,
+    (time, mut held): (Res<Time>, Local<f32>),
 ) {
-    if *done || state.phase != Phase::Live || std::env::var("OPNIX_BAIT").is_err() {
+    if state.phase != Phase::Live || std::env::var("OPNIX_BAIT").is_err() {
         return;
+    }
+    // Keep at it for the first moments: the match's own spawn can land after the first frame.
+    if *done {
+        *held += time.delta_secs();
+        if *held > 1.5 {
+            return;
+        }
     }
     let Ok((me, mut transform, mut input)) = players.single_mut() else { return };
     // `OPNIX_BAIT=close`: a dozen metres in front of the nearest enemy instead, in its sights.
