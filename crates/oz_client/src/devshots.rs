@@ -225,7 +225,12 @@ fn pose_cam(
             handle
         })
         .clone();
-    let Ok((body, input)) = me.single() else { return };
+    let mut mine = me.iter();
+    let count = mine.len();
+    let Some((body, input)) = mine.next() else { return };
+    if count != 1 {
+        warn_once!("pose cam: {count} local players");
+    }
     let side: f32 = std::env::var("OPNIX_POSE_SIDE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     let look = Quat::from_rotation_y(input.yaw);
     let chest = body.translation + Vec3::Y * 1.0;
@@ -236,6 +241,7 @@ fn pose_cam(
     let now = time.elapsed_secs();
     if now - *last >= 1.0 {
         *last = now;
+        info!("pose cam at {at} looking at {chest}");
         commands.spawn(Screenshot::image(handle)).observe(save_ppm(format!("{dir}/pose_{now:07.2}.png")));
     }
 }
