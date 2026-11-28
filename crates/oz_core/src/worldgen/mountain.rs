@@ -13,17 +13,18 @@ use glam::{Vec2, Vec3};
 use std::f32::consts::TAU;
 
 /// Level heights, valley to summit.
-const LEVELS: [f32; 5] = [1.2, 6.2, 11.2, 16.2, 21.2];
+pub(super) const LEVELS: [f32; 5] = [1.2, 6.2, 11.2, 16.2, 21.2];
 /// Where each cliff stands (z), between level i and i + 1.
-const CLIFFS: [f32; 4] = [-62.0, -24.0, 14.0, 52.0];
+pub(super) const CLIFFS: [f32; 4] = [-62.0, -24.0, 14.0, 52.0];
 /// Ramps (x) up each cliff: the switchback road climbs from the valley's ends toward the middle.
 const RAMPS: [&[f32]; 4] = [&[-70.0, 70.0], &[-84.0, 84.0], &[-48.0, 48.0], &[-22.0, 22.0]];
-/// Stairways (x) cut into each cliff.
-const STAIRS: [&[f32]; 4] = [&[0.0], &[-30.0, 30.0], &[0.0, -92.0, 92.0], &[-70.0, 70.0]];
+/// Stairways (x) cut into each cliff - clear of the buildings at their feet and tops (the
+/// valley's flight once ran up through the chapel).
+pub(super) const STAIRS: [&[f32]; 4] = [&[9.0], &[-30.0, 30.0], &[0.0, -92.0, 92.0], &[-70.0, 70.0]];
 /// The bases: either end of the middle terrace.
 const BASE: (f32, f32) = (104.0, -5.0);
 const RAMP_HALF: f32 = 5.0;
-const STEP_RUN: f32 = 0.42;
+pub(super) const STEP_RUN: f32 = 0.42;
 
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -186,7 +187,7 @@ impl World {
             self.solid(Aabb::span(Vec3::new(a, hi - 0.1, front), Vec3::new(c, hi + COVER_HEIGHT, front + 0.9)), Paint::Rock);
         }
         // Drawn as weathered rock, its strata showing as a darker band, with scree at the foot.
-        let face_paint = if paint == Paint::Concrete { Paint::Sand } else { Paint::Rock };
+        let face_paint = if paint == Paint::Concrete { Paint::Slate } else { Paint::Rock };
         self.rock_skin(from, face_paint);
         let mut detail = self.detail_rng(Vec2::new(x0, b), 0xc1f);
         let band = lo + (hi - lo) * detail.range(0.35, 0.6);

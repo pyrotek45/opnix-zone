@@ -2709,6 +2709,25 @@ mod tests {
         let ramp = w.height(48.0, 20.0) - w.height(48.0, 8.0);
         assert!(ramp > 2.0 && ramp < 5.0, "ramp {ramp}");
         assert!(!w.ladders.is_empty() && !w.doors.is_empty());
+        // Every flight of steps up a cliff can be climbed: on every step, room for a body
+        // standing up, from the terrace below to the one above.
+        let statics = w.statics();
+        for (i, &b) in mountain::CLIFFS.iter().enumerate() {
+            let (lo, hi) = (mountain::LEVELS[i], mountain::LEVELS[i + 1]);
+            let n = ((hi - lo) / 0.29).ceil() as usize;
+            for &s in mountain::STAIRS[i] {
+                for k in 0..n {
+                    let z = b - 1.6 - (n - 1 - k) as f32 * mountain::STEP_RUN - mountain::STEP_RUN * 0.5;
+                    let feet = lo + (k + 1) as f32 * (hi - lo) / n as f32;
+                    for x in [s - 0.6, s, s + 0.6] {
+                        assert!(!statics.blocked(x, z, feet, 1.8, 0.3), "the stairs at x {s} up cliff {i} are blocked at step {k} ({x}, {feet}, {z})");
+                    }
+                }
+                // And they start on the ground: the bottom step is one step up from the terrace.
+                let foot = b - 1.6 - n as f32 * mountain::STEP_RUN - 0.5;
+                assert!((w.height(s, foot) - lo).abs() < 0.3, "the stairs at x {s} up cliff {i} start off the ground");
+            }
+        }
     }
 
     /// Geometry budget per map, printed for comparing before and after art passes:
