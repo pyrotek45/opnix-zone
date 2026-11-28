@@ -441,6 +441,20 @@ fn take_cover(
     // A light lean into the wall keeps us pressed against it.
     let press = -wall.normal * 0.15;
 
+    // Where we can look (or shoot) out: the wall's ends, or a window beside us (the wall
+    // carries on under its sill, so look for openings at head height too).
+    let open = |side: f32, d: f32| {
+        let p = along * side * d;
+        wall_behind(&statics, chest + p, &wall).is_none() || wall_behind(&statics, head + p, &wall).is_none()
+    };
+    let edges = [open(-1.0, EDGE), open(1.0, EDGE)];
+    // The nearest opening within reach along the wall, the way we look first.
+    let looking = if along.dot(Quat::from_rotation_y(yaw) * Vec3::NEG_Z) >= 0.0 { 1.0 } else { -1.0 };
+    let nearest = (1..=12).find_map(|step| {
+        let d = step as f32 * 0.1;
+        [looking, -looking].into_iter().find(|dir| open(*dir, d)).map(|dir| (dir, d))
+    });
+
     if cover.aiming {
         input.movement = Vec2::ZERO;
         if wall.low {
@@ -451,13 +465,6 @@ fn take_cover(
         } else {
             // Step out round whichever edge we are at, toward where we are looking (no
             // leaning in this game: the whole robot comes out past the corner).
-            // Where we can look out: the wall's ends, or a window beside us (the wall carries
-            // on under its sill, so look for openings at head height too).
-            let open = |side: f32, d: f32| {
-                let p = along * side * d;
-                wall_behind(&statics, chest + p, &wall).is_none() || wall_behind(&statics, head + p, &wall).is_none()
-            };
-            let edges = [open(-1.0, EDGE), open(1.0, EDGE)];
             let side = match edges {
                 [true, false] => -1.0,
                 [false, true] => 1.0,
@@ -477,18 +484,7 @@ fn take_cover(
             } else if side == 0.0 && cover.peek.is_none() {
                 // Not right at an end: find the nearest corner within reach along the wall
                 // (either way, the one toward where we look first) and go round that.
-                let looking = if along.dot(Quat::from_rotation_y(yaw) * Vec3::NEG_Z) >= 0.0 { 1.0 } else { -1.0 };
-                let mut found = None;
-                'search: for step in 1..=12 {
-                    let d = step as f32 * 0.1;
-                    for dir in [looking, -looking] {
-                        if open(dir, d) {
-                            found = Some((dir, d));
-                            break 'search;
-                        }
-                    }
-                }
-                if let Some((dir, d)) = found {
+                if let Some((dir, d)) = nearest {
                     let home = feet + along * dir * (d - EDGE).max(0.0);
                     cover.peek = Some((Vec3::new(home.x, feet.y, home.z), dir));
                 }
@@ -522,24 +518,12 @@ fn take_cover(
                 input.buttons |= buttons::BLIND;
             } else {
                 let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
-                // Where we can look out: the wall's ends, or a window beside us (the wall carries
-            // on under its sill, so look for openings at head height too).
-            let open = |side: f32, d: f32| {
-                let p = along * side * d;
-                wall_behind(&statics, chest + p, &wall).is_none() || wall_behind(&statics, head + p, &wall).is_none()
-            };
-            let edges = [open(-1.0, EDGE), open(1.0, EDGE)];
-            let side = match edges {
+                // Round the end we are at, or else the nearest end or window within reach.
+                let side = match edges {
                     [true, false] => -1.0,
                     [false, true] => 1.0,
-                    [true, true] => {
-                        if along.dot(Quat::from_rotation_y(yaw) * Vec3::NEG_Z) >= 0.0 {
-                            1.0
-                        } else {
-                            -1.0
-                        }
-                    }
-                    [false, false] => 0.0,
+                    [true, true] => looking,
+                    [false, false] => nearest.map_or(0.0, |(dir, _)| dir),
                 };
                 if side == 0.0 {
                     // Middle of a tall wall: nothing to shoot round.
