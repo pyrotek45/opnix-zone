@@ -30,6 +30,10 @@ const BURN_SECONDS: f32 = 3.0;
 pub const MAX_RANGE: f32 = 400.0;
 /// Hip fire is a spray: this much wider than the weapon's listed spread before parts and perks.
 pub const HIP_WIDTH: f32 = 1.6;
+/// Firing blind from cover throws shots this much wider, and never tighter than the minimum
+/// (the tangent of the widest stray).
+pub const BLIND_SPREAD: f32 = 3.2;
+pub const BLIND_MIN_SPREAD: f32 = 0.045;
 
 /// How much moving opens the cone: walking nearly doubles it, sprinting about triples it,
 /// in the air worse still. Aiming down the sights barely blooms.
@@ -451,9 +455,9 @@ pub fn fire_weapons(
             _ => 1.0,
         };
         // Blind fire from cover: the gun is out, the eyes are not.
-        let blind = if input.held(buttons::BLIND) { 3.2 } else { 1.0 };
+        let blind = if input.held(buttons::BLIND) { BLIND_SPREAD } else { 1.0 };
         let moving = mover.map_or(1.0, |m| bloom(m.speed, m.grounded, aiming));
-        let spread = (stats.spread * if aiming { stats.ads_spread } else { hipfire * HIP_WIDTH } * stance::steadiness(input.stance) * blind * moving).max(if blind > 1.0 { 0.045 } else { 0.0 });
+        let spread = (stats.spread * if aiming { stats.ads_spread } else { hipfire * HIP_WIDTH } * stance::steadiness(input.stance) * blind * moving).max(if blind > 1.0 { BLIND_MIN_SPREAD } else { 0.0 });
         noises.0.push(crate::bots::Noise { at: eye, radius: if stats.quiet { 9.0 } else { 80.0 }, team: player.team, shout: false });
         let shot = |to: Vec3, beam: bool| FxEvent::Shot { by: player.id, sound: def.sound, from, to, beam, tracer: stats.tracer, quiet: stats.quiet, local: false };
         // Nearest enemy-team player along a ray, within `reach`.

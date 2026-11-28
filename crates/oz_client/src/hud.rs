@@ -191,7 +191,8 @@ impl Plugin for HudPlugin {
             .init_resource::<HandActions>()
             .init_resource::<StripActions>()
             .add_systems(OnEnter(MatchPhase::Active), spawn_hud)
-            .add_systems(Update, ((update_text, update_strip).chain(), update_shapes, scope_and_stance, net_stats).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
+            .init_resource::<CrossAim>()
+            .add_systems(Update, ((update_text, update_strip).chain(), (aim_crosshair, update_shapes).chain(), scope_and_stance, net_stats).in_set(ClientSet::Present).run_if(in_state(MatchPhase::Active)));
     }
 }
 
@@ -354,7 +355,7 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
         });
 
         // Crosshair: four ticks that spread with movement and recoil.
-        hud.spawn(at(Node { left: Val::Percent(50.0), top: Val::Percent(50.0), ..default() })).with_children(|cross| {
+        hud.spawn((CrossRoot, at(Node { left: Val::Percent(50.0), top: Val::Percent(50.0), ..default() }))).with_children(|cross| {
             for i in 0..4 {
                 cross.spawn((Seg::Tick(i), at(Node::default()), BackgroundColor(ui::TEXT)));
             }
@@ -374,6 +375,69 @@ fn spawn_hud(mut commands: Commands, mut notices: ResMut<Notices>, mut images: R
             });
         }
     });
+}
+
+/// The crosshair's root (it moves off centre when the shots do not go where the camera looks).
+#[derive(Component)]
+struct CrossRoot;
+
+/// Where shots really go, on screen: the crosshair's offset from the middle (logical px), how
+/// many pixels a unit of spread (the tangent of the cone) covers there, and whether the next
+/// shot is a blind one.
+#[derive(Resource, Default)]
+struct CrossAim {
+    offset: Vec2,
+    px_per_spread: f32,
+    blind: bool,
+}
+
+/// Over the shoulder in cover, shots leave the gun (held up over the top or round the edge),
+/// not the camera: the crosshair goes where that line meets something, and the spread is
+/// measured there. In first person it stays in the middle and the spread follows the FOV.
+#[allow(clippy::too_many_arguments)]
+fn aim_crosshair(
+    view: Res<ViewState>,
+    cover: Res<crate::cover::Cover>,
+    (statics, map): (Res<Statics>, Res<Map>),
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    camera: Query<(&GlobalTransform, &Camera, &Projection), With<crate::view::WorldCamera>>,
+    me: Query<(&Transform, &PlayerInput), With<LocalPlayer>>,
+    mut aim: ResMut<CrossAim>,
+    mut root: Query<&mut Node, With<CrossRoot>>,
+) {
+    let (Ok(window), Ok((eye, cam, projection)), Ok((body, input))) = (windows.single(), camera.single(), me.single()) else { return };
+    let size = Vec2::new(window.width(), window.height());
+    let fov = if let Projection::Perspective(p) = projection { p.fov } else { 1.2 };
+    let over_shoulder = view.third > 0.4;
+    // Firing blind now, or would be (behind low cover the trigger goes over the top).
+    let blind = input.held(buttons::BLIND) || (over_shoulder && cover.wall.is_some_and(|w| w.low));
+    aim.blind = blind;
+    aim.offset = Vec2::ZERO;
+    aim.px_per_spread = size.y * 0.5 / (fov * 0.5).tan();
+    if over_shoulder {
+        let mut shot = *input;
+        if blind {
+            shot.buttons |= buttons::BLIND;
+        }
+        let from = oz_sim::player::shot_origin(&statics, body.translation, &shot);
+        let dir = input.aim_dir();
+        let reach = statics.raycast(from, dir, 150.0).map_or(150.0, |(d, _)| d).min(map.raycast(from, dir, 150.0)).max(0.5);
+        let hit = from + dir * reach;
+        let to_screen = |p: Vec3| cam.world_to_ndc(eye, p).filter(|n| n.z > 0.0 && n.z < 1.0).map(|n| Vec2::new(n.x, -n.y) * size * 0.5);
+        if let (Some(at), Some(edge)) = (to_screen(hit), to_screen(hit + eye.right().as_vec3() * reach)) {
+            aim.offset = at.clamp(-size * 0.45, size * 0.45);
+            aim.px_per_spread = (edge - at).length();
+        }
+    }
+    if let Ok(mut node) = root.single_mut() {
+        let (left, top) = (Val::Px((size.x * 0.5 + aim.offset.x).round()), Val::Px((size.y * 0.5 + aim.offset.y).round()));
+        if node.left != left {
+            node.left = left;
+        }
+        if node.top != top {
+            node.top = top;
+        }
+    }
 }
 
 /// What you can do right now, as key chips stacked bottom left above your health: out of
@@ -643,7 +707,7 @@ fn update_shapes(
     mut zones: Query<(&Zone, &mut Node), (Without<Seg>, Without<Fill>)>,
     mut hurt: Query<&mut BackgroundColor, (With<HurtOverlay>, Without<Seg>, Without<Fill>)>,
     mut wave_size: Local<u32>,
-    (killcam, statics, map): (Res<crate::killcam::KillCam>, Res<Statics>, Res<Map>),
+    (killcam, statics, map, aim): (Res<crate::killcam::KillCam>, Res<Statics>, Res<Map>, Res<CrossAim>),
 ) {
     let pick = subject.0.and_then(|e| players.get(e).ok()).or_else(|| players.iter().find(|(.., local)| *local));
     let Some((health, arsenal, me, transform, input, mover, _)) = pick else {
@@ -756,7 +820,10 @@ fn update_shapes(
         };
         stats.spread * if aiming { stats.ads_spread } else { hip * oz_sim::weapons::HIP_WIDTH } * stance::steadiness(input.stance) * oz_sim::weapons::bloom(mover.speed, mover.grounded, aiming)
     });
-    let gap = 3.0 + (cone * 520.0).min(90.0) + view.recoil * 9.0 + if view.hit > 0.0 { if view.head_hit || view.limb_hit > 0.0 { 7.0 } else { 3.0 } } else { 0.0 };
+    // The ticks sit on the edge of where a shot can land, as seen from here: blind fire
+    // throws its shots wide (as the simulation does), and the size is measured on screen.
+    let cone = if aim.blind { (cone * oz_sim::weapons::BLIND_SPREAD).max(oz_sim::weapons::BLIND_MIN_SPREAD) } else { cone };
+    let gap = 3.0 + (cone * aim.px_per_spread).min(220.0) + view.recoil * 9.0 + if view.hit > 0.0 { if view.head_hit || view.limb_hit > 0.0 { 7.0 } else { 3.0 } } else { 0.0 };
     // Over a player: the crosshair takes their team colour, so you never shoot a friend by mistake.
     let eye = transform.translation + Vec3::Y * input.eye();
     let aim = input.aim_dir();
