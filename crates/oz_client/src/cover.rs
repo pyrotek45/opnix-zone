@@ -169,7 +169,7 @@ fn demo(
         }
     } else if which == "beside" {
         // Inside, back to the wall just beside a window (the wall carries on under its sill).
-        'b: for window in &map.windows {
+        'b: for window in map.windows.iter().filter(|w| w.vehicle.is_none()) {
             let along = if window.along_x { Vec3::X } else { Vec3::Z };
             for normal in dirs.into_iter().filter(|n| if window.along_x { n.x == 0.0 } else { n.z == 0.0 }) {
                 let floor = window.center.y - oz_core::worldgen::WINDOW_SILL;
@@ -186,7 +186,7 @@ fn demo(
             }
         }
     } else if which == "window" {
-        'w: for window in &map.windows {
+        'w: for window in map.windows.iter().filter(|w| w.vehicle.is_none()) {
             for normal in dirs.into_iter().filter(|n| if window.along_x { n.x == 0.0 } else { n.z == 0.0 }) {
                 let floor = window.center.y - oz_core::worldgen::WINDOW_SILL;
                 let feet = Vec3::new(window.center.x, floor, window.center.z) + normal * (OFFSET + 0.15);

@@ -7,6 +7,8 @@
 //!   replayed moment is saved as `dir/replay_<t>.png` with `t` on the same clock, and both
 //!   are logged to `dir/views.csv` so the camera numbers can be compared too. Quits after
 //!   the first kill cam.
+//! * `OPNIX_SHATTER_CARS=secs`: (offline host) every car's windows shatter that many seconds
+//!   into the live match, for photographing the glass going.
 
 use crate::{
     avatar::{OwnRobot, PlayerRobot},
@@ -33,11 +35,32 @@ impl Plugin for DevShotsPlugin {
         if std::env::var("OPNIX_UI_SHOT").is_ok() {
             app.add_systems(Update, ui_shot);
         }
+        if std::env::var("OPNIX_SHATTER_CARS").is_ok() {
+            app.add_systems(Update, shatter_cars.run_if(in_state(MatchPhase::Active)));
+        }
         if std::env::var("OPNIX_POSE_CAM").is_ok() {
             app.add_systems(Update, pose_cam.after(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
         }
         if std::env::var("OPNIX_KILLCAM_TEST").is_ok() {
             app.add_systems(Update, killcam_test.after(crate::avatar::AnimateRigs).run_if(in_state(MatchPhase::Active)));
+        }
+    }
+}
+
+fn shatter_cars(time: Res<Time>, map: Res<Map>, mut state: ResMut<MatchState>, mut clock: Local<f32>) {
+    if !matches!(state.phase, Phase::Live | Phase::Night) {
+        return;
+    }
+    *clock += time.delta_secs();
+    let at = std::env::var("OPNIX_SHATTER_CARS").ok().and_then(|s| s.parse().ok()).unwrap_or(2.4f32);
+    if *clock < at || *clock - time.delta_secs() >= at {
+        return;
+    }
+    for (i, w) in map.windows.iter().enumerate() {
+        if w.vehicle.is_some()
+            && let Some(pane) = state.panes.get_mut(i)
+        {
+            *pane = 1;
         }
     }
 }

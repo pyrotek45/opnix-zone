@@ -611,6 +611,61 @@ fn ladders_lead_onto_roofs() {
     assert!(highest > ladder.top - 0.1, "climbed to {highest}, roof at {}", ladder.top);
 }
 
+/// Car windows are glass like any window: a round into a car's side through the glass, or
+/// over the bonnet into the windscreen, shatters it for everyone; and a car that burns loses
+/// the rest.
+#[test]
+fn car_windows_shatter() {
+    use oz_sim::breakables::Trace;
+    let mut app = app();
+    let mut rules = deathmatch_rules(14);
+    rules.team_size = 1;
+    // The suburbs: plenty of parked cars.
+    rules.recipe = oz_sim::versus::map_recipe(1, 14, rules.recipe.biome);
+    rules.map = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    let map = app.world().resource::<Map>().0.clone();
+    let car = map.clutter.iter().position(|c| c.kind == oz_core::worldgen::ClutterKind::Car).expect("a parked car");
+    let panes: Vec<usize> = (0..map.windows.len()).filter(|i| map.windows[*i].vehicle == Some(car as u16)).collect();
+    assert_eq!(panes.len(), oz_core::worldgen::CAR_WINDOWS.len());
+    let spec = map.clutter[car];
+    let (c, h) = (spec.center(), spec.half());
+    // A side window: the round stops on the car's skin beside the glass, as a hitscan does.
+    let side = *panes.iter().find(|i| !map.windows[**i].along_x ^ spec.turned).expect("a side window");
+    let pane = map.windows[side];
+    let mid = pane.center + Vec3::Y * pane.height * 0.5;
+    let axis = if pane.along_x { Vec3::Z } else { Vec3::X };
+    let out = axis * (mid - c).dot(axis).signum();
+    let skin = (h * axis).length();
+    let origin = c + (mid - c) * (Vec3::ONE - axis) + out * (skin + 4.0);
+    app.world_mut().send_event(Trace { origin, dir: -out, reach: 4.0, damage: 30.0, by: 0 });
+    app.update();
+    assert_eq!(app.world().resource::<MatchState>().panes[side], 1, "the side window held");
+    // Only that one went.
+    assert_eq!(panes.iter().filter(|i| app.world().resource::<MatchState>().panes[**i] == 1).count(), 1);
+    // The windscreen, from in front, over the bonnet: the round stops on the car's front.
+    let screen = panes[0];
+    let pane = map.windows[screen];
+    let mid = pane.center + Vec3::Y * pane.height * 0.5;
+    let axis = if pane.along_x { Vec3::Z } else { Vec3::X };
+    let out = axis * (mid - c).dot(axis).signum();
+    let skin = (h * axis).length();
+    let origin = c + (mid - c) * (Vec3::ONE - axis) + out * (skin + 6.0);
+    app.world_mut().send_event(Trace { origin, dir: -out, reach: 6.0, damage: 30.0, by: 0 });
+    app.update();
+    assert_eq!(app.world().resource::<MatchState>().panes[screen], 1, "the windscreen held");
+    // Set it burning: what glass is left goes.
+    app.world_mut().send_event(FxEvent::Explosion { at: c, radius: 3.0 });
+    for _ in 0..6 {
+        app.update();
+    }
+    assert!(panes.iter().all(|i| app.world().resource::<MatchState>().panes[*i] == 1), "glass survived the fire");
+}
+
 #[test]
 fn doors_glass_and_clutter_break() {
     use oz_sim::breakables::{Trace, door};

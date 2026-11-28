@@ -463,6 +463,44 @@ pub struct WindowSpec {
     pub along_x: bool,
     pub width: f32,
     pub height: f32,
+    /// The car (an index into [`World::clutter`]) this is a window of, if it is one.
+    pub vehicle: Option<u16>,
+}
+
+/// A car's windows in its own frame (+Y up, -Z forward, origin at its feet): (bottom centre,
+/// runs along X, width, height) - windscreen, rear window, and two each side.
+pub const CAR_WINDOWS: [([f32; 3], bool, f32, f32); 6] = [
+    ([0.0, 0.88, -0.86], true, 1.46, 0.44),
+    ([0.0, 0.88, 1.36], true, 1.46, 0.42),
+    ([0.86, 0.9, -0.28], false, 0.98, 0.4),
+    ([0.86, 0.9, 0.78], false, 0.86, 0.4),
+    ([-0.86, 0.9, -0.28], false, 0.98, 0.4),
+    ([-0.86, 0.9, 0.78], false, 0.86, 0.4),
+];
+
+impl WindowSpec {
+    /// The box a shot must pass through to break this pane: the glass, and for a car's window
+    /// everything between the glass and the car's skin on that side (a round that hits the car
+    /// over the bonnet goes on into the windscreen).
+    pub fn hit_box(&self, clutter: &[Clutter]) -> (Vec3, Vec3) {
+        let center = self.center + Vec3::Y * self.height * 0.5;
+        let along = if self.along_x { Vec3::new(self.width * 0.5, self.height * 0.5, 0.0) } else { Vec3::new(0.0, self.height * 0.5, self.width * 0.5) };
+        let axis = if self.along_x { 2 } else { 0 };
+        let Some(car) = self.vehicle.and_then(|i| clutter.get(i as usize)) else {
+            let mut half = along;
+            half[axis] = 0.2;
+            return (center, half);
+        };
+        let (cc, ch) = (car.center(), car.half());
+        let side = (center[axis] - cc[axis]).signum();
+        let edge = cc[axis] + side * (ch[axis] + 0.1);
+        let (a, b) = (center[axis] - side * 0.06, edge);
+        let mut c = center;
+        c[axis] = (a + b) * 0.5;
+        let mut half = along;
+        half[axis] = (b - a).abs() * 0.5;
+        (c, half)
+    }
 }
 
 /// Street furniture that can be shot up, knocked over or blown apart.
@@ -728,7 +766,23 @@ impl World {
         world.tidy_clutter();
         world.clear_doorways();
         world.check_access();
+        world.glaze_cars();
         world
+    }
+
+    /// Every parked car gets its windows: panes like any window's, that shots and blasts shatter.
+    fn glaze_cars(&mut self) {
+        if self.horde.is_some() {
+            return;
+        }
+        for (index, car) in self.clutter.iter().enumerate().filter(|(_, c)| c.kind == ClutterKind::Car) {
+            for (at, along_x, width, height) in CAR_WINDOWS {
+                let local = Vec3::from(at);
+                // Turned a quarter (as the client turns its model): local x runs along world z.
+                let (offset, along_x) = if car.turned { (Vec3::new(local.z, local.y, -local.x), !along_x) } else { (local, along_x) };
+                self.windows.push(WindowSpec { center: car.pos + offset, along_x, width, height, vehicle: Some(index as u16) });
+            }
+        }
     }
 
     /// Analytic terrain function; sampled once into the grid.
@@ -1326,7 +1380,7 @@ impl World {
                     self.doors.push(DoorSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
                 }
             } else {
-                self.windows.push(WindowSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
+                self.windows.push(WindowSpec { center, along_x, width: u1 - u0, height: y1 - y0, vehicle: None });
             }
         }
         // Skirting along the foot of every run of wall on both faces: floors meet walls on a line.
@@ -2348,6 +2402,33 @@ mod tests {
         let w = &maps[0].1;
         assert!(w.blocks.iter().filter(|b| b.solid && b.paint == Paint::White && b.aabb.half.y > 0.85).count() >= 3, "no fridges in the suburbs");
         assert!(w.dressing.iter().filter(|p| p.size.y < 0.02 && p.size.x > 1.5).count() > 10, "no rugs in the suburbs");
+    }
+
+    #[test]
+    fn cars_have_breakable_windows() {
+        let mut checked = 0;
+        for (what, w) in [("Suburbs", World::generate(WorldRecipe::themed(9, Biome::IronShoals, Theme::Suburbs))), ("Mountainside", World::generate(WorldRecipe::preset(Layout::Mountainside, Biome::IronShoals, Weather::Clear)))] {
+            for (i, car) in w.clutter.iter().enumerate().filter(|(_, c)| c.kind == ClutterKind::Car) {
+                let panes: Vec<&WindowSpec> = w.windows.iter().filter(|p| p.vehicle == Some(i as u16)).collect();
+                assert_eq!(panes.len(), CAR_WINDOWS.len(), "{what}: car {i} has {} windows", panes.len());
+                let (c, h) = (car.center(), car.half());
+                for pane in panes {
+                    let mid = pane.center + Vec3::Y * pane.height * 0.5;
+                    // The glass is in the car's body, above its waist and under its roof.
+                    assert!((mid - c).abs().cmple(h + Vec3::splat(0.01)).all(), "{what}: a window of car {i} at {mid:?} is outside it ({c:?} +- {h:?})");
+                    assert!(pane.center.y > car.pos.y + 0.7 && mid.y < car.pos.y + 1.45);
+                    // A shot at the car's side straight through the glass passes the hit box.
+                    let (bc, bh) = pane.hit_box(&w.clutter);
+                    assert!((mid - bc).abs().cmple(bh + Vec3::splat(1e-3)).all());
+                    let axis = if pane.along_x { 2 } else { 0 };
+                    let mut skin = mid;
+                    skin[axis] = c[axis] + (mid[axis] - c[axis]).signum() * h[axis];
+                    assert!((skin - bc).abs().cmple(bh).all(), "{what}: a round stopping on the car's skin by the window misses it");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 30, "only {checked} car windows");
     }
 
     #[test]
