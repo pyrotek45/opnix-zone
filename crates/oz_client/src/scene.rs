@@ -188,6 +188,12 @@ fn build_scene(
         let (lit, unlit) = regions.entry(key).or_default();
         art.add_hull(if roof.paint.unlit() { unlit } else { lit }, roof, Transform::IDENTITY);
     }
+    // Dressing: trims, frames, cushions, wires and flowers - small, so merged like the rest.
+    for part in &map.dressing {
+        let key = ((part.pos.x / PROP_REGION).floor() as i32, (part.pos.z / PROP_REGION).floor() as i32);
+        let (lit, unlit) = regions.entry(key).or_default();
+        art.add_part(if part.paint.unlit() { unlit } else { lit }, &crate::art::seated(part), Transform::IDENTITY);
+    }
     // Roads, pavements and painted ground, lying on the terrain.
     for (paint, triangle) in &map.paving {
         let at = (triangle[0] + triangle[1] + triangle[2]) / 3.0;

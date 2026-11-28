@@ -15,6 +15,8 @@
 //! silos, towers, fences, furniture), `themes` (the random town per theme),
 //! `office`, `station` and `mountain` (the big fixed maps).
 
+mod details;
+mod interiors;
 mod mountain;
 mod office;
 mod paving;
@@ -27,7 +29,7 @@ pub use themes::Theme;
 pub use zombie_maps::{CHALK_FRAME, SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeWindow, HordeZone, WallBuy, chalk_fit, perk_id};
 use shapes::{Furnish, Plan, Roof};
 
-use crate::{collide::{Aabb, Ramp, StaticWorld}, economy::Ore, model::{Hull, Paint}, noise, rng::Rng};
+use crate::{collide::{Aabb, Ramp, StaticWorld}, economy::Ore, model::{Hull, Paint, Part}, noise, rng::Rng};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::TAU;
@@ -570,6 +572,10 @@ pub struct World {
     pub ramps: Vec<Ramp>,
     /// Roads, pavements and painted ground: triangles laid on the terrain (render only).
     pub paving: Vec<(Paint, [Vec3; 3])>,
+    /// Small render-only detail in world space - rugs, cushions, books, trims, frames, wires,
+    /// flowers, lamps, signs: anything too thin or small to collide with or hide behind. Any
+    /// primitive at any angle, merged into the static meshes like the blocks.
+    pub dressing: Vec<Part>,
     pub deposits: Vec<Deposit>,
     /// Offshore points around the home island where sea creatures surface.
     pub landings: Vec<Vec2>,
@@ -616,6 +622,10 @@ pub struct World {
     /// Indices into `blocks` of indoor furniture (beds, sofas, counters, hay, desks...): the
     /// pieces [`World::clear_doorways`] may take away when they crowd a doorway.
     furniture: Vec<std::ops::Range<usize>>,
+    /// Indices into `dressing` laid on that furniture, taken away with it.
+    furniture_dressing: Vec<std::ops::Range<usize>>,
+    /// Every room's (floor, wall) paints, to keep them telling apart.
+    rooms: Vec<(Paint, Paint)>,
     side: usize,
     heights: Vec<f32>,
 }
@@ -692,6 +702,9 @@ impl World {
             paving: Vec::new(),
             flats: Vec::new(),
             furniture: Vec::new(),
+            furniture_dressing: Vec::new(),
+            rooms: Vec::new(),
+            dressing: Vec::new(),
         };
         if let Some(theme) = world.theme {
             world.style = theme.style();
@@ -1170,6 +1183,13 @@ impl World {
         }
     }
 
+    /// Everything added to `dressing` since index `from` lies on furniture (see [`Self::mark_furniture`]).
+    pub(crate) fn mark_furniture_dressing(&mut self, from: usize) {
+        if self.dressing.len() > from {
+            self.furniture_dressing.push(from..self.dressing.len());
+        }
+    }
+
     /// Keeps every doorway walkable: furniture inside a keep-out zone in front of a door, on
     /// either side and as wide as the opening plus a body's width, is taken away (with the
     /// rug or cushion drawn on it). Walls, floors, stairs and steps are never touched; a door
@@ -1230,6 +1250,27 @@ impl World {
                 }
             }
         }
+        // Dressing laid on furniture: it goes where the keep-out zones are, and with what it lay on.
+        let gone_boxes: Vec<Aabb> = (0..self.blocks.len()).filter(|i| gone[*i]).map(|i| self.blocks[i].aabb).collect();
+        let mut drop = vec![false; self.dressing.len()];
+        for range in &self.furniture_dressing {
+            for i in range.clone() {
+                let p = self.dressing[i].pos;
+                let flat = self.dressing[i].size.y < 0.05;
+                let in_zone = !flat && zones.iter().any(|(zl, zh)| p.x > zl.x - 0.1 && p.x < zh.x + 0.1 && p.z > zl.z - 0.1 && p.z < zh.z + 0.1 && p.y > zl.y - 0.2 && p.y < zh.y);
+                let on_gone = gone_boxes.iter().any(|b| b.touches(p.x, p.z, 0.12) && p.y > b.bottom() - 0.05 && p.y < b.top() + 0.9);
+                drop[i] = in_zone || on_gone;
+            }
+        }
+        if drop.iter().any(|d| *d) {
+            let mut i = 0;
+            self.dressing.retain(|_| {
+                let keep = !drop[i];
+                i += 1;
+                keep
+            });
+        }
+        self.furniture_dressing.clear();
         if !gone.iter().any(|g| *g) {
             return;
         }
@@ -1288,24 +1329,46 @@ impl World {
                 self.windows.push(WindowSpec { center, along_x, width: u1 - u0, height: y1 - y0 });
             }
         }
-        // Sills under windows read better with a dark ledge, and a lintel over each opening.
-        for (u0, u1, _, y1) in openings.iter().copied().filter(|o| o.3 < height - 0.13) {
-            let (a, b) = (start + u0 - 0.08, start + u1 + 0.08);
-            let lintel = if along_x {
-                Aabb::span(Vec3::new(a, base + y1, fixed.0 - 0.05), Vec3::new(b, base + y1 + 0.12, fixed.1 + 0.05))
-            } else {
-                Aabb::span(Vec3::new(fixed.0 - 0.05, base + y1, a), Vec3::new(fixed.1 + 0.05, base + y1 + 0.12, b))
-            };
-            self.decor(lintel, Paint::Dark);
-        }
-        for (u0, u1, y0, _) in openings.iter().copied().filter(|o| o.2 > 0.0) {
+        // Skirting along the foot of every run of wall on both faces: floors meet walls on a line.
+        let skirting = if matches!(paint, Paint::Dark | Paint::Steel | Paint::Slate | Paint::Navy | Paint::Wood) { Paint::Cream } else { Paint::Dark };
+        for (u0, u1, y0, _) in pieces_at_foot(openings, length) {
+            if u1 - u0 < 0.3 || y0 > 0.0 {
+                continue;
+            }
             let (a, b) = (start + u0, start + u1);
-            let ledge = if along_x {
-                Aabb::span(Vec3::new(a, base + y0 - 0.06, fixed.0 - 0.06), Vec3::new(b, base + y0, fixed.1 + 0.06))
-            } else {
-                Aabb::span(Vec3::new(fixed.0 - 0.06, base + y0 - 0.06, a), Vec3::new(fixed.1 + 0.06, base + y0, b))
-            };
-            self.decor(ledge, Paint::Dark);
+            for (lo, hi) in [(fixed.0 - 0.025, fixed.0), (fixed.1, fixed.1 + 0.025)] {
+                if along_x {
+                    self.trim(Vec3::new(a, base, lo), Vec3::new(b, base + 0.11, hi), skirting);
+                } else {
+                    self.trim(Vec3::new(lo, base, a), Vec3::new(hi, base + 0.11, b), skirting);
+                }
+            }
+        }
+        // A lintel over each opening, a sill under each window, a frame round it and a glazing bar
+        // across it (the bars stay when the glass goes).
+        let frame = if matches!(paint, Paint::Bone | Paint::Cream | Paint::Sand | Paint::Concrete) { Paint::Wood } else { Paint::Cream };
+        let box_at = |u: (f32, f32), y: (f32, f32), w: (f32, f32)| {
+            if along_x { (Vec3::new(start + u.0, base + y.0, w.0), Vec3::new(start + u.1, base + y.1, w.1)) } else { (Vec3::new(w.0, base + y.0, start + u.0), Vec3::new(w.1, base + y.1, start + u.1)) }
+        };
+        for (u0, u1, _, y1) in openings.iter().copied().filter(|o| o.3 < height - 0.13) {
+            let (lo, hi) = box_at((u0 - 0.08, u1 + 0.08), (y1, y1 + 0.12), (fixed.0 - 0.05, fixed.1 + 0.05));
+            self.trim(lo, hi, Paint::Dark);
+        }
+        for (u0, u1, y0, y1) in openings.iter().copied().filter(|o| o.2 > 0.0) {
+            let (lo, hi) = box_at((u0 - 0.04, u1 + 0.04), (y0 - 0.07, y0), (fixed.0 - 0.09, fixed.1 + 0.09));
+            self.trim(lo, hi, Paint::Dark);
+            for (a, b) in [(u0, u0 + 0.06), (u1 - 0.06, u1)] {
+                for (w0, w1) in [(fixed.0 - 0.02, fixed.0 + 0.05), (fixed.1 - 0.05, fixed.1 + 0.02)] {
+                    let (lo, hi) = box_at((a, b), (y0, y1), (w0, w1));
+                    self.trim(lo, hi, frame);
+                }
+            }
+            let mid = (fixed.0 + fixed.1) * 0.5;
+            let (lo, hi) = box_at(((u0 + u1) * 0.5 - 0.025, (u0 + u1) * 0.5 + 0.025), (y0, y1), (mid - 0.03, mid + 0.03));
+            self.trim(lo, hi, frame);
+            let ym = y0 + (y1 - y0) * 0.6;
+            let (lo, hi) = box_at((u0, u1), (ym - 0.025, ym + 0.025), (mid - 0.03, mid + 0.03));
+            self.trim(lo, hi, frame);
         }
     }
 
@@ -1374,9 +1437,24 @@ impl World {
         let open = plan.open;
         let roof_y = g + floors as f32 * STOREY;
 
-        // Foundation and floor.
-        self.solid(Aabb::span(Vec3::new(x0, g - 2.5, z0), Vec3::new(x1, g, z1)), Paint::Concrete);
-        self.decor(Aabb::span(Vec3::new(x0 + T, g, z0 + T), Vec3::new(x1 - T, g + 0.012, z1 - T)), plan.floor_paint);
+        // Foundation and floor. The foundation reaches down below the lowest ground under it, so
+        // a building on a slope never stands on stilts of air.
+        let footing = (g - 2.5).min(self.lowest(c, half) - 0.4);
+        self.solid(Aabb::span(Vec3::new(x0, footing, z0), Vec3::new(x1, g, z1)), Paint::Concrete);
+        // Floors by what the rooms are for, always telling apart from the walls (and partitions).
+        let auto = plan.floor_paint == Paint::Wood;
+        let ground_floor = Self::floor_finish(
+            match (auto, plan.furnish) {
+                (false, _) => plan.floor_paint,
+                (true, Furnish::Home) => Paint::Planks,
+                (true, Furnish::Plain) => *self.detail_rng(c, 0xf1).pick(&[Paint::Lino, Paint::Tile, Paint::Slate, Paint::Planks]).unwrap_or(&Paint::Lino),
+                (true, _) => Paint::Slate,
+            },
+            &[paint, trim],
+        );
+        let upper_floor = Self::floor_finish(if !auto { plan.floor_paint } else if plan.furnish == Furnish::Home { Paint::Carpet } else { Paint::Planks }, &[paint, trim]);
+        self.decor(Aabb::span(Vec3::new(x0 + T, g, z0 + T), Vec3::new(x1 - T, g + 0.012, z1 - T)), ground_floor);
+        self.note_room(ground_floor, paint);
 
         // Doors go on up to two sides; buildings with stairs keep the stair walls (north, and south above two storeys) solid.
         // Sides: 0 south (-z), 1 west (-x), 2 east (+x), 3 north (+z). A door is (centre along the wall, width).
@@ -1486,7 +1564,7 @@ impl World {
             for (a0, a1, b0, b1) in pieces {
                 if a1 - a0 > 0.05 && b1 - b0 > 0.05 {
                     self.solid(Aabb::span(Vec3::new(a0, top - 0.25, b0), Vec3::new(a1, top, b1)), Paint::Concrete);
-                    self.decor(Aabb::span(Vec3::new(a0.max(x0 + T), top, b0.max(z0 + T)), Vec3::new(a1.min(x1 - T), top + 0.012, b1.min(z1 - T))), plan.floor_paint);
+                    self.decor(Aabb::span(Vec3::new(a0.max(x0 + T), top, b0.max(z0 + T)), Vec3::new(a1.min(x1 - T), top + 0.012, b1.min(z1 - T))), upper_floor);
                 }
             }
             // Railing along the open side of the hole; the high end is left open as the way in.
@@ -1494,17 +1572,37 @@ impl World {
             let (r0, r1) = if (k - 1) % 2 == 0 { (hx0, hx1 - 1.0) } else { (hx0 + 1.0, hx1) };
             self.solid(Aabb::span(Vec3::new(r0, top, rail_z - 0.04), Vec3::new(r1, top + 0.95, rail_z + 0.04)), Paint::Dark);
             self.decor(Aabb::span(Vec3::new(r0, top + 0.92, rail_z - 0.06), Vec3::new(r1, top + 1.0, rail_z + 0.06)), Paint::Gold);
-            // Something to hide behind up here.
+            self.note_room(upper_floor, paint);
+            // The rooms up here, between the stair lanes along the north and south walls.
             if plan.furnish != Furnish::Bare {
-                let p = Vec2::new(rng.range(x0 + 1.5, x1 - 1.5), c.y + rng.range(-0.8, 0.8));
-                let furnished = self.blocks.len();
+                // The rolls this floor's furniture always took from the map's stream, so the
+                // streets after it come out the same.
+                let _ = (rng.range(x0 + 1.5, x1 - 1.5), rng.range(-0.8, 0.8));
                 if plan.furnish == Furnish::Home && hz > 3.2 {
-                    // A bed (low cover) and a wardrobe against the wall.
-                    self.bed(Vec2::new(p.x, c.y), rng.chance(0.5), top);
-                } else {
-                    self.solid(Aabb::span(Vec3::new(p.x - 0.55, top, p.y - 0.55), Vec3::new(p.x + 0.55, top + 1.0, p.y + 0.55)), Paint::Teal);
+                    let _ = rng.chance(0.5);
                 }
-                self.mark_furniture(furnished);
+                let band = interiors::Room { x0: x0 + T, x1: x1 - T, z0: z0 + T + LANE + 0.35, z1: z1 - T - LANE - 0.35, y: top };
+                let mut roll = self.detail_rng(c + Vec2::splat(k as f32), 0xb0);
+                match plan.furnish {
+                    Furnish::Home if band.x1 - band.x0 > 8.0 && roll.chance(0.6) => {
+                        let split = band.x1 - 3.6;
+                        self.furnish_room(interiors::RoomKind::Bedroom, interiors::Room { x1: split - 0.2, ..band }, [true, false, true, true]);
+                        self.furnish_room(interiors::RoomKind::Bathroom, interiors::Room { x0: split, ..band }, [true, true, false, true]);
+                        // A screen wall between them (thin, waist to head: it hides nobody).
+                        self.trim(Vec3::new(split - 0.12, top, band.z0 + 0.4), Vec3::new(split - 0.04, top + 2.1, band.z1 - 0.4), trim);
+                    }
+                    Furnish::Home => self.furnish_room(interiors::RoomKind::Bedroom, band, [true, false, false, true]),
+                    Furnish::Plain => {
+                        let kind = if roll.chance(0.6) { interiors::RoomKind::Office } else { interiors::RoomKind::Store };
+                        self.furnish_room(kind, band, [true, false, false, true]);
+                    }
+                    _ => {
+                        let p = Vec2::new(rng.range(x0 + 1.5, x1 - 1.5), c.y + rng.range(-0.8, 0.8));
+                        let furnished = self.blocks.len();
+                        self.solid(Aabb::span(Vec3::new(p.x - 0.55, top, p.y - 0.55), Vec3::new(p.x + 0.55, top + 1.0, p.y + 0.55)), Paint::Wood);
+                        self.mark_furniture(furnished);
+                    }
+                }
             }
         }
 
@@ -1518,27 +1616,70 @@ impl World {
             }
             partition += 0.6;
         }
-        if floors > 1 && x1 - partition > 2.6 && plan.furnish != Furnish::Bare {
+        let partitioned = floors > 1 && x1 - partition > 2.6 && plan.furnish != Furnish::Bare;
+        if partitioned {
             let length = 2.0 * hz - 2.0 * T - LANE - 0.1;
             let door = Self::openings(rng, length, true, false);
             self.wall(false, (partition, partition + 0.2), z0 + T, length, g, STOREY - 0.25, &door, trim);
+            self.note_room(ground_floor, trim);
         }
 
         // Furniture on the ground floor, away from the doors and stairs.
         let room = (x0 + 1.6, x1 - 1.6, z0 + 1.6, z1 - 1.6 - if floors > 1 { 1.4 } else { 0.0 });
         let furnished = self.blocks.len();
+        // The ground floor's rooms: with stairs, the stair side (its north strip is the flight)
+        // and the room past the partition; without, one room split down the middle.
+        let inner = interiors::Room { x0: x0 + T, x1: x1 - T, z0: z0 + T, z1: z1 - T, y: g };
+        let (west, east, east_skip) = if floors > 1 {
+            let stair_side = interiors::Room { x1: if partitioned { partition } else { x1 - T }, z1: z1 - T - LANE - 0.5, ..inner };
+            (stair_side, partitioned.then_some(interiors::Room { x0: partition + 0.2, ..inner }), [false; 4])
+        } else if hx > 3.6 {
+            (interiors::Room { x1: c.x - 0.2, ..inner }, Some(interiors::Room { x0: c.x + 0.2, ..inner }), [false, true, false, false])
+        } else {
+            (inner, None, [false; 4])
+        };
+        let west_skip = if floors > 1 { [false, false, partitioned, true] } else { [false, false, east.is_some(), false] };
+        let mut roll = self.detail_rng(c, 0xb1);
+        // The rolls the ground floor's furniture always took from the map's stream.
         match plan.furnish {
-            Furnish::Bare => {}
-            Furnish::Home => self.furnish_home(rng, room, g, (partition, floors > 1)),
-            Furnish::Barn => self.furnish_barn(rng, room, g),
+            Furnish::Home if room.1 - room.0 >= 1.5 && room.3 - room.2 >= 1.0 => {
+                let _ = rng.range(room.0, room.1);
+                let sx = rng.range(room.0, room.1);
+                let _ = rng.range(room.2 + 0.6, room.3);
+                if floors <= 1 || (sx - partition).abs() > 1.4 {
+                    let _ = rng.pick(&[0u8; 4]);
+                }
+            }
             Furnish::Plain => {
                 for _ in 0..2 {
-                    let p = Vec2::new(rng.range(room.0, room.1), rng.range(room.2, room.3));
-                    if (p.x - partition).abs() < 1.2 && floors > 1 {
+                    let (px, _) = (rng.range(room.0, room.1), rng.range(room.2, room.3));
+                    if (px - partition).abs() < 1.2 && floors > 1 {
                         continue;
                     }
-                    let size = if rng.chance(0.5) { Vec2::new(rng.range(0.7, 1.4), 0.4) } else { Vec2::new(0.5, 0.5) };
-                    self.solid(Aabb::span(Vec3::new(p.x - size.x, g, p.y - size.y), Vec3::new(p.x + size.x, g + 0.95, p.y + size.y)), Paint::Wood);
+                    if rng.chance(0.5) {
+                        let _ = rng.range(0.7, 1.4);
+                    }
+                }
+            }
+            _ => {}
+        }
+        match plan.furnish {
+            Furnish::Bare => {}
+            Furnish::Home => {
+                self.furnish_room(interiors::RoomKind::Living, west, west_skip);
+                if let Some(east) = east {
+                    self.furnish_room(interiors::RoomKind::Kitchen, east, east_skip);
+                }
+            }
+            Furnish::Barn => self.furnish_barn(rng, room, g),
+            Furnish::Plain => {
+                let main = if roll.chance(0.55) { interiors::RoomKind::Shop } else { interiors::RoomKind::Office };
+                match east {
+                    Some(east) => {
+                        self.furnish_room(interiors::RoomKind::Store, west, west_skip);
+                        self.furnish_room(main, east, east_skip);
+                    }
+                    None => self.furnish_room(main, west, west_skip),
                 }
             }
         }
@@ -1811,6 +1952,20 @@ impl World {
     }
 }
 
+/// The runs of a wall (`length` long) that stand on its foot between its doorways: (start, end, 0, _).
+fn pieces_at_foot(openings: &[(f32, f32, f32, f32)], length: f32) -> Vec<(f32, f32, f32, f32)> {
+    let mut doors: Vec<(f32, f32)> = openings.iter().filter(|o| o.2 <= 0.0).map(|o| (o.0, o.1)).collect();
+    doors.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    let mut cursor = 0.0;
+    for (a, b) in doors {
+        out.push((cursor, a, 0.0, 0.0));
+        cursor = b;
+    }
+    out.push((cursor, length, 0.0, 0.0));
+    out
+}
+
 pub fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
@@ -2072,6 +2227,129 @@ mod tests {
         }
     }
 
+    /// Solid blocks that stand on the ground somewhere but hang over it elsewhere: a foundation,
+    /// stair flight, terrace or wall whose underside is well clear of the ground at a corner or an
+    /// edge, with nothing under it there - stairs that stop short of the slope, a slab hanging off
+    /// a cliff top. (Things built to stand clear - floors on walls, decks on legs - are held by
+    /// blocks under them, or stand nowhere near the ground.)
+    fn hanging_edges(w: &World, gap: f32) -> Vec<(Block, Vec3)> {
+        let solids: Vec<&Block> = w.blocks.iter().filter(|b| b.solid).collect();
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = Default::default();
+        let cell = |v: f32| (v / 8.0).floor() as i32;
+        for (i, b) in solids.iter().enumerate() {
+            let (lo, hi) = (b.aabb.min(), b.aabb.max());
+            for cx in cell(lo.x)..=cell(hi.x) {
+                for cz in cell(lo.z)..=cell(hi.z) {
+                    cells.entry((cx, cz)).or_default().push(i);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        for (i, b) in solids.iter().enumerate() {
+            let (lo, hi) = (b.aabb.min(), b.aabb.max());
+            // Thin rails and posts are not walked on; tiny pieces are furniture.
+            if hi.x - lo.x < 0.6 || hi.z - lo.z < 0.6 || lo.y < w.water - 0.5 {
+                continue;
+            }
+            // A step of a hand's width under an edge (a deck on its pier) still meets it.
+            let inset = 0.15;
+            let mut spots = Vec::new();
+            for u in 0..=4 {
+                for v in 0..=4 {
+                    if u % 4 == 0 || v % 4 == 0 {
+                        spots.push(Vec2::new(lo.x + inset + (hi.x - lo.x - 2.0 * inset) * u as f32 / 4.0, lo.z + inset + (hi.z - lo.z - 2.0 * inset) * v as f32 / 4.0));
+                    }
+                }
+            }
+            let clearance = |p: &Vec2| lo.y - w.height(p.x, p.y);
+            // Only what is founded on the ground: its underside meets it somewhere.
+            if !spots.iter().any(|p| clearance(p) < 0.3) {
+                continue;
+            }
+            for p in &spots {
+                if clearance(p) <= gap || w.height(p.x, p.y) < w.water {
+                    continue;
+                }
+                let held = cells.get(&(cell(p.x), cell(p.y))).is_some_and(|list| {
+                    list.iter().any(|&j| {
+                        let o = &solids[j].aabb;
+                        j != i && o.top() >= lo.y - 0.05 && o.bottom() < lo.y + 0.05 && o.touches(p.x, p.y, 0.02)
+                    })
+                });
+                if !held {
+                    found.push((**b, Vec3::new(p.x, lo.y, p.y)));
+                    break;
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn walkable_structures_meet_the_ground() {
+        let mut maps: Vec<(String, World)> = Vec::new();
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town && !l.is_grid_town()) {
+            maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
+        }
+        for seed in [3, 9] {
+            maps.extend(Theme::ALL.into_iter().map(|t| (format!("{t:?} {seed}"), World::generate(WorldRecipe::themed(seed, Biome::IronShoals, t)))));
+            maps.extend(grid_towns(seed));
+        }
+        let mut total = 0;
+        for (what, w) in &maps {
+            let found = hanging_edges(w, 0.35);
+            for (b, at) in found.iter().take(8) {
+                eprintln!("{what}: {:?} {:?}..{:?} hangs {:.2} m over the ground at {at:?}", b.paint, b.aabb.min(), b.aabb.max(), at.y - w.height(at.x, at.z));
+            }
+            if !found.is_empty() {
+                eprintln!("{what}: {} hanging", found.len());
+            }
+            total += found.len();
+            // No sheet of thin decoration standing in the air either: rails are rods on posts,
+            // not panels hung over a flight of stairs.
+            let support = |x: f32, z: f32, y: f32| w.blocks.iter().filter(|o| o.solid && o.aabb.touches(x, z, 0.02) && o.aabb.top() <= y + 0.05).map(|o| o.aabb.top()).fold(w.height(x, z), f32::max);
+            let panels: Vec<&Block> = w
+                .blocks
+                .iter()
+                .filter(|b| !b.solid && !b.hidden && b.aabb.half.min_element() < 0.06 && b.aabb.half.y > 1.0 && b.aabb.half.x.max(b.aabb.half.z) > 1.0)
+                .filter(|b| {
+                    // Both ends of its bottom edge stand on something.
+                    let (lo, hi) = (b.aabb.min(), b.aabb.max());
+                    let ends = if hi.x - lo.x > hi.z - lo.z { [(lo.x + 0.05, b.aabb.center.z), (hi.x - 0.05, b.aabb.center.z)] } else { [(b.aabb.center.x, lo.z + 0.05), (b.aabb.center.x, hi.z - 0.05)] };
+                    ends.iter().any(|(x, z)| lo.y - support(*x, *z, lo.y) > 0.5)
+                })
+                .collect();
+            for b in panels.iter().take(4) {
+                eprintln!("{what}: a {:?} panel {:?}..{:?} hangs in the air", b.paint, b.aabb.min(), b.aabb.max());
+            }
+            total += panels.len();
+        }
+        assert_eq!(total, 0, "structures hang over the ground");
+    }
+
+    #[test]
+    fn every_room_floor_reads_apart_from_its_walls() {
+        let mut maps: Vec<(String, World)> = Theme::ALL.into_iter().map(|t| (format!("{t:?}"), World::generate(WorldRecipe::themed(9, Biome::IronShoals, t)))).collect();
+        maps.extend(grid_towns(9));
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town && !l.is_grid_town()) {
+            maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
+        }
+        for (what, w) in &maps {
+            assert!(!w.rooms.is_empty() || w.recipe.layout == Layout::SpaceStation, "{what}: no rooms recorded");
+            for (floor, walls) in &w.rooms {
+                assert_ne!(floor, walls, "{what}: a floor painted like its walls");
+                assert!(floor.contrast(*walls) >= interiors::FLOOR_CONTRAST, "{what}: a {floor:?} floor against {walls:?} walls is too alike ({})", floor.contrast(*walls));
+            }
+            // And the floors the rooms got are really drawn: the floor finishes are on the map.
+            let finishes: std::collections::HashSet<Paint> = w.rooms.iter().map(|r| r.0).collect();
+            assert!(finishes.iter().all(|f| w.blocks.iter().any(|b| b.paint == *f && !b.solid)), "{what}: a recorded floor is missing");
+        }
+        // Homes are furnished as homes: beds, sofas and kitchens somewhere in the suburbs.
+        let w = &maps[0].1;
+        assert!(w.blocks.iter().filter(|b| b.solid && b.paint == Paint::White && b.aabb.half.y > 0.85).count() >= 3, "no fridges in the suburbs");
+        assert!(w.dressing.iter().filter(|p| p.size.y < 0.02 && p.size.x > 1.5).count() > 10, "no rugs in the suburbs");
+    }
+
     #[test]
     fn doorway_steps_lead_to_doors() {
         for seed in [1, 3, 9, 10, 17, 22] {
@@ -2311,6 +2589,51 @@ mod tests {
         let ramp = w.height(48.0, 20.0) - w.height(48.0, 8.0);
         assert!(ramp > 2.0 && ramp < 5.0, "ramp {ramp}");
         assert!(!w.ladders.is_empty() && !w.doors.is_empty());
+    }
+
+    /// Geometry budget per map, printed for comparing before and after art passes:
+    /// `cargo test -p oz_core --lib report_geometry -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn report_geometry() {
+        let mut maps: Vec<(String, World)> = Theme::ALL.into_iter().map(|t| (format!("{t:?}"), World::generate(WorldRecipe::themed(9, Biome::IronShoals, t)))).collect();
+        maps.extend(grid_towns(9));
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town && !l.is_grid_town()) {
+            maps.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
+        }
+        for (what, w) in &maps {
+            let drawn = w.blocks.iter().filter(|b| !b.hidden).count();
+            let solid = w.blocks.iter().filter(|b| b.solid).count();
+            let hull_tris: usize = w.roofs.iter().map(|h| crate::model::convex_hull(&h.points).len()).sum();
+            let tris = drawn * 12 + hull_tris + w.paving.len();
+            println!("GEOMETRY {what:>14}: blocks {:5} (solid {:5}, drawn {:5}) hulls {:4} props {:4} clutter {:3} windows {:3} ~triangles {tris}", w.blocks.len(), solid, drawn, w.roofs.len(), w.props.len(), w.clutter.len(), w.windows.len());
+        }
+    }
+
+    /// Spots worth photographing, for the screenshot tours (`-- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn report_viewpoints() {
+        for (what, w) in [("Suburbs", World::generate(WorldRecipe::themed(9, Biome::IronShoals, Theme::Suburbs))), ("Farmland", World::generate(WorldRecipe::themed(9, Biome::IronShoals, Theme::Farmland)))] {
+            for c in w.clutter.iter().filter(|c| c.kind == ClutterKind::Car).take(3) {
+                println!("VIEW {what} car {:?} turned {}", c.pos, c.turned);
+            }
+            for b in w.blocks.iter().filter(|b| b.paint == Paint::Bone && !b.solid && b.aabb.half.y < 0.03 && b.aabb.half.x > 0.6 && b.aabb.half.z > 0.6 && b.aabb.half.x < 1.0).take(3) {
+                println!("VIEW {what} bed {:?}", b.aabb.center);
+            }
+            for b in w.blocks.iter().filter(|b| b.paint == Paint::Coral && !b.solid && b.aabb.half.y < 0.01).take(3) {
+                println!("VIEW {what} rug {:?}", b.aabb.center);
+                for f in w.blocks.iter().filter(|f| f.solid && f.aabb.half.y > 1.0 && f.aabb.half.y < 1.5 && f.aabb.touches(b.aabb.center.x, b.aabb.center.z, 0.0) && (f.aabb.top() - b.aabb.bottom()).abs() < 0.1) {
+                    println!("VIEW {what}   in building {:?}..{:?}", f.aabb.min(), f.aabb.max());
+                }
+            }
+            for d in w.doors.iter().take(3) {
+                println!("VIEW {what} door {:?} along_x {}", d.center, d.along_x);
+            }
+            for b in w.blocks.iter().filter(|b| b.solid && b.aabb.half.y > 3.0 && (b.aabb.half.x - b.aabb.half.z * 0.42).abs() < 0.05).take(6) {
+                println!("VIEW {what} silo-ish {:?} {:?}", b.aabb.center, b.aabb.half);
+            }
+        }
     }
 
     #[test]

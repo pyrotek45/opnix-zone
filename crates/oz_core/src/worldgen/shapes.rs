@@ -10,6 +10,7 @@
 //! eleven 0.29 m steps of 0.42 m.
 
 use super::{COVER_HEIGHT, ClutterKind, Clutter, DOOR_WIDTH, Ladder, Prop, PropKind, World};
+use std::f32::consts::TAU;
 use crate::{collide::{Aabb, Ramp}, model::{Anim, Hull, Paint}, rng::Rng};
 use glam::{Vec2, Vec3};
 
@@ -289,39 +290,6 @@ impl World {
         }
     }
 
-    /// A bed against the middle of a room, at floor level `y`, and a wardrobe at its head.
-    pub(crate) fn bed(&mut self, p: Vec2, along_x: bool, y: f32) {
-        let half = if along_x { Vec2::new(1.0, 0.75) } else { Vec2::new(0.75, 1.0) };
-        self.solid(Aabb::span(Vec3::new(p.x - half.x, y, p.y - half.y), Vec3::new(p.x + half.x, y + 0.55, p.y + half.y)), Paint::Wood);
-        self.decor(Aabb::span(Vec3::new(p.x - half.x + 0.05, y + 0.55, p.y - half.y + 0.05), Vec3::new(p.x + half.x - 0.05, y + 0.6, p.y + half.y - 0.05)), Paint::Bone);
-        let head = if along_x { Vec2::new(p.x - half.x - 0.35, p.y) } else { Vec2::new(p.x, p.y - half.y - 0.35) };
-        let w = if along_x { Vec2::new(0.3, 0.6) } else { Vec2::new(0.6, 0.3) };
-        self.solid(Aabb::span(Vec3::new(head.x - w.x, y, head.y - w.y), Vec3::new(head.x + w.x, y + 1.9, head.y + w.y)), Paint::Wood);
-    }
-
-    /// A home's ground floor: a sofa, a table, a kitchen counter. `room` is (x0, x1, z0, z1).
-    pub(crate) fn furnish_home(&mut self, rng: &mut Rng, room: (f32, f32, f32, f32), y: f32, (partition, stairs): (f32, bool)) {
-        let (x0, x1, z0, z1) = room;
-        if x1 - x0 < 1.5 || z1 - z0 < 1.0 {
-            return;
-        }
-        let clear = |x: f32| !stairs || (x - partition).abs() > 1.4;
-        // Kitchen counter along the south wall.
-        let kx = rng.range(x0, x1);
-        if clear(kx) {
-            let (a, b) = ((kx - 1.2).max(x0 - 0.9), (kx + 1.2).min(x1 + 0.9));
-            self.solid(Aabb::span(Vec3::new(a, y, z0 - 1.25), Vec3::new(b, y + 0.95, z0 - 0.65)), Paint::Bone);
-            self.decor(Aabb::span(Vec3::new(a - 0.03, y + 0.95, z0 - 1.28), Vec3::new(b + 0.03, y + 1.0, z0 - 0.62)), Paint::Steel);
-        }
-        // A sofa (low cover) and a low table in front of it.
-        let s = Vec2::new(rng.range(x0, x1), rng.range(z0 + 0.6, z1));
-        if clear(s.x) {
-            self.solid(Aabb::span(Vec3::new(s.x - 1.0, y, s.y - 0.4), Vec3::new(s.x + 1.0, y + 0.85, s.y + 0.4)), *rng.pick(&[Paint::Teal, Paint::Coral, Paint::Purple, Paint::Steel]).unwrap_or(&Paint::Teal));
-            self.solid(Aabb::span(Vec3::new(s.x - 0.55, y, s.y - 1.55), Vec3::new(s.x + 0.55, y + 0.42, s.y - 0.95)), Paint::Wood);
-            self.decor(Aabb::span(Vec3::new(s.x - 1.3, y, s.y - 2.1), Vec3::new(s.x + 1.3, y + 0.015, s.y - 0.5)), Paint::Coral);
-        }
-    }
-
     /// A barn's floor: hay stacks, and stalls along the north wall.
     pub(crate) fn furnish_barn(&mut self, rng: &mut Rng, room: (f32, f32, f32, f32), y: f32) {
         let (x0, x1, z0, z1) = room;
@@ -449,6 +417,7 @@ impl World {
 
     /// A rock outcrop: a few boulders, solid, irregular but clean-faced for cover.
     pub(crate) fn outcrop(&mut self, rng: &mut Rng, c: Vec2, size: f32) {
+        let skin = self.blocks.len();
         let n = 2 + rng.below(3);
         for i in 0..n {
             let p = c + Vec2::new(rng.range(-size, size), rng.range(-size, size)) * 0.7;
@@ -460,10 +429,14 @@ impl World {
                 self.solid(Aabb::span(Vec3::new(p.x - half.x * 0.7, top, p.y - half.y * 0.7), Vec3::new(p.x + half.x * 0.6, top + 0.35, p.y + half.y * 0.8)), Paint::Rock);
             }
         }
+        // Drawn as rock, not boxes, with stones round the foot.
+        self.rock_skin(skin, Paint::Rock);
+        self.scree(c, size + 1.5, 5, Paint::Rock);
         for _ in 0..3 {
             let p = c + Vec2::from_angle(rng.range(0.0, std::f32::consts::TAU)) * rng.range(size, size + 2.5);
-            if !self.occupied(p, 0.8) {
-                self.props.push(Prop { kind: PropKind::Rock, pos: Vec3::new(p.x, self.ground_at(p), p.y), yaw: rng.below(4) as f32 * std::f32::consts::FRAC_PI_2, scale: rng.range(0.6, 1.2) });
+            let (yaw, scale) = (rng.below(4) as f32 * std::f32::consts::FRAC_PI_2, rng.range(0.6, 1.2));
+            if !self.occupied(p, 0.75 * scale + 0.3) {
+                self.props.push(Prop { kind: PropKind::Rock, pos: Vec3::new(p.x, self.ground_at(p), p.y), yaw, scale });
             }
         }
     }
@@ -480,6 +453,11 @@ impl World {
         let colours = [Paint::Rust, Paint::Teal, Paint::Coral, Paint::Gold, Paint::Steel, Paint::Blue];
         let half = if along_x { Vec3::new(3.05, 1.3, 1.22) } else { Vec3::new(1.22, 1.3, 3.05) };
         let g = self.height(at.x, at.y);
+        // On a slope, a concrete pad under it down to the lowest ground.
+        let low = self.lowest(at, Vec2::new(half.x, half.z));
+        if low < g - 0.05 {
+            self.solid(Aabb::span(Vec3::new(at.x - half.x, low - 0.2, at.y - half.z), Vec3::new(at.x + half.x, g, at.y + half.z)), Paint::Concrete);
+        }
         for level in 0..levels {
             let paint = *rng.pick(&colours).unwrap_or(&Paint::Rust);
             let c = Vec3::new(at.x, g + half.y + level as f32 * 2.6, at.y);
@@ -492,48 +470,63 @@ impl World {
         }
     }
 
-    /// An octagon-ish column (a union of four boxes) from `y0` to `y1`.
+    /// A round column from `y0` to `y1`: an octagon of boxes to collide with, drawn smooth.
     pub(crate) fn column(&mut self, c: Vec2, r: f32, y0: f32, y1: f32, paint: Paint) {
-        let (ym, hy) = ((y0 + y1) * 0.5, (y1 - y0) * 0.5);
-        for (a, b) in [(1.0, 0.42), (0.42, 1.0), (0.86, 0.66), (0.66, 0.86)] {
-            self.solid(Aabb::new(Vec3::new(c.x, ym, c.y), Vec3::new(r * a, hy, r * b)), paint);
-        }
+        self.round_core(c, r, y0, y1, paint);
+        self.round(c, r, y0, y1, paint, if r > 1.2 { 24 } else { 16 });
     }
 
-    /// Draws the blocks from `from` on (a stepped cap) as one smooth dome over their corners
-    /// and `rim`, instead of as steps: they stay solid underneath, to stand on.
-    pub(crate) fn smooth_cap(&mut self, from: usize, rim: &[Vec3], paint: Paint) {
-        let mut points = rim.to_vec();
-        for block in &mut self.blocks[from..] {
-            block.hidden = true;
-            let (lo, hi) = (block.aabb.center - block.aabb.half, block.aabb.center + block.aabb.half);
-            for (x, z) in [(lo.x, lo.z), (hi.x, lo.z), (lo.x, hi.z), (hi.x, hi.z)] {
-                points.extend([Vec3::new(x, lo.y, z), Vec3::new(x, hi.y + 0.03, z)]);
-            }
-        }
-        self.roofs.push(Hull { paint, points, anim: Anim::None });
-    }
-
-    /// A grain silo: a round-ish tower with hoops, a stepped cap and a ladder to the walkway on top.
+    /// A grain silo: a smooth round tower with hoops and seams, a domed cap with a vent, a
+    /// walkway rail round the rim and a ladder up to it.
     pub(crate) fn silo(&mut self, c: Vec2, r: f32, height: f32, paint: Paint, ladder: Option<Vec2>) {
         let g = self.lowest(c, Vec2::splat(r)) - 0.1;
         let top = self.highest(c, Vec2::splat(r)) + height;
         self.column(c, r, g, top, paint);
-        // Hoops: paint-thin bands.
-        let mut y = g + 1.6;
-        while y < top - 0.5 {
-            self.decor(Aabb::new(Vec3::new(c.x, y, c.y), Vec3::new(r + 0.03, 0.03, r * 0.42 + 0.03)), Paint::Dark);
-            self.decor(Aabb::new(Vec3::new(c.x, y, c.y), Vec3::new(r * 0.42 + 0.03, 0.03, r + 0.03)), Paint::Dark);
-            y += 1.8;
+        // A concrete footing ring, hoops, and the vertical seams of the sheets.
+        self.round(c, r + 0.25, g, self.highest(c, Vec2::splat(r)) + 0.35, Paint::Concrete, 24);
+        self.hoops(c, r + 0.03, g + 1.6, top - 0.4, 1.8, darker(paint));
+        for i in 0..8 {
+            let a = Vec2::from_angle(i as f32 * TAU / 8.0 + 0.2) * (r + 0.02);
+            self.trim_at(Vec3::new(c.x + a.x, (g + top) * 0.5, c.y + a.y), Vec3::new(0.035, (top - g) * 0.5, 0.035), darker(paint));
         }
-        // The cap: two steps in from a walkway round the rim, low cover for whoever climbs up.
+        // The cap: hidden steps to stand on, drawn as a smooth dome over them.
         let cap = self.blocks.len();
-        self.column(c, r * 0.72, top, top + 0.4, Paint::Metal);
-        self.column(c, r * 0.45, top + 0.4, top + 0.8, Paint::Metal);
-        self.smooth_cap(cap, &[], Paint::Metal);
-        self.solid(Aabb::new(Vec3::new(c.x, top + 1.05, c.y), Vec3::new(0.35, 0.25, 0.35)), Paint::Dark);
+        self.round_core(c, r * 0.72, top, top + 0.4, Paint::Metal);
+        self.round_core(c, r * 0.45, top + 0.4, top + 0.8, Paint::Metal);
+        let _ = cap;
+        self.lathe(c, &[(r + 0.08, top - 0.02), (r + 0.08, top + 0.06), (r * 0.74, top + 0.43), (r * 0.47, top + 0.83), (r * 0.2, top + 0.95)], Paint::Metal, 24);
+        // A vent on top (cover for whoever climbs up), drawn round with a little hat.
+        self.round_core(c, 0.35, top + 0.8, top + 1.3, Paint::Dark);
+        self.round(c, 0.35, top + 0.8, top + 1.3, Paint::Dark, 12);
+        self.lathe(c, &[(0.5, top + 1.3), (0.5, top + 1.36), (0.0, top + 1.6)], Paint::Metal, 12);
+        // A rail round the rim: thin posts and a ring.
+        for i in 0..12 {
+            let d = Vec2::from_angle(i as f32 * TAU / 12.0) * (r - 0.12);
+            let foot = Vec3::new(c.x + d.x, top + 0.05, c.y + d.y);
+            self.trim_rod(foot, foot + Vec3::Y * 0.95, 0.025, Paint::Iron);
+        }
+        for k in 0..12 {
+            let (a, b) = (Vec2::from_angle(k as f32 * TAU / 12.0) * (r - 0.12), Vec2::from_angle((k + 1) as f32 * TAU / 12.0) * (r - 0.12));
+            self.trim_rod(Vec3::new(c.x + a.x, top + 1.0, c.y + a.y), Vec3::new(c.x + b.x, top + 1.0, c.y + b.y), 0.03, Paint::Iron);
+        }
+        // A chute and a hatch near the foot.
+        let side = ladder.map_or(Vec2::NEG_Y, |o| Vec2::new(o.y, -o.x));
+        let hatch = c + side * (r + 0.02);
+        self.trim_at(Vec3::new(hatch.x, g + 1.2, hatch.y), Vec3::new(0.45 * side.y.abs() + 0.03, 0.5, 0.45 * side.x.abs() + 0.03), darker(paint));
         if let Some(out) = ladder {
             self.ladder_up(c + out * r, out, top);
+            // A safety cage round the upper ladder.
+            let p = c + out * (r + 0.22);
+            let mut y = top - 4.0;
+            while y < top + 0.8 {
+                if y > g + 2.4 {
+                    let q = p + out * 0.45;
+                    self.trim_rod(Vec3::new(p.x, y, p.y) + Vec3::new(out.y, 0.0, -out.x) * 0.38, Vec3::new(q.x, y, q.y) + Vec3::new(out.y, 0.0, -out.x) * 0.38, 0.02, Paint::Iron);
+                    self.trim_rod(Vec3::new(p.x, y, p.y) - Vec3::new(out.y, 0.0, -out.x) * 0.38, Vec3::new(q.x, y, q.y) - Vec3::new(out.y, 0.0, -out.x) * 0.38, 0.02, Paint::Iron);
+                    self.trim_rod(Vec3::new(q.x, y, q.y) + Vec3::new(out.y, 0.0, -out.x) * 0.38, Vec3::new(q.x, y, q.y) - Vec3::new(out.y, 0.0, -out.x) * 0.38, 0.02, Paint::Iron);
+                }
+                y += 0.9;
+            }
         }
     }
 
@@ -579,13 +572,16 @@ impl World {
         for (dx, dz) in [(-3.0, -3.0), (3.0, -3.0), (-3.0, 3.0), (3.0, 3.0), (2.97, -0.8), (2.97, 0.8)] {
             self.pole(Vec3::new(c.x + dx, top, c.y + dz), 1.0, Paint::Iron);
         }
+        // The tank: a smooth drum with hoops and a conical roof over hidden steps.
         self.column(c, 2.1, top, top + 3.2, paint);
-        let cap = self.blocks.len();
-        self.column(c, 1.5, top + 3.2, top + 3.6, darker(paint));
-        self.column(c, 0.8, top + 3.6, top + 4.0, darker(paint));
-        let rim: Vec<Vec3> = (0..16).map(|i| Vec2::from_angle(i as f32 * std::f32::consts::TAU / 16.0) * 1.95).map(|d| Vec3::new(c.x + d.x, top + 3.2, c.y + d.y)).collect();
-        self.smooth_cap(cap, &rim, darker(paint));
-        self.decor(Aabb::new(Vec3::new(c.x, top + 2.0, c.y), Vec3::new(2.13, 0.04, 0.9)), Paint::Bone);
+        self.hoops(c, 2.13, top + 0.6, top + 3.0, 1.1, darker(paint));
+        self.round_core(c, 1.5, top + 3.2, top + 3.6, darker(paint));
+        self.round_core(c, 0.8, top + 3.6, top + 4.0, darker(paint));
+        self.lathe(c, &[(2.3, top + 3.12), (2.3, top + 3.22), (1.52, top + 3.63), (0.82, top + 4.03), (0.0, top + 4.35)], darker(paint), 24);
+        self.lathe(c, &[(0.16, top + 4.3), (0.0, top + 4.9)], Paint::Iron, 8);
+        // A painted band and an overflow pipe down one leg.
+        self.round(c, 2.12, top + 1.7, top + 2.2, Paint::Cream, 24);
+        self.trim_rod(Vec3::new(c.x - 1.9, top + 0.2, c.y - 0.6), Vec3::new(c.x - 2.1, g + 0.2, c.y - 2.0), 0.08, Paint::Iron);
         self.ladder_up(Vec2::new(c.x + 3.0, c.y), Vec2::X, top);
     }
 
@@ -623,15 +619,20 @@ impl World {
             return false;
         }
         let g = self.ground_at(p);
-        self.solid(Aabb::span(Vec3::new(p.x - 0.25, g - 0.2, p.y - 0.25), Vec3::new(p.x + 0.25, g + 1.0, p.y + 0.25)), Paint::Wood);
-        self.decor(Aabb::span(Vec3::new(p.x - 0.08, g + 1.0, p.y - 0.08), Vec3::new(p.x + 0.08, g + height * 0.8, p.y + 0.08)), Paint::Wood);
+        // A solid stump to hide behind (drawn round), a tapering trunk and cones of needles.
+        self.round_core(p, 0.27, g - 0.2, g + 1.0, Paint::Wood);
+        self.round(p, 0.27, g - 0.2, g + 1.0, Paint::Wood, 10);
+        self.lathe(p, &[(0.22, g + 1.0), (0.06, g + height * 0.85)], Paint::Wood, 8);
+        let mut rng = self.detail_rng(p, 0x91e);
         let tiers = 4;
         let span = height - 4.2;
         for i in 0..tiers {
             let t = i as f32 / tiers as f32;
-            let r = (1.9 - 1.4 * t) * height / 8.0;
+            let r = (1.9 - 1.4 * t) * height / 8.0 * rng.range(0.9, 1.1);
             let y0 = g + 4.2 + span * t;
-            self.decor(Aabb::span(Vec3::new(p.x - r, y0, p.y - r), Vec3::new(p.x + r, y0 + span / tiers as f32 + 0.2, p.y + r)), if i % 2 == 0 { Paint::Leaf } else { Paint::Shell });
+            let y1 = y0 + span / tiers as f32 + 1.3;
+            let at = p + Vec2::new(rng.range(-0.08, 0.08), rng.range(-0.08, 0.08));
+            self.lathe(at, &[(r * 0.55, y0 - 0.25), (r, y0 + 0.15), (0.0, y1)], if i % 2 == 0 { Paint::Leaf } else { Paint::Shell }, 9);
         }
         true
     }
@@ -652,18 +653,25 @@ impl World {
     /// A picnic table with benches (low cover).
     pub(crate) fn picnic_table(&mut self, p: Vec2, along_x: bool, y: Option<f32>) {
         let g = y.unwrap_or_else(|| self.ground_at(p));
+        // Legs reach down to the ground where it falls away.
+        let foot = y.unwrap_or_else(|| self.lowest(p, Vec2::splat(1.0)) - 0.05);
         let (t, bench) = if along_x { (Vec2::new(1.0, 0.4), Vec2::new(0.0, 0.75)) } else { (Vec2::new(0.4, 1.0), Vec2::new(0.75, 0.0)) };
-        self.solid(Aabb::span(Vec3::new(p.x - t.x, g, p.y - t.y), Vec3::new(p.x + t.x, g + 0.78, p.y + t.y)), Paint::Wood);
+        self.solid(Aabb::span(Vec3::new(p.x - t.x, foot, p.y - t.y), Vec3::new(p.x + t.x, g + 0.78, p.y + t.y)), Paint::Wood);
         for s in [-1.0, 1.0] {
             let b = p + bench * s;
             let h = if along_x { Vec2::new(1.0, 0.17) } else { Vec2::new(0.17, 1.0) };
-            self.solid(Aabb::span(Vec3::new(b.x - h.x, g, b.y - h.y), Vec3::new(b.x + h.x, g + 0.45, b.y + h.y)), Paint::Wood);
+            self.solid(Aabb::span(Vec3::new(b.x - h.x, foot, b.y - h.y), Vec3::new(b.x + h.x, g + 0.45, b.y + h.y)), Paint::Wood);
         }
     }
 
     /// A picnic shelter: a roof on four posts over two tables.
     pub(crate) fn shelter(&mut self, p: Vec2, half: Vec2, roof: Paint) {
         let g = self.highest(p, half);
+        // A concrete base, level, down to the lowest ground under it.
+        let low = self.lowest(p, half);
+        if low < g - 0.05 {
+            self.solid(Aabb::span(Vec3::new(p.x - half.x, low - 0.2, p.y - half.y), Vec3::new(p.x + half.x, g, p.y + half.y)), Paint::Concrete);
+        }
         for (sx, sz) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
             let q = p + Vec2::new(sx * (half.x - 0.2), sz * (half.y - 0.2));
             self.solid(Aabb::span(Vec3::new(q.x - 0.14, g - 0.3, q.y - 0.14), Vec3::new(q.x + 0.14, g + 2.7, q.y + 0.14)), Paint::Wood);
@@ -1202,6 +1210,14 @@ pub(crate) fn darker(paint: Paint) -> Paint {
         Paint::LeafLight => Paint::Leaf,
         Paint::Leaf => Paint::Shell,
         Paint::Gold => Paint::Copper,
+        Paint::Brick => Paint::Wood,
+        Paint::Cream => Paint::Bone,
+        Paint::Planks => Paint::Wood,
+        Paint::Tile => Paint::Metal,
+        Paint::Lino => Paint::Shell,
+        Paint::Slate => Paint::Dark,
+        Paint::Navy => Paint::Dark,
+        Paint::Mustard => Paint::Gold,
         other => other,
     }
 }

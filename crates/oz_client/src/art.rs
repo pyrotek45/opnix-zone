@@ -232,8 +232,8 @@ fn setup_art(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mater
     let shapes = [
         (Shape::Cube, Cuboid::default().mesh().build(), false),
         (Shape::Shard, Sphere::new(1.0).mesh().ico(0).expect("valid subdivision"), true),
-        (Shape::Cylinder, Cylinder::new(0.5, 1.0).mesh().resolution(8).build(), false),
-        (Shape::Cone, Cone { radius: 0.5, height: 1.0 }.mesh().resolution(6).build(), true),
+        (Shape::Cylinder, Cylinder::new(0.5, 1.0).mesh().resolution(10).build(), false),
+        (Shape::Cone, Cone { radius: 0.5, height: 1.0 }.mesh().resolution(8).build(), true),
     ];
     let mut templates = HashMap::default();
     let mut primitives = HashMap::default();
