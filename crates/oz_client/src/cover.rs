@@ -137,7 +137,7 @@ fn demo(
                 let feet = Vec3::new(face.x, map.height(face.x, face.z), face.z);
                 // Waist high from where we crouch (low cover, not a wall), with open ground beyond.
                 let rise = b.top() - feet.y;
-                if !(0.85..1.2).contains(&rise) || statics.blocked(feet.x, feet.z, feet.y, 1.2, 0.3) || statics.raycast(feet + Vec3::Y * 1.5, -normal, 25.0).is_some() {
+                if !(0.85..1.2).contains(&rise) || statics.raycast(feet + Vec3::Y, Vec3::Y, 40.0).is_some() || statics.blocked(feet.x, feet.z, feet.y, 1.2, 0.3) || statics.raycast(feet + Vec3::Y * 1.5, -normal, 25.0).is_some() {
                     continue;
                 }
                 let turn = std::env::var("OPNIX_DEMO_LOOK").ok().and_then(|d| d.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
