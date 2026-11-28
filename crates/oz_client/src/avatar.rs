@@ -776,6 +776,9 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         // Blind fire over the top leans a little away from the raised arm, head tucked down.
         rig.blind = towards(rig.blind, over_top as u8 as f32, 14.0);
         let b = rig.blind;
+        if pose.cover.is_some() && std::env::var("OPNIX_POSE_TRACE").is_ok() {
+            info!("pose trace: blind {} lean {:.2} over_top {over_top} b {b:.2} turn {:.2} aiming {} stance {} cover {:?}", pose.blind, pose.lean, rig.turn, pose.aiming, pose.stance, pose.cover);
+        }
         let roll = Quat::from_rotation_z(-pose.lean * if pose.aiming { 0.3 } else { 0.06 } + 0.12 * b);
         let twist = Quat::from_rotation_y(swing * 0.08 * k.min(1.0) * st);
         set(&mut transforms, rig.torso, Vec3::Y * 0.06, roll * rot(torso_lean) * twist, blend);

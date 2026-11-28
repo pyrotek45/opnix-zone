@@ -132,6 +132,12 @@ fn demo(
         // Crouched behind a waist-high crate or wall, looking out over it.
         'o: for block in map.blocks.iter().filter(|b| b.solid && b.aabb.half.y > 0.4 && b.aabb.half.y < 0.65 && b.aabb.half.x.max(b.aabb.half.z) > 0.4) {
             let b = block.aabb;
+            // Standing on its own: nothing else solid within a couple of metres.
+            let near = |o: &oz_core::collide::Aabb| (o.center.x - b.center.x).abs() < o.half.x + b.half.x + 1.5 && (o.center.z - b.center.z).abs() < o.half.z + b.half.z + 1.5 && o.top() > b.bottom() + 0.1 && o.center != b.center;
+            let crowded = map.blocks.iter().filter(|o| o.solid && near(&o.aabb)).count();
+            if crowded > 1 {
+                continue;
+            }
             for normal in dirs {
                 let face = b.center + normal * (b.half.dot(normal.abs()) + OFFSET + 0.02);
                 let feet = Vec3::new(face.x, map.height(face.x, face.z), face.z);

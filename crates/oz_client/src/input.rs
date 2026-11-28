@@ -142,7 +142,7 @@ fn read_devices(
     scroll: Res<AccumulatedMouseScroll>,
     gamepads: Query<&Gamepad>,
     mut controls: ResMut<Controls>,
-    mut stick_nav: Local<[bool; 4]>,
+    mut stick_nav: Local<[f32; 4]>,
     mut dpad_up: Local<f32>,
 ) {
     let was_gamepad = controls.gamepad;
@@ -208,6 +208,7 @@ fn read_devices(
     }
 
     // Gamepads: every connected pad contributes.
+    let mut stick_push = [0.0f32; 4];
     for pad in &gamepads {
         // Movement starts at the lightest touch; the look stick keeps a small deadzone
         // against drift.
@@ -268,19 +269,46 @@ fn read_devices(
         // B: tap to crouch, hold to go prone (worked out in `drive_player`).
         c.crouch_held |= held(GamepadButton::East);
 
-        // The left stick doubles as a D-pad in menus (edge-triggered).
-        let now = [left.y > 0.6, left.y < -0.6, left.x < -0.6, left.x > 0.6];
-        let edge = |i: usize| now[i] && !stick_nav[i];
-        c.ui.up |= hit(GamepadButton::DPadUp) || edge(0);
-        c.ui.down |= hit(GamepadButton::DPadDown) || edge(1);
-        c.ui.left |= hit(GamepadButton::DPadLeft) || edge(2);
-        c.ui.right |= hit(GamepadButton::DPadRight) || edge(3);
-        *stick_nav = now;
+        // The left stick doubles as a D-pad in menus (stepped once for all pads, below).
+        let pushes = [left.y, -left.y, -left.x, left.x];
+        for (most, push) in stick_push.iter_mut().zip(pushes) {
+            *most = most.max(push);
+        }
+        c.ui.up |= hit(GamepadButton::DPadUp);
+        c.ui.down |= hit(GamepadButton::DPadDown);
+        c.ui.left |= hit(GamepadButton::DPadLeft);
+        c.ui.right |= hit(GamepadButton::DPadRight);
         c.ui.accept |= hit(GamepadButton::South);
         c.ui.back |= hit(GamepadButton::East) || hit(GamepadButton::Start);
         c.ui.tab_prev |= hit(GamepadButton::LeftTrigger);
         c.ui.tab_next |= hit(GamepadButton::RightTrigger);
     }
+    // Stick through menus: one step per push, then (held) a repeat after a pause, like a
+    // held key. A push counts past 0.65 and only lets go under 0.35, so a stick resting
+    // near the line does not chatter through the list.
+    let dt = time.delta_secs();
+    let mut steps = [false; 4];
+    for (i, push) in stick_push.into_iter().enumerate() {
+        let held_for = &mut stick_nav[i];
+        if *held_for > 0.0 {
+            if push < 0.35 {
+                *held_for = 0.0;
+                continue;
+            }
+            let before = *held_for;
+            *held_for += dt;
+            // First repeat after 0.45 s, then every 0.2 s.
+            let ticks = |t: f32| if t < 0.45 { 0 } else { 1 + ((t - 0.45) / 0.2) as i32 };
+            steps[i] = ticks(*held_for) > ticks(before);
+        } else if push > 0.65 {
+            *held_for = 1e-4;
+            steps[i] = true;
+        }
+    }
+    c.ui.up |= steps[0];
+    c.ui.down |= steps[1];
+    c.ui.left |= steps[2];
+    c.ui.right |= steps[3];
     c.movement = c.movement.clamp_length_max(1.0);
     if settings.invert_y {
         c.look.y = -c.look.y;
