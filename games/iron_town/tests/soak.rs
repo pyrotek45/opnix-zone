@@ -13,6 +13,8 @@ use oz_sim::prelude::*;
 use std::{collections::HashMap, time::Duration};
 
 const FRAME: f32 = 1.0 / 30.0;
+/// A bot that wants to move but stays put this long is stuck.
+const STUCK_SECONDS: f32 = 4.0;
 
 #[derive(Default)]
 struct Report {
@@ -53,6 +55,8 @@ fn soak(rules: Rules, seconds: f32) -> Report {
     let mut last: HashMap<u8, (Vec3, f32)> = HashMap::new();
     let mut airborne: HashMap<u8, f32> = HashMap::new();
     let mut trails: HashMap<u8, Vec<(f32, Vec3, bool, u8)>> = HashMap::new();
+    // Bots that want to go somewhere: where they were when they last made headway, and how long ago.
+    let mut headway: HashMap<u8, (Vec3, f32)> = HashMap::new();
     let mut elapsed = 0.0;
     // The human seat is a chaos monkey: random runs, jumps, stance changes,
     // leaning and shooting, changing every fraction of a second.
@@ -141,6 +145,32 @@ fn soak(rules: Rules, seconds: f32) -> Report {
             }
             last.insert(id, (feet, *life));
         }
+        // Stuck bots: wanting to move (and not holding still on purpose) yet getting nowhere.
+        let bots: Vec<(u8, Vec3, bool, u8)> = app
+            .world_mut()
+            .query::<(&Player, &Transform, &Health, &PlayerInput, &Bot)>()
+            .iter(app.world())
+            .map(|(p, t, h, i, b)| (p.id, t.translation, h.alive() && i.movement.length() > 0.3 && !b.holding(), i.stance))
+            .collect();
+        for (id, feet, wants, stance_now) in bots {
+            let entry = headway.entry(id).or_insert((feet, 0.0));
+            if !wants || entry.0.distance(feet) > 0.5 {
+                *entry = (feet, 0.0);
+                continue;
+            }
+            entry.1 += FRAME;
+            if entry.1 > STUCK_SECONDS {
+                let door = map.doors.iter().enumerate().map(|(i, d)| (d.center.distance(feet), i)).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(d, i)| (d, state.doors.get(i).copied()));
+                let mut boxes = Vec::new();
+                statics.near(feet.x, feet.z, 0.5, |_, b| {
+                    if b.touches(feet.x, feet.z, 0.5) && b.top() > feet.y + 0.3 && b.bottom() < feet.y + 1.8 {
+                        boxes.push(format!("{:.2}..{:.2}", b.min(), b.max()));
+                    }
+                });
+                report.flag("STUCK", format!("bot {id} has wanted to move for {:.1}s but stayed within 0.5 m of {feet:.2} (stance {stance_now}), t={elapsed:.1}; nearest door {door:?}; boxes {boxes:?}", entry.1));
+                *entry = (feet, 0.0);
+            }
+        }
         // Bullets: the line from the shooter's eye to where the shot ended must be clear.
         let events = app.world().resource::<Events<FxEvent>>();
         let shots: Vec<(u8, Vec3, bool)> = cursor
@@ -192,9 +222,18 @@ fn rules_for(recipe: WorldRecipe) -> Rules {
 }
 
 #[test]
+fn soak_small_and_medium_towns() {
+    for seed in [2, 9] {
+        for layout in [Layout::SmallTown, Layout::MediumTown] {
+            check(&format!("{} {seed}", layout.title()), rules_for(WorldRecipe::grid_town(layout, seed, Biome::IronShoals)));
+        }
+    }
+}
+
+#[test]
 fn soak_random_towns() {
     // SOAK_SEEDS=3,11,... plays those seeds' towns, whatever theme each rolls.
-    let seeds: Vec<u64> = std::env::var("SOAK_SEEDS").ok().map_or(vec![3], |s| s.split(',').filter_map(|n| n.trim().parse().ok()).collect());
+    let seeds: Vec<u64> = std::env::var("SOAK_SEEDS").ok().map_or(vec![3, 12], |s| s.split(',').filter_map(|n| n.trim().parse().ok()).collect());
     for seed in seeds {
         check(&format!("town {seed}"), rules_for(deathmatch_rules(seed).recipe));
     }

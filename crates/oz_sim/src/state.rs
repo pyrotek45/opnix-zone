@@ -124,6 +124,12 @@ pub struct MatchState {
     pub countdown: f32,
     /// Seconds of recon UAV left per team: everyone on the other team shows on radar.
     pub uav: [f32; 2],
+    /// Seconds of advanced UAV left per team: every enemy shows, Ghost or not, facing and all.
+    #[serde(default)]
+    pub sweep: [f32; 2],
+    /// Seconds each team's electronics stay jammed by the other team's EMP: no radar, no minimap.
+    #[serde(default)]
+    pub emp: [f32; 2],
     /// The weather right now (it can change mid-match).
     pub weather: oz_core::worldgen::Weather,
     /// Versus lobby settings. Time: 0 day, 1 dusk, 2 night, 3 day/night cycle.
@@ -179,6 +185,9 @@ pub struct RosterEntry {
     /// What they are holding, so everyone sees their real attachments.
     pub weapon: u8,
     pub parts: [u8; oz_core::arsenal::SLOT_COUNT],
+    /// Their perk, so every machine can tell who is silent (Dead Silence) or off radar (Ghost).
+    #[serde(default)]
+    pub perk: u8,
 }
 
 impl MatchState {

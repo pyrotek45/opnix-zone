@@ -141,6 +141,7 @@ impl Plugin for SimPlugin {
                     enemy::think,
                     enemy::act,
                     structures::run_structures,
+                    killstreak::steer_strikes,
                     combat::fly_projectiles,
                     killstreak::shoot_down,
                     combat::run_mines,

@@ -71,6 +71,10 @@ pub struct Bot {
     repath: f32,
     stuck: f32,
     last: Vec3,
+    /// Where the bot last made real headway on its way somewhere, and how long ago: shuffling
+    /// on the spot (forward, aside, forward again) is no headway.
+    anchor: Vec3,
+    anchor_time: f32,
     strafe: f32,
     strafe_time: f32,
     aim_error: Vec2,
@@ -334,6 +338,31 @@ pub fn footstep_radius(stance_now: u8, speed: f32) -> f32 {
     }
 }
 
+/// Seconds without headway before a stuck bot steps aside, backs off, and gives up on where it was going.
+pub const UNSTICK_SIDESTEP: f32 = 1.3;
+pub const UNSTICK_BACK_OFF: f32 = 2.2;
+pub const UNSTICK_GIVE_UP: f32 = 3.0;
+
+/// Which way a bot that has been getting nowhere for `stuck` seconds tries to move instead of
+/// `wish`: straight on at first, then sideways (`side` picks which), then backwards.
+pub fn unstick(wish: Vec2, stuck: f32, side: f32) -> Vec2 {
+    if stuck > UNSTICK_BACK_OFF {
+        -wish
+    } else if stuck > UNSTICK_SIDESTEP {
+        (wish.perp() * side.signum() + wish * 0.2).normalize_or_zero()
+    } else {
+        wish
+    }
+}
+
+impl Bot {
+    /// Holding still on purpose: fighting, at cover, camping, planting or defusing, holding a
+    /// point, or standing guard.
+    pub fn holding(&self) -> bool {
+        self.target.is_some() || self.cover.is_some() || self.hold_use || self.sentry || matches!(self.plan, Plan::Camp { .. }) || self.objective.is_some_and(|(_, hold)| hold)
+    }
+}
+
 /// First player id used by bots; humans stay below it.
 pub const FIRST_BOT_ID: u8 = 200;
 const NAMES: [&str; 12] = ["VEGA", "ONYX", "RIGGS", "HALO", "DUSK", "MOTH", "KITE", "BRASS", "ECHO", "FLINT", "NOVA", "WREN"];
@@ -349,7 +378,7 @@ pub fn spawn_bot(commands: &mut Commands, ids: &mut NetIds, content: &Content, r
         return entity;
     }
     let primary = guns[1 + rng.0.below(guns.len() - 1)];
-    let loadout = Loadout { primary, secondary: guns[0], perk: rng.0.below(content.perks.len().max(1)) as u8, gear: rng.0.below(content.gear.len().max(1)) as u8, parts: None, streaks: [0; 3], vision: 0 };
+    let loadout = Loadout { primary, secondary: guns[0], perk: rng.0.below(content.perks.len().max(1)) as u8, gear: rng.0.below(content.gear.len().max(1)) as u8, parts: None, streaks: crate::killstreak::bot_streaks(&mut rng.0), vision: 0 };
     // Kit the primary out: each slot has an even chance of a random part that fits.
     let mut parts = content.weapons[primary as usize].defaults;
     for (slot_index, part) in parts.iter_mut().enumerate().take(SLOT_COUNT) {
@@ -802,7 +831,8 @@ pub fn drive_bots(
     // What can be heard this frame: everything made since last frame, plus everyone's footsteps.
     let mut heard_now = std::mem::take(&mut noises.0);
     for (_, _, player, transform, input, health, _, _, mover) in &players {
-        let mut radius = footstep_radius(input.stance, mover.speed);
+        // Dead Silence: footsteps carry a fifth as far.
+        let mut radius = footstep_radius(input.stance, mover.speed) * crate::player::footstep_volume(&content, player.perk);
         // Pushing through a bush rustles: it carries much further than a footstep.
         let at = transform.translation;
         if radius > 0.0 && map.props.iter().any(|p| matches!(p.kind, oz_core::worldgen::PropKind::Bush) && (p.pos.xz() - at.xz()).length() < 0.75 * p.scale + 0.25 && (p.pos.y - at.y).abs() < 1.2) {
@@ -1033,7 +1063,7 @@ pub fn drive_bots(
                         bot.goal = at;
                         bot.path.clear();
                     }
-                } else if bot.patrol <= 0.0 || bot.stuck > 1.5 {
+                } else if bot.patrol <= 0.0 || bot.stuck > UNSTICK_BACK_OFF + 0.5 {
                     // Mill about near the post.
                     bot.patrol = rng.0.range(8.0, 18.0);
                     let wander = Vec2::from_angle(rng.0.range(0.0, TAU)) * rng.0.range(0.0, 6.0);
@@ -1064,7 +1094,7 @@ pub fn drive_bots(
                     bot.stuck = 0.0;
                 }
             } else if bot.target.is_none() {
-                if bot.stuck > 1.5 {
+                if bot.stuck > UNSTICK_BACK_OFF + 0.5 {
                     bot.plan_until = 0.0;
                     bot.stuck = 0.0;
                 }
@@ -1281,15 +1311,50 @@ pub fn drive_bots(
         }
         // Stuck against something: stand up, jump (or vault) once upright, and look for a
         // fresh route. Low or lying down, it gets up first; a body that cannot stand never tries.
+        // Still no headway after that, it works through the ways out in turn: step aside,
+        // back off and search again from where it stands, then give the destination up for a
+        // new one. (A closed door in the way is pushed open by `breakables::work_doors`.)
         let legs = me.lost & crate::player::limb::LEGS;
-        if wish != Vec2::ZERO && moved < 0.5 {
+        let travelling = wish != Vec2::ZERO && !bot.holding();
+        if !travelling || feet.distance(bot.anchor) > 0.6 {
+            bot.anchor = feet;
+            bot.anchor_time = 0.0;
+        } else {
+            bot.anchor_time += dt;
+            // Going nowhere for a second however busy the legs: as good as stuck.
+            if bot.anchor_time > 1.0 {
+                bot.stuck = bot.stuck.max(bot.anchor_time - 0.4);
+            }
+        }
+        if wish != Vec2::ZERO && (moved < 0.5 || bot.anchor_time > 1.0) {
+            let before = bot.stuck;
             bot.stuck += dt;
             if bot.stuck > 0.6 {
                 bot.repath = 0.0;
-                bot.strafe = -bot.strafe;
-                if legs == 0 {
+                if before <= 0.6 {
+                    bot.strafe = -bot.strafe;
+                }
+                if legs == 0 && bot.stuck < UNSTICK_SIDESTEP {
                     wanted_stance = stance::STAND;
                     held |= buttons::JUMP;
+                }
+            }
+            let step = unstick(wish, bot.stuck, bot.strafe);
+            if step != wish {
+                wish = step;
+                held &= !buttons::SPRINT;
+                wanted_stance = if legs == 0 { stance::STAND } else { wanted_stance };
+            }
+            if bot.stuck > UNSTICK_GIVE_UP {
+                // Nothing worked: forget the route and the goal, and think again.
+                bot.path.clear();
+                bot.plan_until = 0.0;
+                bot.cover = None;
+                bot.stuck = 0.0;
+                bot.anchor_time = 0.0;
+                bot.strafe = -bot.strafe;
+                if !bot.sentry {
+                    bot.goal = feet + Vec3::new(rng.0.range(-12.0, 12.0), 0.0, rng.0.range(-12.0, 12.0));
                 }
             }
         } else {
@@ -1337,6 +1402,17 @@ pub fn drive_bots(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stuck_bot_tries_ahead_then_aside_then_back() {
+        let wish = Vec2::new(0.0, 1.0);
+        assert_eq!(unstick(wish, 0.5, 1.0), wish);
+        let aside = unstick(wish, UNSTICK_SIDESTEP + 0.1, 1.0);
+        assert!(aside.dot(wish).abs() < 0.3 && aside.length() > 0.9, "{aside}");
+        assert!(unstick(wish, UNSTICK_SIDESTEP + 0.1, -1.0).dot(aside) < 0.0, "the other side");
+        assert_eq!(unstick(wish, UNSTICK_BACK_OFF + 0.1, 1.0), -wish);
+        assert!(UNSTICK_SIDESTEP < UNSTICK_BACK_OFF && UNSTICK_BACK_OFF < UNSTICK_GIVE_UP);
+    }
     use crate::player::EYE;
     use oz_core::{collide::Aabb, worldgen::COVER_HEIGHT};
 

@@ -24,7 +24,7 @@ pub const WALK_SPEED: f32 = 5.4;
 pub const SPRINT_SPEED: f32 = 8.2;
 const JUMP_SPEED: f32 = 6.2;
 const GRAVITY: f32 = 15.0;
-const BODY_RADIUS: f32 = 0.3;
+pub const BODY_RADIUS: f32 = 0.3;
 /// How far out from its rungs a climber's body hangs: enough to clear the
 /// wall and the floor slabs that stick out of it.
 pub const LADDER_STANDOFF: f32 = 0.45;
@@ -454,8 +454,45 @@ pub fn refill(catalog: &Catalog, player: &mut Player, arsenal: &mut Arsenal) {
     }
     arsenal.reload = 0.0;
     arsenal.burst = 0;
-    player.gear_left = catalog.gear.get(player.gear as usize).map_or(0, |gear| gear.count);
+    player.gear_left = gear_count(catalog, player);
 }
+
+/// Pieces of gear a player starts each life with: the gear's own count, plus Bandolier's.
+pub fn gear_count(catalog: &Catalog, player: &Player) -> u8 {
+    let extra = match perk(catalog, player) {
+        Some(PerkEffect::ExtraGear(n)) => n,
+        _ => 0,
+    };
+    catalog.gear.get(player.gear as usize).map_or(0, |gear| gear.count.saturating_add(extra))
+}
+
+/// How far this player's footsteps carry, as a fraction: Dead Silence all but mutes them.
+pub fn footstep_volume(catalog: &Catalog, perk_index: u8) -> f32 {
+    match catalog.perks.get(perk_index as usize).map(|p| p.effect) {
+        Some(PerkEffect::Quiet) => 0.2,
+        _ => 1.0,
+    }
+}
+
+/// Vault and ladder speed multiplier (Free Runner).
+pub fn climb_speed(catalog: &Catalog, player: &Player) -> f32 {
+    match perk(catalog, player) {
+        Some(PerkEffect::Climber(scale)) => scale,
+        _ => 1.0,
+    }
+}
+
+/// Seconds out of a fight before health comes back, and how fast it does (per second).
+pub fn regen(catalog: &Catalog, player: &Player) -> (f32, f32) {
+    match perk(catalog, player) {
+        Some(PerkEffect::Regen(scale)) if scale > 0.0 => (REGEN_DELAY / scale, REGEN_RATE * scale),
+        _ => (REGEN_DELAY, REGEN_RATE),
+    }
+}
+
+/// Health regeneration: it starts this long after the last hit, at this rate.
+pub const REGEN_DELAY: f32 = 5.0;
+pub const REGEN_RATE: f32 = 9.0;
 
 /// Hurts a player and handles the kill: score, feed, hit marker. Returns true on a kill.
 /// `attacker` is (name, team, id).
@@ -687,6 +724,49 @@ pub fn can_stand(map: &GameMap, statics: &StaticWorld, solids: &Query<(&Transfor
     })
 }
 
+/// If a body at `feet` overlaps a solid (a door leaf that just swung onto it, say), the
+/// nearest spot just clear of that solid's faces where it can stand. `None` when it is
+/// already free (or there is nowhere better).
+pub fn depenetrate(map: &GameMap, statics: &StaticWorld, solids: &Query<(&Transform, &Solid), Without<Player>>, feet: Vec3, height: f32) -> Option<Vec3> {
+    let mut candidates: Vec<Vec3> = Vec::new();
+    for (transform, solid) in solids.iter() {
+        if !crate::breakables::body_overlaps(feet, height, BODY_RADIUS, transform.translation, solid.half) {
+            continue;
+        }
+        let c = solid.center(transform);
+        for extra in [0.03, 0.3, 0.6] {
+            let (dx, dz) = (solid.half.x + BODY_RADIUS + extra, solid.half.z + BODY_RADIUS + extra);
+            candidates.extend([Vec3::new(c.x - dx, feet.y, feet.z), Vec3::new(c.x + dx, feet.y, feet.z), Vec3::new(feet.x, feet.y, c.z - dz), Vec3::new(feet.x, feet.y, c.z + dz)]);
+        }
+    }
+    if candidates.is_empty() {
+        // Inside the map's own geometry (a wall, a piece of furniture) by more than a skin:
+        // out to the nearest spot around it where the body fits.
+        let low = height.min(stance::height(stance::CROUCH)) - 0.1;
+        if !statics.blocked(feet.x, feet.z, feet.y + 0.05, low, 0.18) {
+            return None;
+        }
+        for ring in 1..=5 {
+            let r = ring as f32 * 0.2;
+            for k in 0..12 {
+                let a = k as f32 * std::f32::consts::TAU / 12.0;
+                let x = feet.x + a.cos() * r;
+                let z = feet.z + a.sin() * r;
+                let y = ground_under(map, statics, x, z, feet.y + 0.3);
+                if (y - feet.y).abs() < 0.6 && can_stand(map, statics, solids, x, z, y, low + 0.1) {
+                    return Some(Vec3::new(x, y, z));
+                }
+            }
+        }
+        return None;
+    }
+    candidates.sort_by(|a, b| a.distance_squared(feet).total_cmp(&b.distance_squared(feet)));
+    candidates.into_iter().find(|p| can_stand(map, statics, solids, p.x, p.z, p.y, height))
+}
+
+/// How fast (m/s) a body overlapping something is pushed out of it.
+pub const DEPENETRATE_SPEED: f32 = 6.0;
+
 /// What a walker stands on at (x, z): terrain, shallow sea floor, or a floor / step / crate.
 pub fn ground_under(map: &GameMap, statics: &StaticWorld, x: f32, z: f32, feet: f32) -> f32 {
     map.height(x, z).max(map.water - WADE_DEPTH).max(statics.support(x, z, feet))
@@ -766,6 +846,13 @@ pub fn move_players(
             }
             continue;
         }
+        // Never stuck inside a door leaf (or any other moving solid): one that swung or shut
+        // onto this body pushes it out the shortest way to somewhere it can stand.
+        // A firm shove, not a jump: at most a few centimetres a frame.
+        if let Some(free) = depenetrate(&map, &statics, &solids, transform.translation, stance::height(input.stance)) {
+            let at = transform.translation;
+            transform.translation = at + (free - at).clamp_length_max(DEPENETRATE_SPEED * dt);
+        }
         headroom(&statics, transform.translation, &mut input);
         // Jump at something low ahead (a wall, a sill, a crate): vault it instead.
         if mover.grounded && input.held(buttons::JUMP) && input.stance != stance::PRONE {
@@ -774,7 +861,9 @@ pub fn move_players(
             let dir = if wish.length() > 0.2 { wish } else { facing };
             if let Some((to, top)) = vault_target(&map, &statics, transform.translation, dir).filter(|(to, _)| allowed(*to)) {
                 let distance = to.xz().distance(transform.translation.xz());
-                mover.vault = Some(Vault { from: transform.translation, to, top, t: 0.0, duration: 0.38 + distance * 0.12 });
+                let quick = climb_speed(&content, player);
+                // Free Runner shortens the long vaults; the quickest hop over a sill stays as it is.
+                mover.vault = Some(Vault { from: transform.translation, to, top, t: 0.0, duration: 0.38 + distance * 0.12 / quick });
                 continue;
             }
         }
@@ -824,7 +913,7 @@ pub fn move_players(
             let line = Vec2::new(ladder.foot.x, ladder.foot.z) + ladder.out * LADDER_STANDOFF;
             let pull = (line - before.xz()).clamp_length_max(2.0 * dt);
             pos = before + Vec3::new(pull.x, 0.0, pull.y);
-            pos.y = (pos.y + 3.2 * dt).min(ladder.top + 0.02);
+            pos.y = (pos.y + 3.2 * climb_speed(&content, player) * dt).min(ladder.top + 0.02);
             mover.vertical = 0.0;
             mover.grounded = true;
             mover.speed = (pos - before).xz().length() / dt.max(1e-4);
@@ -945,8 +1034,9 @@ pub fn vitals(
                 damage_player(&mut health, &mut player, damage, attacker.as_ref().map(|(n, t, i)| (n.as_str(), *t, *i)), &mut state, &mut fx);
                 continue;
             }
-            if player.calm > 5.0 && health.hp < health.max {
-                health.hp = (health.hp + 9.0 * dt).min(health.max);
+            let (delay, rate) = regen(&content, &player);
+            if player.calm > delay && health.hp < health.max {
+                health.hp = (health.hp + rate * dt).min(health.max);
             }
             continue;
         }

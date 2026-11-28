@@ -553,6 +553,7 @@ fn pose_players(
     mut robots: Query<(&mut Rig, &mut Pose, &Transform, &Player, &PlayerInput, &Health, Has<LocalPlayer>, Option<&Mover>), With<PlayerRobot>>,
     mut sounds: EventWriter<crate::fx::PlaySfx>,
     map: Res<Map>,
+    (state, content): (Res<MatchState>, Res<oz_sim::session::Content>),
 ) {
     let dt = time.delta_secs().max(1e-4);
     for (mut rig, mut pose, transform, player, input, health, local, mover) in &mut robots {
@@ -568,7 +569,10 @@ fn pose_players(
                     _ if pose.sprinting => (Sfx::StepHeavy, 1.6),
                     _ => (Sfx::Step, 1.2),
                 };
-                sounds.write(crate::fx::PlaySfx::new(sfx, Some(transform.translation)).quiet(volume));
+                // Dead Silence: barely a whisper.
+                let perk = state.roster.iter().find(|r| r.id == player.id).map_or(player.perk, |r| r.perk);
+                let hush = oz_sim::player::footstep_volume(&content, perk);
+                sounds.write(crate::fx::PlaySfx::new(sfx, Some(transform.translation)).quiet(volume * hush));
             }
         }
         let moved = if rig.last_pos.is_finite() { transform.translation - rig.last_pos } else { Vec3::ZERO };

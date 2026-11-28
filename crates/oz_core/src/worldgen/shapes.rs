@@ -136,7 +136,10 @@ impl World {
     pub(crate) fn boxed(&mut self, p: Vec2, half: Vec2, height: f32, paint: Paint) -> f32 {
         let g = self.lowest(p, half);
         let top = self.ground_at(p).max(g) + height;
+        // Loose boxes (cover, woodpiles, crates) are cleared from doorways like furniture.
+        let from = self.blocks.len();
         self.solid(Aabb::span(Vec3::new(p.x - half.x, g - 0.15, p.y - half.y), Vec3::new(p.x + half.x, top, p.y + half.y)), paint);
+        self.mark_furniture(from);
         top
     }
 
@@ -363,7 +366,10 @@ impl World {
             let mid = (lo + hi) * 0.5;
             let g = self.highest(mid, (hi - lo) * 0.5);
             let bottom = self.lowest(mid, (hi - lo) * 0.5) - 0.15;
+            // A run of low wall or fence that ends up across a doorway is cleared like furniture.
+            let from = self.blocks.len();
             self.solid(Aabb::span(Vec3::new(lo.x, bottom, lo.y), Vec3::new(hi.x, g + height, hi.y)), paint);
+            self.mark_furniture(from);
         }
     }
 
@@ -395,7 +401,9 @@ impl World {
             while u <= u1 + 0.01 {
                 let at = a + dir * u;
                 let g = self.ground_at(at);
+                let from = self.blocks.len();
                 self.decor(Aabb::span(Vec3::new(at.x - 0.08, g, at.y - 0.08), Vec3::new(at.x + 0.08, g + COVER_HEIGHT + 0.1, at.y + 0.08)), darker(paint));
+                self.mark_furniture(from);
                 u += 2.4;
             }
         }

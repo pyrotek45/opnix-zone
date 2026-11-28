@@ -895,17 +895,18 @@ pub fn host_send(
             extra: 0,
         });
     }
-    for (id, _, transform) in &drones {
+    // Killstreak aircraft and sentries: their own look, and their team in `flags` (for their paint).
+    for (id, craft, transform) in &drones {
         entities.push(EntState {
             id: id.0,
             kind: kind::PROJECTILE,
-            sub: ShotLook::Drone as u8,
+            sub: craft.look as u8,
             pos: q.pack(transform.translation),
             yaw: pack_yaw(transform.rotation),
             pitch: 0,
             hp: 255,
             aux: 0,
-            flags: 0,
+            flags: craft.team,
             limbs: 0,
             extra: 0,
         });

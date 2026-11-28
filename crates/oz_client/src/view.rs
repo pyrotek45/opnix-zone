@@ -361,13 +361,16 @@ fn follow_player(
     let shots = if *role == NetRole::Client && local { prediction.total } else { arsenal.shots };
     if shots != view.last_shots {
         view.last_shots = shots;
-        if let Some(def) = content.weapons.get(index) {
-            // Crouched and prone shooters are braced: less kick.
-            let recoil = def.recoil * stance::recoil(input.stance);
-            view.recoil = (view.recoil + recoil).min(2.5);
+        if let Some((def, state)) = content.weapons.get(index).zip(arsenal.weapons.get(index)) {
+            // Exactly the kick the aim gets (see `input`): the gun's recoil after its parts,
+            // scaled by its class, braced by stance and by aiming. Pistols and SMGs flick,
+            // rifles shove, LMGs, shotguns and sniper rifles slam.
+            let stats = resolve(def, state, &content.attachments);
+            let recoil = oz_core::arsenal::shot_kick(def.class, stats.recoil, stance::recoil(input.stance), input.held(buttons::AIM));
+            view.recoil = (view.recoil + recoil).min(oz_core::arsenal::MAX_KICK);
             view.flash = 0.05;
             view.shake += recoil * 0.1;
-            view.kick = (view.kick + recoil * 0.9).min(2.5);
+            view.kick = (view.kick + recoil * 0.9).min(3.5);
             view.cycle = 1.0;
             // Each shot twists and shoves the gun a little differently.
             view.shot_count = view.shot_count.wrapping_add(1);
@@ -510,7 +513,7 @@ fn follow_player(
     // Holding a gun up is never perfectly still: a slow drift down the sights, less when crouched or prone.
     let hold = view.ads * stance::steadiness(input.stance) * 0.0035;
     let drift = Vec2::new((t * 0.8).sin() + 0.5 * (t * 1.9).sin(), (t * 1.3).cos() * 0.7) * hold;
-    camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x + drift.x, input.pitch + view.recoil * 0.012 + shake.y + drift.y, roll + shake.z);
+    camera.rotation = Quat::from_euler(EulerRot::YXZ, input.yaw + shake.x + drift.x, input.pitch + view.recoil * oz_core::arsenal::RECOIL_RADIANS * 1.6 + shake.y + drift.y, roll + shake.z);
     // In cover the camera pulls back over a shoulder, stopping short of walls. Which
     // shoulder follows where you look along the wall, and at the wall's end it swings out
     // past the corner so you see round it instead of into the wall.
@@ -803,7 +806,7 @@ fn viewmodel(
         + Vec3::new(
             view.bob.sin() * 0.018 * walking + view.sway.x * 0.5 - 0.06 * show + 0.04 * sprint,
             (view.bob * 2.0).sin() * 0.016 * walking - dip - view.swap * 0.22 - view.land * 0.05 - view.sway.y * 0.5 + (t * 1.3).sin() * 0.003 + 0.05 * show - 0.06 * sprint,
-            view.recoil * 0.085 + 0.04 * sprint,
+            view.recoil.min(3.0) * 0.07 + 0.04 * sprint,
         )
         + Vec3::X * view.kick_side
         + Vec3::new(0.12, -0.32, 0.05) * busy
@@ -811,7 +814,7 @@ fn viewmodel(
         + Vec3::new(0.14, -0.5, 0.12) * view.climb
         + Vec3::new(-0.08, 0.04, -0.2) * melee;
     transform.rotation = Quat::from_rotation_y(0.9 * show + 0.55 * sprint + view.kick_side * 2.0 + 0.6 * melee)
-        * Quat::from_rotation_x(view.recoil * 0.1 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip - 0.5 * busy + 0.35 * melee + 0.9 * view.tuck - 0.7 * view.climb)
+        * Quat::from_rotation_x(view.recoil * 0.075 + tilt - view.swap * 0.5 - 0.35 * sprint + 0.25 * flip - 0.5 * busy + 0.35 * melee + 0.9 * view.tuck - 0.7 * view.climb)
         * Quat::from_rotation_z(roll + view.sway.x * 1.6 + 1.2 * flip + 0.25 * sprint + view.kick_roll + (t * 0.7).sin() * 0.012 * (1.0 - view.ads * 0.6));
     // Tracers leave from here, sights up or not.
     view.muzzle = transform.translation + transform.rotation * (Vec3::new(0.0, 0.02, -stats.length - 0.05) * GUN_SCALE);

@@ -537,12 +537,14 @@ fn drive_player(
         body.burst = 0;
     }
     if fired > 0
-        && let Some(stats) = content.weapons.get(arsenal.current as usize).zip(arsenal.state()).map(|(def, state)| resolve(def, state, &content.attachments))
+        && let Some((def, stats)) = content.weapons.get(arsenal.current as usize).zip(arsenal.state()).map(|(def, state)| (def, resolve(def, state, &content.attachments)))
     {
-        let brace = stance::recoil(body.stance) * if controls.aim { 0.8 } else { 1.0 };
+        // The same per-shot kick the camera shows (see `view`): the gun's recoil after its
+        // parts, scaled by its class, braced by stance and by aiming down the sights.
+        let units = oz_core::arsenal::shot_kick(def.class, stats.recoil, stance::recoil(body.stance), controls.aim);
         for _ in 0..fired {
             body.burst += 1;
-            let kick = recoil_pattern(arsenal.current, body.burst) * stats.recoil * 0.0045 * brace;
+            let kick = recoil_pattern(arsenal.current, body.burst) * units * oz_core::arsenal::RECOIL_RADIANS;
             body.kick += kick;
             body.climbed += kick.y;
         }

@@ -151,20 +151,22 @@ pub enum ShotLook {
     Bomb = 10,
     /// An artillery shell coming down.
     Shell = 11,
+    /// A killstreak sentry gun on its tripod.
+    Sentry = 12,
 }
 
 impl ShotLook {
     pub fn from_index(i: u8) -> Self {
-        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine, ShotLook::Drone, ShotLook::Jet, ShotLook::RadarPlane, ShotLook::Bomb, ShotLook::Shell][(i as usize).min(11)]
+        [ShotLook::Rocket, ShotLook::Acid, ShotLook::Bolt, ShotLook::Grenade, ShotLook::Knife, ShotLook::Canister, ShotLook::Mine, ShotLook::Drone, ShotLook::Jet, ShotLook::RadarPlane, ShotLook::Bomb, ShotLook::Shell, ShotLook::Sentry][(i as usize).min(12)]
     }
 
     pub fn paint(self) -> Paint {
-        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red, Paint::Dark, Paint::Dark, Paint::Steel, Paint::Iron, Paint::Iron][self as usize]
+        [Paint::Glow, Paint::Green, Paint::Red, Paint::Iron, Paint::Metal, Paint::Concrete, Paint::Red, Paint::Dark, Paint::Dark, Paint::Steel, Paint::Iron, Paint::Iron, Paint::Dark][self as usize]
     }
 
     /// Killstreak aircraft and what they drop: drawn as full models, not a dart.
     pub fn is_air(self) -> bool {
-        matches!(self, ShotLook::Drone | ShotLook::Jet | ShotLook::RadarPlane | ShotLook::Bomb | ShotLook::Shell)
+        matches!(self, ShotLook::Drone | ShotLook::Jet | ShotLook::RadarPlane | ShotLook::Bomb | ShotLook::Shell | ShotLook::Sentry)
     }
 
     /// Size of the projectile's mesh.
@@ -205,7 +207,22 @@ pub enum PerkEffect {
     Thermal,
     /// A night-vision visor you can switch on.
     NightVision,
+    /// Footsteps barely carry: other players hear them faintly, bots hardly at all.
+    Quiet,
+    /// This many extra pieces of gear every life.
+    ExtraGear(u8),
+    /// Health comes back sooner and faster: the regeneration rate multiplier (the wait shrinks by it too).
+    Regen(f32),
+    /// Every killstreak needs one kill fewer.
+    Hardline,
+    /// Enemies on their feet within [`TRACKER_RANGE`] show on your radar (unless they move silently).
+    Tracker,
+    /// Vaults and ladder climbs this much faster.
+    Climber(f32),
 }
+
+/// How far [`PerkEffect::Tracker`] hears enemies coming.
+pub const TRACKER_RANGE: f32 = 30.0;
 
 impl PerkEffect {
     /// Kilograms the perk adds to the load: armour plates are heavy.

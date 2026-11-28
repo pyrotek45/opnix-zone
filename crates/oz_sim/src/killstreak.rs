@@ -8,7 +8,13 @@
 //! | 4 | Supply drop | your whole team healed and rearmed, gear included |
 //! | 5 | Airstrike | a jet drops a line of bombs where you are aiming |
 //! | 7 | Attack drone | hovers over you for 30 s and shoots enemies it can see |
+//! | 5 | Drone strike | a kamikaze drone dives on the enemy nearest where you aim |
+//! | 6 | Sentry gun | a turret set down in front of you that guards the spot for 45 s |
+//! | 8 | EMP | the enemy team's radar and minimap go dark for 20 s; their aircraft and sentries drop |
 //! | 9 | Artillery barrage | shells rain down around where you aim for several seconds |
+//! | 10 | Advanced UAV | 40 s of every enemy on your radar - Ghosts too - from too high for most guns |
+//!
+//! The Hardline perk takes one kill off every streak.
 //!
 //! Earned rewards go on a stack of at most three; calling one in (a key /
 //! button that sends [`PlayerCommand::UseStreak`]) uses the newest first.
@@ -33,6 +39,10 @@ pub mod reward {
     pub const AIRSTRIKE: u8 = 3;
     pub const DRONE: u8 = 4;
     pub const ARTILLERY: u8 = 5;
+    pub const DRONE_STRIKE: u8 = 6;
+    pub const SENTRY: u8 = 7;
+    pub const EMP: u8 = 8;
+    pub const ADVANCED_UAV: u8 = 9;
 }
 
 pub struct StreakDef {
@@ -43,12 +53,16 @@ pub struct StreakDef {
 }
 
 /// Every reward, cheapest first.
-pub const STREAKS: [StreakDef; 5] = [
-    StreakDef { kills: 3, id: reward::UAV, name: "RECON UAV", blurb: "Every enemy shows on your team's radar for 30 seconds" },
+pub const STREAKS: [StreakDef; 9] = [
+    StreakDef { kills: 3, id: reward::UAV, name: "RECON UAV", blurb: "Every enemy shows on your team's radar for 30 seconds (Ghosts excepted)" },
     StreakDef { kills: 4, id: reward::SUPPLY, name: "SUPPLY DROP", blurb: "Heals and rearms your whole team, gear included" },
     StreakDef { kills: 5, id: reward::AIRSTRIKE, name: "AIRSTRIKE", blurb: "A jet drops a line of bombs where you aim" },
+    StreakDef { kills: 5, id: reward::DRONE_STRIKE, name: "DRONE STRIKE", blurb: "A kamikaze drone dives on the enemy nearest where you aim" },
+    StreakDef { kills: 6, id: reward::SENTRY, name: "SENTRY GUN", blurb: "A turret in front of you guards the spot for 45 seconds" },
     StreakDef { kills: 7, id: reward::DRONE, name: "ATTACK DRONE", blurb: "Hovers over you for 30 seconds, shooting enemies it sees" },
+    StreakDef { kills: 8, id: reward::EMP, name: "EMP", blurb: "Enemy radar and minimap go dark for 20 seconds; their aircraft and sentries drop" },
     StreakDef { kills: 9, id: reward::ARTILLERY, name: "ARTILLERY BARRAGE", blurb: "Shells rain down around where you aim" },
+    StreakDef { kills: 10, id: reward::ADVANCED_UAV, name: "ADVANCED UAV", blurb: "40 seconds of every enemy on radar - Ghosts too - flying too high for most guns" },
 ];
 
 /// The three streaks a class carries when it does not choose.
@@ -63,6 +77,16 @@ pub fn def(id: u8) -> Option<&'static StreakDef> {
 
 pub fn name(id: u8) -> &'static str {
     def(id).map_or("REWARD", |s| s.name)
+}
+
+/// Kills in a row a streak takes; Hardline takes one off (never below two).
+pub fn kills_needed(def: &StreakDef, hardline: bool) -> u16 {
+    if hardline { def.kills.saturating_sub(1).max(2) } else { def.kills }
+}
+
+/// Does this player carry the Hardline perk?
+pub fn hardline(content: &oz_core::content::Catalog, player: &Player) -> bool {
+    matches!(crate::player::perk(content, player), Some(oz_core::content::PerkEffect::Hardline))
 }
 
 /// A class's chosen streaks, made valid: known ids, no repeats, at least one.
@@ -119,6 +143,26 @@ pub struct Aircraft {
 pub struct Recon {
     pub life: f32,
     pub angle: f32,
+    /// The advanced UAV: flies higher, sees everyone (and shrugs off an EMP).
+    pub advanced: bool,
+}
+
+/// A killstreak sentry gun: stands where it was set down and shoots enemies it can see.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Sentry {
+    pub owner: u8,
+    pub team: u8,
+    pub life: f32,
+    pub cooldown: f32,
+}
+
+/// A drone strike: steers its projectile onto `target` (a player id).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Homing {
+    pub target: u8,
+    pub speed: f32,
+    /// Radians per second it can turn.
+    pub turn: f32,
 }
 
 const JET_HP: f32 = 260.0;
@@ -141,6 +185,21 @@ const BOMB_SPACING: f32 = 3.6;
 const BOMB_DAMAGE: f32 = 170.0;
 const BOMB_RADIUS: f32 = 9.0;
 const DRONE_SECONDS: f32 = 30.0;
+pub const SENTRY_SECONDS: f32 = 45.0;
+const SENTRY_HP: f32 = 200.0;
+pub const SENTRY_RANGE: f32 = 38.0;
+const SENTRY_DAMAGE: f32 = 12.0;
+const SENTRY_RATE: f32 = 0.3;
+/// The sentry's gun sits this high above its feet (also the centre of its hit sphere).
+pub const SENTRY_HEIGHT: f32 = 0.9;
+pub const EMP_SECONDS: f32 = 20.0;
+pub const SWEEP_SECONDS: f32 = 40.0;
+const SWEEP_HP: f32 = 520.0;
+const SWEEP_HEIGHT: f32 = 140.0;
+const STRIKE_SPEED: f32 = 34.0;
+const STRIKE_DAMAGE: f32 = 200.0;
+const STRIKE_SPLASH: f32 = 6.0;
+const STRIKE_HEIGHT: f32 = 45.0;
 const DRONE_RANGE: f32 = 45.0;
 const DRONE_DAMAGE: f32 = 13.0;
 const DRONE_RATE: f32 = 0.32;
@@ -263,7 +322,7 @@ pub fn run_supply(
             health.hp = health.max;
             mate.burn_time = 0.0;
             crate::weapons::top_up(&mut arsenal, &content.weapons);
-            mate.gear_left = content.gear.get(mate.gear as usize).map_or(mate.gear_left, |g| g.count.max(mate.gear_left));
+            mate.gear_left = crate::player::gear_count(&content, &mate).max(mate.gear_left);
             fx.write(FxEvent::tell(mate.id, "RESUPPLIED"));
             fx.write(FxEvent::Sound { sfx: Sfx::Buy, at: Some(at) });
         }
@@ -281,10 +340,12 @@ pub fn use_streaks(
     mut ids: ResMut<NetIds>,
     mut commands: Commands,
     mut players: Query<(&mut Player, &Transform, &PlayerInput, &mut Health, &mut Arsenal)>,
-    _content: Res<Content>,
+    mut aircraft: Query<(&mut Aircraft, Option<&Recon>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     for order in orders.read() {
+        // Who is where, for a drone strike to pick its target: (team, alive, id, chest).
+        let targets: Vec<(u8, bool, u8, Vec3)> = players.iter().map(|(p, t, _, h, _)| (p.team, h.alive() && p.protect <= 0.0, p.id, t.translation + Vec3::Y * 1.1)).collect();
         if order.command != PlayerCommand::UseStreak {
             continue;
         }
@@ -308,17 +369,69 @@ pub fn use_streaks(
             (eye + dir * reach, Vec3::new(dir.x, 0.0, dir.z).normalize_or(Vec3::NEG_Z))
         };
         match def.id {
-            reward::UAV => {
-                state.uav[(team as usize).min(1)] = UAV_SECONDS;
+            reward::UAV | reward::ADVANCED_UAV => {
+                let advanced = def.id == reward::ADVANCED_UAV;
+                let (seconds, height, hp) = if advanced { (SWEEP_SECONDS, SWEEP_HEIGHT, SWEEP_HP) } else { (UAV_SECONDS, RECON_HEIGHT, RECON_HP) };
+                if advanced {
+                    state.sweep[(team as usize).min(1)] = seconds;
+                } else {
+                    state.uav[(team as usize).min(1)] = seconds;
+                }
                 let angle = transform.translation.x.atan2(transform.translation.z);
-                let at = Vec3::new(angle.sin() * RECON_ORBIT, RECON_HEIGHT, angle.cos() * RECON_ORBIT);
+                let at = Vec3::new(angle.sin() * RECON_ORBIT, height, angle.cos() * RECON_ORBIT);
                 commands.spawn((
                     MatchEntity,
                     ids.next(),
-                    Recon { life: UAV_SECONDS, angle },
-                    Aircraft { look: oz_core::content::ShotLook::RadarPlane, hp: RECON_HP, team, owner: id, radius: 4.0, hit_by: None },
+                    Recon { life: seconds, angle, advanced },
+                    Aircraft { look: oz_core::content::ShotLook::RadarPlane, hp, team, owner: id, radius: 4.0, hit_by: None },
                     Transform::from_translation(at),
                 ));
+            }
+            reward::EMP => {
+                // The other team goes dark; whatever they have up in the air (or set down) falls.
+                let enemy = 1 - (team as usize).min(1);
+                state.emp[enemy] = EMP_SECONDS;
+                state.uav[enemy] = 0.0;
+                for (mut craft, recon) in &mut aircraft {
+                    if craft.team != team && !recon.is_some_and(|r| r.advanced) {
+                        craft.hp = 0.0;
+                        craft.hit_by = Some(id);
+                    }
+                }
+                fx.write(FxEvent::Sound { sfx: Sfx::Alarm, at: None });
+            }
+            reward::SENTRY => {
+                // Set down a couple of steps ahead (or at your feet if there is no room there).
+                let forward = Vec3::new(-input.yaw.sin(), 0.0, -input.yaw.cos());
+                let feet = transform.translation;
+                let blocked = statics.raycast(feet + Vec3::Y * 0.6, forward, 1.9).is_some();
+                let spot = if blocked { feet } else { feet + forward * 1.6 };
+                let ground = map.height(spot.x, spot.z).max(statics.support(spot.x, spot.z, feet.y + 0.5));
+                let at = Vec3::new(spot.x, ground + SENTRY_HEIGHT, spot.z);
+                commands.spawn((
+                    MatchEntity,
+                    ids.next(),
+                    Sentry { owner: id, team, life: SENTRY_SECONDS, cooldown: 1.2 },
+                    Aircraft { look: oz_core::content::ShotLook::Sentry, hp: SENTRY_HP, team, owner: id, radius: 0.8, hit_by: None },
+                    Transform::from_translation(at).looking_to(forward, Vec3::Y),
+                ));
+                fx.write(FxEvent::tell(id, "SENTRY GUN DEPLOYED"));
+            }
+            reward::DRONE_STRIKE => {
+                // Comes down out of the sky over where you aim and steers itself onto the
+                // enemy nearest that spot (or the nearest one to you, if nobody is near it).
+                let (at, flat) = aim(transform, input);
+                let me = transform.translation;
+                let score = |p: Vec3| p.distance(at).min(25.0) * 4.0 + p.distance(me) * 0.05;
+                let target = targets.iter().filter(|t| t.0 != team && t.1).min_by(|a, b| score(a.3).total_cmp(&score(b.3))).map(|t| t.2);
+                let from = Vec3::new(at.x, at.y.max(me.y) + STRIKE_HEIGHT, at.z) - flat * 12.0;
+                let velocity = (at - from).normalize_or(Vec3::NEG_Y) * STRIKE_SPEED;
+                let shot = crate::combat::Projectile { velocity, gravity: 0.0, damage: STRIKE_DAMAGE, splash: STRIKE_SPLASH, look: oz_core::content::ShotLook::Drone, owner: Some(id), team, life: 9.0, effect: crate::combat::Impact::Blast };
+                let entity = commands.spawn((MatchEntity, ids.next(), shot, Transform::from_translation(from).looking_to(velocity, Vec3::Y))).id();
+                if let Some(target) = target {
+                    commands.entity(entity).insert(Homing { target, speed: STRIKE_SPEED, turn: 2.6 });
+                }
+                fx.write(FxEvent::Flyby { from: from + Vec3::Y * 20.0, to: at });
             }
             reward::SUPPLY => {
                 // A cargo plane flies over and drops a crate on a parachute a few steps
@@ -376,16 +489,18 @@ pub fn run_streaks(
     statics: Res<Statics>,
     mut state: ResMut<MatchState>,
     mut commands: Commands,
-    mut strikes: Query<(Entity, &mut Airstrike, Option<&mut Transform>), (Without<Drone>, Without<Player>, Without<Recon>)>,
-    mut recons: Query<(Entity, &mut Recon, &mut Transform), (Without<Drone>, Without<Player>, Without<Airstrike>)>,
+    mut strikes: Query<(Entity, &mut Airstrike, Option<&mut Transform>), (Without<Drone>, Without<Player>, Without<Recon>, Without<Sentry>)>,
+    mut recons: Query<(Entity, &mut Recon, &mut Transform), (Without<Drone>, Without<Player>, Without<Airstrike>, Without<Sentry>)>,
     mut ids: ResMut<NetIds>,
-    mut drones: Query<(Entity, &mut Drone, &mut Transform), (Without<Player>, Without<Airstrike>, Without<Recon>)>,
-    mut players: Query<(&Transform, &mut Health, &mut Player), (Without<crate::combat::Projectile>, Without<crate::structures::Structure>, Without<Drone>)>,
-    smokes: Query<(&Transform, &SmokeCloud), (Without<Player>, Without<Drone>, Without<Airstrike>, Without<Recon>)>,
+    mut drones: Query<(Entity, &mut Drone, &mut Transform), (Without<Player>, Without<Airstrike>, Without<Recon>, Without<Sentry>)>,
+    mut sentries: Query<(Entity, &mut Sentry, &mut Transform), (Without<Player>, Without<Airstrike>, Without<Recon>, Without<Drone>)>,
+    mut players: Query<(&Transform, &mut Health, &mut Player), (Without<crate::combat::Projectile>, Without<crate::structures::Structure>, Without<Drone>, Without<Sentry>)>,
+    smokes: Query<(&Transform, &SmokeCloud), (Without<Player>, Without<Drone>, Without<Airstrike>, Without<Recon>, Without<Sentry>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let dt = sim_dt(&time);
-    for uav in &mut state.uav {
+    let state_ref = &mut *state;
+    for uav in state_ref.uav.iter_mut().chain(state_ref.sweep.iter_mut()).chain(state_ref.emp.iter_mut()) {
         *uav = (*uav - dt).max(0.0);
     }
     let name_of = |state: &MatchState, id: u8| state.roster.iter().find(|r| r.id == id).map_or(String::new(), |r| r.name.clone());
@@ -441,12 +556,49 @@ pub fn run_streaks(
     for (entity, mut recon, mut transform) in &mut recons {
         recon.life -= dt;
         recon.angle += dt * 0.22;
-        let at = Vec3::new(recon.angle.sin() * RECON_ORBIT, RECON_HEIGHT, recon.angle.cos() * RECON_ORBIT);
+        let height = if recon.advanced { SWEEP_HEIGHT } else { RECON_HEIGHT };
+        let at = Vec3::new(recon.angle.sin() * RECON_ORBIT, height, recon.angle.cos() * RECON_ORBIT);
         let heading = Vec3::new(recon.angle.cos(), 0.0, -recon.angle.sin());
         transform.translation = at;
         transform.look_to(heading, Vec3::Y);
         if recon.life <= 0.0 || state.phase != Phase::Live {
             commands.entity(entity).despawn();
+        }
+    }
+
+    // Sentry guns: turn to the nearest enemy in sight and fire short bursts.
+    for (entity, mut sentry, mut transform) in &mut sentries {
+        sentry.life -= dt;
+        if sentry.life <= 0.0 || state.phase != Phase::Live {
+            fx.write(FxEvent::Explosion { at: transform.translation, radius: 1.5 });
+            commands.entity(entity).despawn();
+            continue;
+        }
+        sentry.cooldown -= dt;
+        let at = transform.translation + Vec3::Y * 0.25;
+        let target = players
+            .iter()
+            .filter(|(_, h, p)| p.team != sentry.team && h.alive() && p.protect <= 0.0)
+            .map(|(t, _, p)| (p.id, t.translation + Vec3::Y * 1.1))
+            .filter(|(_, chest)| {
+                let span = *chest - at;
+                let d = span.length();
+                d < SENTRY_RANGE && statics.raycast(at, span / d.max(1e-3), d).is_none() && map.raycast(at, span / d.max(1e-3), d) >= d - 0.3 && !smoke_between(smokes, at, *chest)
+            })
+            .min_by(|a, b| a.1.distance_squared(at).total_cmp(&b.1.distance_squared(at)));
+        let Some((victim, chest)) = target else {
+            continue;
+        };
+        let level = transform.translation.y;
+        transform.look_at(Vec3::new(chest.x, level, chest.z), Vec3::Y);
+        if sentry.cooldown > 0.0 {
+            continue;
+        }
+        sentry.cooldown = SENTRY_RATE;
+        fx.write(FxEvent::Shot { by: DRONE_SHOOTER, sound: 1, from: at, to: chest, beam: false, tracer: oz_core::model::Paint::Gold, quiet: false, local: false });
+        let name = name_of(&state, sentry.owner);
+        if let Some((_, mut health, mut player)) = players.iter_mut().find(|(_, _, p)| p.id == victim) {
+            damage_player(&mut health, &mut player, SENTRY_DAMAGE, Some((&name, sentry.team, sentry.owner)), &mut state, &mut fx);
         }
     }
 
@@ -493,7 +645,33 @@ pub fn run_streaks(
     }
 }
 
-/// Authority: bots call in what they earn - air support while they are in a firefight.
+/// Authority: steers drone strikes onto their targets (straight on once a target is gone).
+pub fn steer_strikes(time: Res<Time>, mut shots: Query<(&mut crate::combat::Projectile, &Transform, &Homing)>, players: Query<(&Player, &Transform, &Health)>) {
+    let dt = sim_dt(&time);
+    for (mut shot, transform, homing) in &mut shots {
+        let Some(chest) = players.iter().find(|(p, _, h)| p.id == homing.target && h.alive()).map(|(_, t, _)| t.translation + Vec3::Y * 1.0) else {
+            continue;
+        };
+        shot.velocity = steer(shot.velocity, chest - transform.translation, homing.speed, homing.turn * dt);
+    }
+}
+
+/// Turns `velocity` toward `to` by at most `max_turn` radians, at `speed`.
+pub fn steer(velocity: Vec3, to: Vec3, speed: f32, max_turn: f32) -> Vec3 {
+    let now = velocity.normalize_or(Vec3::NEG_Y);
+    let want = to.normalize_or(now);
+    let angle = now.angle_between(want);
+    let dir = if angle <= max_turn || angle < 1e-4 {
+        want
+    } else {
+        let axis = now.cross(want).normalize_or(Vec3::X);
+        Quat::from_axis_angle(axis, max_turn) * now
+    };
+    dir * speed
+}
+
+/// Authority: bots call in what they earn - strikes while they are in a firefight, the rest
+/// as soon as they have it (a sentry where they stand, an EMP or a radar plane any time).
 pub fn bots_call_in(state: Res<MatchState>, bots: Query<(&Player, &PlayerInput, &Health), With<crate::bots::Bot>>, mut orders: EventWriter<CommandEvent>) {
     if state.phase != Phase::Live {
         return;
@@ -503,10 +681,22 @@ pub fn bots_call_in(state: Res<MatchState>, bots: Query<(&Player, &PlayerInput, 
             continue;
         };
         let fighting = input.held(crate::player::buttons::FIRE);
-        if health.alive() && (!matches!(def.id, reward::AIRSTRIKE | reward::ARTILLERY) || fighting) {
+        if health.alive() && (!matches!(def.id, reward::AIRSTRIKE | reward::ARTILLERY | reward::DRONE_STRIKE) || fighting) {
             orders.write(CommandEvent { player: player.id, command: PlayerCommand::UseStreak });
         }
     }
+}
+
+/// A bot's killstreak picks: three different ones, cheapest first.
+pub fn bot_streaks(rng: &mut oz_core::rng::Rng) -> [u8; 3] {
+    let mut ids: Vec<u8> = STREAKS.iter().map(|s| s.id).collect();
+    let mut out = [0u8; 3];
+    for slot in &mut out {
+        let pick = ids.remove(rng.below(ids.len()));
+        *slot = pick;
+    }
+    out.sort_by_key(|id| def(*id).map_or(0, |d| d.kills));
+    out
 }
 
 #[cfg(test)]
@@ -539,7 +729,7 @@ pub fn shoot_down(
     mut commands: Commands,
     mut state: ResMut<MatchState>,
     shots: Query<(Entity, &Transform, &crate::combat::Projectile), Without<Aircraft>>,
-    mut aircraft: Query<(Entity, &Transform, &mut Aircraft, Has<Recon>)>,
+    mut aircraft: Query<(Entity, &Transform, &mut Aircraft, Option<&Recon>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     use oz_core::content::ShotLook;
@@ -563,14 +753,18 @@ pub fn shoot_down(
         }
         let what = match craft.look {
             ShotLook::Jet => "AIRSTRIKE JET",
+            ShotLook::RadarPlane if recon.is_some_and(|r| r.advanced) => "ADVANCED UAV",
             ShotLook::RadarPlane => "RADAR PLANE",
+            ShotLook::Sentry => "SENTRY GUN",
             _ => "ATTACK DRONE",
         };
         let by = craft.hit_by.and_then(|id| state.roster.iter().find(|r| r.id == id)).map_or(String::new(), |r| format!("{} SHOT DOWN ", r.name));
         fx.write(FxEvent::notice(format!("{by}{what}")));
-        fx.write(FxEvent::Explosion { at: plane.translation, radius: if craft.look == ShotLook::Drone { 3.0 } else { 7.0 } });
-        if recon {
-            state.uav[(craft.team as usize).min(1)] = 0.0;
+        fx.write(FxEvent::Explosion { at: plane.translation, radius: if matches!(craft.look, ShotLook::Drone | ShotLook::Sentry) { 3.0 } else { 7.0 } });
+        match recon {
+            Some(r) if r.advanced => state.sweep[(craft.team as usize).min(1)] = 0.0,
+            Some(_) => state.uav[(craft.team as usize).min(1)] = 0.0,
+            None => {}
         }
         commands.entity(entity).despawn();
     }

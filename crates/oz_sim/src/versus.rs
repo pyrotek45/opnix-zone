@@ -301,7 +301,9 @@ pub fn update_roster(
             if pvp {
                 player.streak += 1;
                 let chosen = player.streaks;
-                if let Some(def) = crate::killstreak::STREAKS.iter().find(|s| s.kills == player.streak && chosen.contains(&s.id)) {
+                let hardline = crate::killstreak::hardline(&content, &player);
+                let streak = player.streak;
+                for def in crate::killstreak::STREAKS.iter().filter(|s| crate::killstreak::kills_needed(s, hardline) == streak && chosen.contains(&s.id)) {
                     crate::killstreak::push(&mut player.rewards, def.id);
                     fx.write(FxEvent::Streak { player: id, reward: def.id });
                 }
@@ -331,6 +333,7 @@ pub fn update_roster(
             ping: p.ping,
             weapon: input.weapon,
             parts: arsenal.weapons.get(input.weapon as usize).map_or([0; oz_core::arsenal::SLOT_COUNT], |w| w.equipped),
+            perk: p.perk,
         })
         .collect();
     roster.sort_by_key(|entry| (entry.team, entry.bot, entry.id));

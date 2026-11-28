@@ -233,7 +233,7 @@ fn update(
     hands: Res<Hands>,
     steady: Res<Steady>,
     view: Res<crate::view::ViewState>,
-    (map, statics): (Res<Map>, Res<Statics>),
+    (map, statics, content): (Res<Map>, Res<Statics>, Res<oz_sim::session::Content>),
     players: Query<(&Player, &Transform, &PlayerInput, &Health, &Mover), With<LocalPlayer>>,
     mut panel: Query<&mut Visibility, (With<StreakPanel>, Without<HandMeter>)>,
     mut slots: Query<(&StreakSlot, &Children, &mut BackgroundColor, &mut BorderColor)>,
@@ -290,11 +290,25 @@ fn update(
                 border.0 = edge;
             }
         }
-        let next = player.streaks.iter().filter_map(|id| killstreak::def(*id)).find(|d| d.kills > player.streak);
-        let progress = match next {
-            Some(def) => format!("STREAK {}   NEXT: {} IN {}", player.streak, def.name, def.kills - player.streak),
+        let hardline = killstreak::hardline(&content, player);
+        let next = player.streaks.iter().filter_map(|id| killstreak::def(*id)).filter(|d| killstreak::kills_needed(d, hardline) > player.streak).min_by_key(|d| killstreak::kills_needed(d, hardline));
+        let mut progress = match next {
+            Some(def) => format!("STREAK {}   NEXT: {} IN {}", player.streak, def.name, killstreak::kills_needed(def, hardline) - player.streak),
             None => format!("STREAK {}", player.streak),
         };
+        // What the eyes in the sky are doing for (or against) your team right now.
+        let (ours, theirs) = ((player.team as usize).min(1), 1 - (player.team as usize).min(1));
+        for (seconds, what) in [
+            (state.emp[ours], "EMP - RADAR DOWN"),
+            (state.sweep[ours], "ADVANCED UAV"),
+            (state.uav[ours], "UAV"),
+            (state.emp[theirs], "ENEMY JAMMED"),
+            (state.sweep[theirs], "ENEMY ADVANCED UAV"),
+        ] {
+            if seconds > 0.0 {
+                progress.push_str(&format!("\n{what}  {:.0}s", seconds.ceil()));
+            }
+        }
         if let Ok(mut text) = streak_text.single_mut() {
             set(&mut text, progress);
         }
@@ -449,13 +463,17 @@ fn minimap(
     mut commands: Commands,
     map: Res<Map>,
     mut images: ResMut<Assets<Image>>,
-    players: Query<(&Transform, &PlayerInput), (With<LocalPlayer>, Without<MinimapPivot>, Without<RadarArrow>)>,
+    players: Query<(&Transform, &PlayerInput, &Player), (With<LocalPlayer>, Without<MinimapPivot>, Without<RadarArrow>)>,
     pivots: Query<(Entity, Option<&Children>), With<MinimapPivot>>,
     mut arrows: Query<&mut Transform, (With<RadarArrow>, Without<LocalPlayer>)>,
     mut layers: Query<(&MinimapImage, &mut Node)>,
+    (state, rules): (Res<MatchState>, Res<Rules>),
 ) {
     let Ok((pivot, children)) = pivots.single() else { return };
-    let Ok((me, input)) = players.single() else { return };
+    let Ok((me, input, player)) = players.single() else { return };
+    // An enemy EMP blanks the map under the radar too.
+    let jammed = rules.pvp && state.emp[(player.team as usize).min(1)] > 0.0;
+    let shown = if jammed { Display::None } else { Display::Flex };
     let scale = (crate::hud::RADAR / 2.0 - 4.0) / crate::hud::RADAR_RANGE;
     if children.is_none_or(|c| c.is_empty()) {
         let (image, extent) = bake_minimap(&map.0);
@@ -473,6 +491,9 @@ fn minimap(
         arrow.rotation = Quat::from_rotation_z(-input.yaw);
     }
     for (layer, mut node) in &mut layers {
+        if node.display != shown {
+            node.display = shown;
+        }
         let left = Val::Px(-(me.translation.x + layer.extent) * scale);
         let top = Val::Px(-(me.translation.z + layer.extent) * scale);
         if node.left != left || node.top != top {

@@ -613,6 +613,9 @@ pub struct World {
     thresholds: Vec<(Vec3, bool)>,
     /// Building sites chosen before the ground is shaped, (centre, radius): the ground stays flat there.
     flats: Vec<(Vec2, f32)>,
+    /// Indices into `blocks` of indoor furniture (beds, sofas, counters, hay, desks...): the
+    /// pieces [`World::clear_doorways`] may take away when they crowd a doorway.
+    furniture: Vec<std::ops::Range<usize>>,
     side: usize,
     heights: Vec<f32>,
 }
@@ -626,6 +629,10 @@ pub const WINDOW_SILL: f32 = 1.15;
 pub const DOOR_WIDTH: f32 = 1.7;
 /// Doorway height.
 pub const DOOR_HEIGHT: f32 = 2.35;
+/// How far out from a doorway, on both sides, furniture is kept clear (see `clear_doorways`).
+pub const DOOR_KEEP_DEPTH: f32 = 1.5;
+/// How far past each side of a doorway that clear zone reaches.
+pub const DOOR_KEEP_SIDE: f32 = 0.35;
 /// Storey height of every building: eleven stair steps of 0.29 m.
 pub const STOREY: f32 = 3.2;
 /// How deep a player may wade before the sea pushes back.
@@ -684,6 +691,7 @@ impl World {
             thresholds: Vec::new(),
             paving: Vec::new(),
             flats: Vec::new(),
+            furniture: Vec::new(),
         };
         if let Some(theme) = world.theme {
             world.style = theme.style();
@@ -705,6 +713,7 @@ impl World {
         }
         world.pave();
         world.tidy_clutter();
+        world.clear_doorways();
         world.check_access();
         world
     }
@@ -1154,6 +1163,85 @@ impl World {
         });
     }
 
+    /// Everything added to `blocks` since index `from` is furniture.
+    pub(crate) fn mark_furniture(&mut self, from: usize) {
+        if self.blocks.len() > from {
+            self.furniture.push(from..self.blocks.len());
+        }
+    }
+
+    /// Keeps every doorway walkable: furniture inside a keep-out zone in front of a door, on
+    /// either side and as wide as the opening plus a body's width, is taken away (with the
+    /// rug or cushion drawn on it). Walls, floors, stairs and steps are never touched; a door
+    /// still blocked by those is dropped by [`World::check_access`].
+    fn clear_doorways(&mut self) {
+        if self.furniture.is_empty() {
+            return;
+        }
+        // Keep-out boxes: (min, max) for each door, both sides at once.
+        let zones: Vec<(Vec3, Vec3)> = self
+            .doors
+            .iter()
+            .map(|d| {
+                let (along, across) = if d.along_x { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+                let half = along * (d.width * 0.5 + DOOR_KEEP_SIDE) + across * DOOR_KEEP_DEPTH;
+                let lo = d.center - half;
+                let hi = d.center + half;
+                (Vec3::new(lo.x.min(hi.x), d.center.y + 0.08, lo.z.min(hi.z)), Vec3::new(lo.x.max(hi.x), d.center.y + 2.0, lo.z.max(hi.z)))
+            })
+            .collect();
+        let hits = |b: &Aabb| {
+            let (lo, hi) = (b.min(), b.max());
+            zones.iter().any(|(zl, zh)| lo.x < zh.x && hi.x > zl.x && lo.y < zh.y && hi.y > zl.y && lo.z < zh.z && hi.z > zl.z)
+        };
+        let mut gone = vec![false; self.blocks.len()];
+        for range in &self.furniture {
+            let crowding: Vec<Aabb> = range.clone().filter(|i| self.blocks[*i].solid && hits(&self.blocks[*i].aabb)).map(|i| self.blocks[i].aabb).collect();
+            for i in range.clone() {
+                let b = &self.blocks[i];
+                // The piece itself, and any trim sitting on or in it (a counter top, a mattress).
+                let on_it = crowding.iter().any(|c| {
+                    let (lo, hi, cl, ch) = (b.aabb.min(), b.aabb.max(), c.min() - Vec3::splat(0.06), c.max() + Vec3::splat(0.06));
+                    lo.x >= cl.x && hi.x <= ch.x && lo.z >= cl.z && hi.z <= ch.z && lo.y >= cl.y && hi.y <= ch.y + 0.1
+                });
+                if (b.solid && hits(&b.aabb)) || (!b.solid && (on_it || hits(&b.aabb) && b.aabb.top() > b.aabb.bottom() + 0.05)) {
+                    gone[i] = true;
+                }
+            }
+            // Whatever sat on a piece that went (the top bales of a hay stack) goes with it.
+            loop {
+                let mut more = false;
+                for i in range.clone() {
+                    if gone[i] {
+                        continue;
+                    }
+                    let b = self.blocks[i].aabb;
+                    let resting = range.clone().filter(|j| gone[*j]).any(|j| {
+                        let under = self.blocks[j].aabb;
+                        (b.bottom() - under.top()).abs() < 0.08 && (b.center.x - under.center.x).abs() < b.half.x + under.half.x && (b.center.z - under.center.z).abs() < b.half.z + under.half.z
+                    });
+                    if resting {
+                        gone[i] = true;
+                        more = true;
+                    }
+                }
+                if !more {
+                    break;
+                }
+            }
+        }
+        if !gone.iter().any(|g| *g) {
+            return;
+        }
+        let mut i = 0;
+        self.blocks.retain(|_| {
+            let keep = !gone[i];
+            i += 1;
+            keep
+        });
+        self.furniture.clear();
+    }
+
     fn occupied(&self, p: Vec2, margin: f32) -> bool {
         self.solids().any(|b| b.touches(p.x, p.y, margin))
     }
@@ -1409,17 +1497,27 @@ impl World {
             // Something to hide behind up here.
             if plan.furnish != Furnish::Bare {
                 let p = Vec2::new(rng.range(x0 + 1.5, x1 - 1.5), c.y + rng.range(-0.8, 0.8));
+                let furnished = self.blocks.len();
                 if plan.furnish == Furnish::Home && hz > 3.2 {
                     // A bed (low cover) and a wardrobe against the wall.
                     self.bed(Vec2::new(p.x, c.y), rng.chance(0.5), top);
                 } else {
                     self.solid(Aabb::span(Vec3::new(p.x - 0.55, top, p.y - 0.55), Vec3::new(p.x + 0.55, top + 1.0, p.y + 0.55)), Paint::Teal);
                 }
+                self.mark_furniture(furnished);
             }
         }
 
         // Ground-floor rooms: a partition with a doorway, clear of the stairs.
-        let partition = x0 + T + 0.4 + span + 1.3;
+        // Never across the south (or north) doorway: slide it along until it clears the door.
+        let mut partition = x0 + T + 0.4 + span + 1.3;
+        for _ in 0..6 {
+            let crosses = [0, 3].iter().any(|side: &usize| doors[*side].is_some_and(|(center, width)| (partition + 0.1 - center).abs() < width * 0.5 + 0.45));
+            if !crosses {
+                break;
+            }
+            partition += 0.6;
+        }
         if floors > 1 && x1 - partition > 2.6 && plan.furnish != Furnish::Bare {
             let length = 2.0 * hz - 2.0 * T - LANE - 0.1;
             let door = Self::openings(rng, length, true, false);
@@ -1428,6 +1526,7 @@ impl World {
 
         // Furniture on the ground floor, away from the doors and stairs.
         let room = (x0 + 1.6, x1 - 1.6, z0 + 1.6, z1 - 1.6 - if floors > 1 { 1.4 } else { 0.0 });
+        let furnished = self.blocks.len();
         match plan.furnish {
             Furnish::Bare => {}
             Furnish::Home => self.furnish_home(rng, room, g, (partition, floors > 1)),
@@ -1443,6 +1542,7 @@ impl World {
                 }
             }
         }
+        self.mark_furniture(furnished);
 
         // Detailing: a dark plinth, corner pilasters, a drainpipe, the odd air-conditioning unit.
         let o = 0.06;
@@ -2029,6 +2129,118 @@ mod tests {
             assert!(!w.doors.is_empty() && !w.windows.is_empty() && !w.grass.is_empty(), "{what}");
             // Every doorway is a doorway: wide enough, tall enough.
             assert!(w.doors.iter().all(|d| d.width >= 1.6 && d.width <= DOOR_WIDTH + 0.05 && d.height >= 2.3), "{what}: odd doors");
+        }
+    }
+
+    /// Every door on `w` has clear floor a body wide on both sides of it, and from each side a
+    /// robot can walk out (to open sky, or well away): no room is sealed off by furniture.
+    fn doors_are_walkable(w: &World, what: &str) {
+        let statics = w.statics();
+        let radius = 0.28;
+        let floor = |x: f32, z: f32, feet: f32| w.height(x, z).max(statics.support(x, z, feet));
+        let covered = |x: f32, z: f32, feet: f32| {
+            let mut over = false;
+            statics.near(x, z, 0.0, |_, b| over |= b.touches(x, z, 0.0) && b.bottom() > feet + 1.0);
+            over || w.ramps.iter().any(|r| r.touches(x, z, 0.0) && r.height(x, z) > feet + 1.0)
+        };
+        for (k, d) in w.doors.iter().enumerate() {
+            let (along, across) = if d.along_x { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+            for side in [-1.0f32, 1.0] {
+                // Clear floor right in front of the doorway: room for a whole body (0.6 m wide)
+                // square in the opening, and a step further out, somewhere across the opening.
+                for depth in [0.45, 0.9] {
+                    let spots = [0.0, -0.25, 0.25].map(|u| d.center + across * side * depth + along * u);
+                    let clear = |p: &Vec3| !statics.blocked(p.x, p.z, floor(p.x, p.z, d.center.y + 0.3), 1.5, 0.3);
+                    if !spots.iter().any(clear) {
+                        let p = spots[0];
+                        let feet = floor(p.x, p.z, d.center.y + 0.3);
+                        let mut boxes = Vec::new();
+                        statics.near(p.x, p.z, 0.3, |_, b| {
+                            if b.touches(p.x, p.z, 0.3) && b.bottom() < feet + 1.5 && b.top() > feet + crate::collide::STEP {
+                                let paint = w.blocks.iter().find(|k| k.solid && k.aabb.center.distance(b.center) < 1e-3).map(|k| k.paint);
+                                boxes.push(format!("{:.2}..{:.2} {paint:?}", b.min(), b.max()));
+                            }
+                        });
+                        panic!("{what}: door {k} at {:?} (along x {}) is blocked {depth} m out on its {side} side (at {p:?}, feet {feet:.2}) by {boxes:?}", d.center, d.along_x);
+                    }
+                }
+                // And somewhere to go from there.
+                let start = d.center + across * side * 0.6;
+                let cell = 0.3;
+                // Cells counted from the start, so neighbours never round onto the same key.
+                let key = |p: Vec3| (((p.x - start.x) / cell).round() as i32, ((p.z - start.z) / cell).round() as i32, (p.y * 2.0).round() as i32);
+                let feet = floor(start.x, start.z, d.center.y + 0.3);
+                let mut seen = std::collections::HashSet::new();
+                let mut queue = std::collections::VecDeque::new();
+                let first = Vec3::new(start.x, feet, start.z);
+                seen.insert(key(first));
+                queue.push_back(first);
+                let mut out = false;
+                while let Some(p) = queue.pop_front() {
+                    if !covered(p.x, p.z, p.y) || Vec2::new(p.x - start.x, p.z - start.z).length() > 22.0 || seen.len() > 20_000 {
+                        out = true;
+                        break;
+                    }
+                    for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                        let (x, z) = (p.x + dx * cell, p.z + dz * cell);
+                        if !w.in_bounds(x, z) {
+                            continue;
+                        }
+                        let mut f = floor(x, z, p.y);
+                        if statics.blocked(x, z, f, 1.2, radius) {
+                            // A robot vaults anything up to 1.4 m (a low wall, a fence, a sill).
+                            f = floor(x, z, p.y + 1.4 - crate::collide::STEP);
+                            // (or a window sill), going over it crouched: 0.85 m of room above the top.
+                            if f > p.y + 1.4 || statics.blocked(x, z, f, 0.85, 0.22) {
+                                continue;
+                            }
+                        }
+                        if f < p.y - 1.6 {
+                            continue;
+                        }
+                        let q = Vec3::new(x, f, z);
+                        if seen.insert(key(q)) {
+                            queue.push_back(q);
+                        }
+                    }
+                }
+                if !out {
+                    let xs: Vec<f32> = seen.iter().map(|c| start.x + c.0 as f32 * cell).collect();
+                    let zs: Vec<f32> = seen.iter().map(|c| start.z + c.1 as f32 * cell).collect();
+                    let ys: std::collections::BTreeSet<i32> = seen.iter().map(|c| c.2).collect();
+                    let span = |v: &[f32]| (v.iter().copied().fold(f32::MAX, f32::min), v.iter().copied().fold(f32::MIN, f32::max));
+                    let probe = d.center;
+                    let mut boxes = Vec::new();
+                    statics.near(probe.x, probe.z, 0.4, |_, b| {
+                        if b.touches(probe.x, probe.z, 0.4) {
+                            let paint = w.blocks.iter().find(|k| k.solid && k.aabb.center.distance(b.center) < 1e-3).map(|k| k.paint);
+                            boxes.push(format!("{:.2}..{:.2} {paint:?}", b.min(), b.max()));
+                        }
+                    });
+                    eprintln!("around {probe:?} ground {} {}: {}", w.height(probe.x, probe.z), w.height(probe.x + across.x * side * -0.6, probe.z + across.z * side * -0.6), boxes.join("\n"));
+                    panic!("{what}: door {k} at {:?} (along x {}) leads into a sealed-off space on its {side} side ({} cells, x {:?}, z {:?}, half-metre levels {ys:?})", d.center, d.along_x, seen.len(), span(&xs), span(&zs));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_doorway_is_clear_and_every_room_reachable() {
+        let mut worlds: Vec<(String, World)> = Vec::new();
+        for theme in Theme::ALL {
+            for seed in [3, 11, 27] {
+                worlds.push((format!("{theme:?} {seed}"), World::generate(WorldRecipe::themed(seed, Biome::IronShoals, theme))));
+            }
+        }
+        for seed in [1, 5, 17, 40] {
+            worlds.extend(grid_towns(seed));
+        }
+        for layout in Layout::VERSUS.into_iter().filter(|l| *l != Layout::Town && !l.is_grid_town()) {
+            worlds.push((format!("{layout:?}"), World::generate(WorldRecipe::preset(layout, Biome::IronShoals, Weather::Clear))));
+        }
+        for (what, w) in &worlds {
+            assert!(!w.doors.is_empty(), "{what}: no doors");
+            doors_are_walkable(w, what);
         }
     }
 

@@ -631,7 +631,7 @@ fn doors_glass_and_clutter_break() {
     app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Door(0) });
     app.update();
     app.update();
-    assert_eq!(app.world().resource::<MatchState>().doors[0], door::OPEN);
+    assert!(door::is_open(app.world().resource::<MatchState>().doors[0]));
 
     // A round through a window shatters it.
     let pane = map.windows[0];
@@ -1045,4 +1045,245 @@ fn the_fallen_sometimes_drop_ammo_and_always_for_a_killer_running_dry() {
     app.update();
     assert!(reserve(&mut app) > empty, "walking over the box should have refilled the guns");
     assert!(boxes(&mut app).len() < 6, "the box should be gone once taken");
+}
+
+/// Starts a 1v1 offline match and runs it into live play.
+fn live_match(seed: u64) -> App {
+    let mut app = app();
+    let mut rules = deathmatch_rules(seed);
+    rules.team_size = 1;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::Start);
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    assert_eq!(phase(&app), Phase::Live);
+    app
+}
+
+fn perk_index(app: &App, name: &str) -> u8 {
+    let content = app.world().resource::<oz_sim::session::Content>();
+    content.perks.iter().position(|p| p.name == name).unwrap_or_else(|| panic!("no perk {name}")) as u8
+}
+
+#[test]
+fn new_killstreaks_sentry_drone_strike_emp_and_advanced_uav_work() {
+    use oz_sim::killstreak::{Aircraft, Homing, Sentry, reward};
+    let mut app = live_match(21);
+    let call = |app: &mut App, id: u8| {
+        app.world_mut().query_filtered::<&mut Player, With<LocalPlayer>>().single_mut(app.world_mut()).unwrap().rewards = [id, 0, 0];
+        app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::UseStreak });
+        app.update();
+    };
+    let me_at = |app: &mut App| app.world_mut().query_filtered::<&Transform, With<LocalPlayer>>().single(app.world()).unwrap().translation;
+    // Hold the enemy bot still, in the open, where we want it, and make it mortal.
+    let pin_bot = |app: &mut App, at: Vec3| {
+        let world = app.world_mut();
+        // We stay untouchable while the bot is a sitting duck: this is about our streaks.
+        world.query_filtered::<&mut Player, With<LocalPlayer>>().single_mut(world).unwrap().protect = 99.0;
+        let (mut transform, mut player, mut input) = world.query_filtered::<(&mut Transform, &mut Player, &mut PlayerInput), With<Bot>>().single_mut(world).unwrap();
+        transform.translation = at;
+        player.protect = 0.0;
+        input.movement = Vec2::ZERO;
+    };
+    let bot_hp = |app: &mut App| app.world_mut().query_filtered::<(&Health, &Player), With<Bot>>().single(app.world()).map(|(h, p)| (h.hp, p.deaths)).unwrap();
+
+    // Sentry gun: set down in front of us, it shoots the enemy standing in front of it.
+    let here = me_at(&mut app);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(world).unwrap().yaw = 0.0;
+    }
+    call(&mut app, reward::SENTRY);
+    let sentry_at = app.world_mut().query_filtered::<&Transform, With<Sentry>>().single(app.world()).expect("a sentry").translation;
+    assert!(sentry_at.xz().distance(here.xz()) < 2.0, "the sentry went down where we stand");
+    let team = app.world_mut().query::<&Aircraft>().iter(app.world()).find(|a| a.look == ShotLook::Sentry).map(|a| a.team);
+    assert_eq!(team, Some(0));
+    // (The bot shoots back at it: armour it, so later only our own EMP could take it down.)
+    for mut craft in app.world_mut().query_filtered::<&mut Aircraft, With<Sentry>>().iter_mut(app.world_mut()) {
+        craft.hp = 1.0e6;
+    }
+    let (hp_before, deaths_before) = bot_hp(&mut app);
+    let target = Vec3::new(sentry_at.x, here.y, sentry_at.z - 6.0);
+    for _ in 0..(4.0 / FRAME) as usize {
+        pin_bot(&mut app, target);
+        app.update();
+    }
+    let (hp_after, deaths_after) = bot_hp(&mut app);
+    assert!(hp_after < hp_before || deaths_after > deaths_before, "the sentry never hit the bot standing in front of it");
+
+    // EMP: the enemy goes dark, and anything of theirs in the air comes down.
+    let plane = app.world_mut().spawn((MatchEntity, Aircraft { look: ShotLook::Drone, hp: 100.0, team: 1, owner: 200, radius: 1.0, hit_by: None }, Transform::from_xyz(0.0, 30.0, 0.0))).id();
+    call(&mut app, reward::EMP);
+    app.update();
+    assert!(app.world().resource::<MatchState>().emp[1] > 15.0, "the EMP did not jam the other team");
+    assert_eq!(app.world().resource::<MatchState>().emp[0], 0.0, "our own team stays online");
+    assert!(app.world().get_entity(plane).is_err(), "the enemy aircraft survived the EMP");
+    // Our own sentry is untouched by our EMP.
+    assert_eq!(app.world_mut().query::<&Sentry>().iter(app.world()).count(), 1);
+
+    // Advanced UAV: the whole map, Ghosts included, for forty seconds.
+    call(&mut app, reward::ADVANCED_UAV);
+    assert!(app.world().resource::<MatchState>().sweep[0] > 35.0);
+
+    // Drone strike: dives on the enemy and blows up on them. Nothing else shoots at it.
+    let sentries: Vec<Entity> = app.world_mut().query_filtered::<Entity, With<Sentry>>().iter(app.world()).collect();
+    for e in sentries {
+        app.world_mut().despawn(e);
+    }
+    for _ in 0..(6.0 / FRAME) as usize {
+        app.update();
+    }
+    let open = me_at(&mut app) + Vec3::new(8.0, 0.0, 0.0);
+    pin_bot(&mut app, open);
+    let (_, deaths_before) = bot_hp(&mut app);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(world).unwrap().yaw = -std::f32::consts::FRAC_PI_2;
+        world.query_filtered::<&mut Health, With<Bot>>().single_mut(world).unwrap().hp = 100.0;
+    }
+    call(&mut app, reward::DRONE_STRIKE);
+    let homing: Vec<Homing> = app.world_mut().query::<&Homing>().iter(app.world()).copied().collect();
+    assert_eq!(homing.len(), 1, "no drone strike in the air");
+    let bot_id = app.world_mut().query_filtered::<&Player, With<Bot>>().single(app.world()).unwrap().id;
+    assert_eq!(homing[0].target, bot_id);
+    let mut hit = false;
+    for _ in 0..(8.0 / FRAME) as usize {
+        pin_bot(&mut app, open);
+        app.update();
+        let (hp, deaths) = bot_hp(&mut app);
+        if hp < 100.0 || deaths > deaths_before {
+            hit = true;
+            break;
+        }
+    }
+    assert!(hit, "the drone strike never reached the bot");
+}
+
+#[test]
+fn hardline_bandolier_and_the_other_new_perks_do_what_they_say() {
+    use oz_sim::killstreak::reward;
+    let mut app = live_match(8);
+    let hardline = perk_index(&app, "HARDLINE");
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Player, With<LocalPlayer>>().single_mut(world).unwrap().perk = hardline;
+    }
+    // Hardline: the UAV after two kills instead of three.
+    for _ in 0..2 {
+        app.world_mut().resource_mut::<MatchState>().credits.push(0);
+        app.update();
+    }
+    let me = app.world_mut().query_filtered::<&Player, With<LocalPlayer>>().single(app.world()).unwrap().clone();
+    assert_eq!((me.streak, me.rewards[0]), (2, reward::UAV));
+
+    // Bandolier: one more piece of gear every life.
+    let bandolier = perk_index(&app, "BANDOLIER");
+    let count = app.world().resource::<oz_sim::session::Content>().gear[1].count;
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Loadout(Loadout { primary: 2, secondary: 0, perk: bandolier, gear: 1, parts: None, streaks: [0; 3], vision: 0 }) });
+    app.update();
+    let me = app.world_mut().query_filtered::<&Player, With<LocalPlayer>>().single(app.world()).unwrap().clone();
+    assert_eq!((me.perk, me.gear_left), (bandolier, count + 1));
+
+    // Second Wind: health comes back sooner and faster.
+    let content = app.world().resource::<oz_sim::session::Content>().clone();
+    let mut plain = me.clone();
+    plain.perk = 0;
+    let mut winded = me.clone();
+    winded.perk = perk_index(&app, "SECOND WIND");
+    let (slow, fast) = (oz_sim::player::regen(&content, &plain), oz_sim::player::regen(&content, &winded));
+    assert!(fast.0 < slow.0 && fast.1 > slow.1, "{slow:?} vs {fast:?}");
+    // Dead Silence and Free Runner.
+    assert!(oz_sim::player::footstep_volume(&content, perk_index(&app, "DEAD SILENCE")) < 0.5);
+    assert_eq!(oz_sim::player::footstep_volume(&content, 0), 1.0);
+    let mut runner = me.clone();
+    runner.perk = perk_index(&app, "FREE RUNNER");
+    assert!(oz_sim::player::climb_speed(&content, &runner) > 1.2);
+    // Everyone's perk is on the roster, for radar and footsteps on every machine.
+    assert_eq!(app.world().resource::<MatchState>().roster.iter().find(|r| r.id == 0).map(|r| r.perk), Some(bandolier));
+    // Bots pick three different killstreaks.
+    let picks: Vec<[u8; 3]> = app.world_mut().query_filtered::<&Player, With<Bot>>().iter(app.world()).map(|p| p.streaks).collect();
+    assert!(!picks.is_empty());
+    for streaks in picks {
+        assert!(streaks.iter().all(|id| oz_sim::killstreak::def(*id).is_some()), "{streaks:?}");
+        assert!(streaks[0] != streaks[1] && streaks[1] != streaks[2] && streaks[0] != streaks[2], "{streaks:?}");
+    }
+}
+
+#[test]
+fn a_door_swinging_onto_someone_never_traps_them() {
+    use oz_sim::breakables::{body_overlaps, door, door_leaf};
+    use oz_sim::player::BODY_RADIUS;
+    let mut app = live_match(14);
+    let map = app.world().resource::<Map>().0.clone();
+    // A ground-floor door.
+    let (index, spec) = map.doors.iter().enumerate().find(|(_, d)| (d.center.y - map.height(d.center.x, d.center.z)).abs() < 0.6).map(|(i, d)| (i, *d)).expect("a ground-floor door");
+    let across = if spec.along_x { Vec3::Z } else { Vec3::X };
+    let along = if spec.along_x { Vec3::X } else { Vec3::Z };
+    let yaw_toward = |dir: Vec3| f32::atan2(-dir.x, -dir.z);
+    let set_me = |app: &mut App, at: Vec3, yaw: f32, movement: Vec2| {
+        let world = app.world_mut();
+        let (mut transform, mut input) = world.query_filtered::<(&mut Transform, &mut PlayerInput), With<LocalPlayer>>().single_mut(world).unwrap();
+        transform.translation = at;
+        input.yaw = yaw;
+        input.movement = movement;
+    };
+    let me_at = |app: &mut App| app.world_mut().query_filtered::<&Transform, With<LocalPlayer>>().single(app.world()).unwrap().translation;
+    // Keep the bot well away.
+    let far = map.team_spawns[1][0];
+    let park_bot = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Transform, With<Bot>>().single_mut(world).unwrap().translation = Vec3::new(far.x, map.height(far.x, far.y), far.y);
+    };
+
+    // Stand right where the leaf lands when it swings to the +side, and have it swing there
+    // anyway (somebody else threw it open): we are pushed clear, not stuck inside it.
+    let (leaf, half) = door_leaf(&spec, door::OPEN);
+    let standing = Vec3::new(leaf.x, spec.center.y, leaf.z) + along * 0.1;
+    set_me(&mut app, standing, 0.0, Vec2::ZERO);
+    park_bot(&mut app);
+    app.world_mut().resource_mut::<MatchState>().doors[index] = door::OPEN;
+    for _ in 0..10 {
+        park_bot(&mut app);
+        app.update();
+    }
+    let at = me_at(&mut app);
+    assert!(!body_overlaps(at, 1.8, BODY_RADIUS, leaf, half), "still inside the open door at {at:?} (leaf {leaf:?} {half:?})");
+
+    // Opened by us from the -side: it swings away from us, never into us.
+    app.world_mut().resource_mut::<MatchState>().doors[index] = door::CLOSED;
+    app.update();
+    set_me(&mut app, spec.center - across * 0.9, yaw_toward(across), Vec2::ZERO);
+    app.world_mut().send_event(CommandEvent { player: 0, command: PlayerCommand::Door(index as u16) });
+    park_bot(&mut app);
+    app.update();
+    app.update();
+    let status = app.world().resource::<MatchState>().doors[index];
+    assert_eq!(status, door::OPEN, "pushed open away from the opener");
+    let (leaf, half) = door_leaf(&spec, status);
+    assert!(!body_overlaps(me_at(&mut app), 1.8, BODY_RADIUS, leaf, half));
+
+    // Shut on ourselves standing in the doorway: pushed out to one side, free to move.
+    set_me(&mut app, spec.center, yaw_toward(across), Vec2::ZERO);
+    app.world_mut().resource_mut::<MatchState>().doors[index] = door::CLOSED;
+    for _ in 0..10 {
+        park_bot(&mut app);
+        app.update();
+    }
+    let (closed, closed_half) = door_leaf(&spec, door::CLOSED);
+    let at = me_at(&mut app);
+    assert!(!body_overlaps(at, 1.8, BODY_RADIUS, closed, closed_half), "stuck in the closed door at {at:?}");
+
+    // And with it open, we walk straight through the doorway.
+    app.world_mut().resource_mut::<MatchState>().doors[index] = door::OPEN;
+    app.update();
+    set_me(&mut app, spec.center - across * 1.2, yaw_toward(across), Vec2::Y);
+    for _ in 0..(1.6 / FRAME) as usize {
+        park_bot(&mut app);
+        let world = app.world_mut();
+        world.query_filtered::<&mut PlayerInput, With<LocalPlayer>>().single_mut(world).unwrap().movement = Vec2::Y;
+        app.update();
+    }
+    let through = (me_at(&mut app) - spec.center).dot(across);
+    assert!(through > 0.8, "did not get through the open door: {through:.2} m past it");
 }

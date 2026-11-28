@@ -38,6 +38,12 @@ pub fn catalog(_: &Rules) -> Catalog {
             PerkDef { name: "FLAK JACKET", blurb: "Take 55% less explosive damage", effect: PerkEffect::FlakJacket(0.45) },
             PerkDef { name: "QUICK DRAW", blurb: "Aim and swap 30% faster", effect: PerkEffect::Handling(1.3) },
             PerkDef { name: "STEADY HANDS", blurb: "40% tighter hip fire", effect: PerkEffect::Hipfire(0.6) },
+            PerkDef { name: "DEAD SILENCE", blurb: "Your footsteps barely make a sound, to players and bots alike", effect: PerkEffect::Quiet },
+            PerkDef { name: "BANDOLIER", blurb: "One extra piece of gear every life", effect: PerkEffect::ExtraGear(1) },
+            PerkDef { name: "SECOND WIND", blurb: "Health starts coming back twice as soon, twice as fast", effect: PerkEffect::Regen(2.0) },
+            PerkDef { name: "HARDLINE", blurb: "Every killstreak needs one kill fewer", effect: PerkEffect::Hardline },
+            PerkDef { name: "TRACKER", blurb: "Hear enemies coming: anyone on their feet within 30 m shows on your radar", effect: PerkEffect::Tracker },
+            PerkDef { name: "FREE RUNNER", blurb: "Climb ladders 40% faster and clear long vaults quicker", effect: PerkEffect::Climber(1.4) },
         ],
         gear: vec![
             GearDef { name: "FRAG GRENADE", blurb: "Thrown explosive on a short fuse", kind: GearKind::Frag { damage: 170.0, radius: 10.0 }, count: 2, weight: 0.4 },

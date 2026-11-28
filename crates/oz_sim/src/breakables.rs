@@ -24,8 +24,16 @@ use oz_core::{synth::Sfx, worldgen::DoorSpec};
 
 pub mod door {
     pub const CLOSED: u8 = 0;
+    /// Swung open to the doorway's +across side.
     pub const OPEN: u8 = 1;
     pub const BROKEN: u8 = 2;
+    /// Swung open the other way, to the -across side.
+    pub const OPEN_BACK: u8 = 3;
+
+    /// Open either way.
+    pub fn is_open(status: u8) -> bool {
+        status == OPEN || status == OPEN_BACK
+    }
 }
 
 const DOOR_HEALTH: f32 = 110.0;
@@ -82,6 +90,44 @@ pub fn door_pose(spec: &DoorSpec, open: bool) -> (Vec3, Vec3) {
     }
 }
 
+/// Where a door panel sits and its half extents for a door state: closed across the doorway,
+/// or swung a quarter turn to whichever side it opened to.
+pub fn door_leaf(spec: &DoorSpec, status: u8) -> (Vec3, Vec3) {
+    match status {
+        door::OPEN_BACK => {
+            let (at, half) = door_pose(spec, true);
+            // The mirror image of the forward swing, through the doorway's centre line.
+            let across = if spec.along_x { Vec3::Z } else { Vec3::X };
+            let out = (at - spec.center).dot(across);
+            (at - across * 2.0 * out, half)
+        }
+        status => door_pose(spec, status == door::OPEN),
+    }
+}
+
+/// Does a body (feet at `feet`, `height` tall, `radius` round) overlap a box standing on
+/// `bottom` (its bottom centre) with half extents `half`?
+pub fn body_overlaps(feet: Vec3, height: f32, radius: f32, bottom: Vec3, half: Vec3) -> bool {
+    let center = bottom + Vec3::Y * half.y;
+    feet.y + height > center.y - half.y && feet.y + oz_core::collide::STEP < center.y + half.y && (feet.x - center.x).abs() < half.x + radius && (feet.z - center.z).abs() < half.z + radius
+}
+
+/// Which way a door should swing open: away from whoever opens it (`from`), unless that
+/// would put the leaf into somebody - then the other way, if that side is clear. Bodies
+/// left overlapping it anyway are pushed clear by the movement code (see
+/// [`crate::player::move_players`]).
+pub fn swing_for(spec: &DoorSpec, from: Vec3, bodies: &[Vec3]) -> u8 {
+    let across = if spec.along_x { Vec3::Z } else { Vec3::X };
+    let away = if (from - spec.center).dot(across) <= 0.0 { door::OPEN } else { door::OPEN_BACK };
+    let other = if away == door::OPEN { door::OPEN_BACK } else { door::OPEN };
+    let clear = |status: u8| {
+        let (at, half) = door_leaf(spec, status);
+        // A little margin: nobody should end up brushing the leaf either.
+        !bodies.iter().any(|b| body_overlaps(*b, 1.8, crate::player::BODY_RADIUS + 0.1, at, half))
+    };
+    if clear(away) || !clear(other) { away } else { other }
+}
+
 /// Every machine: make the pieces from the map, and size the shared state for them.
 pub fn spawn_breakables(mut commands: Commands, map: Res<Map>, mut state: ResMut<MatchState>) {
     if state.doors.len() != map.doors.len() {
@@ -127,7 +173,7 @@ pub fn sync_breakables(
                 }
             }
             status => {
-                let (at, half) = door_pose(spec, status == door::OPEN);
+                let (at, half) = door_leaf(spec, status);
                 if transform.translation != at {
                     transform.translation = at;
                 }
@@ -156,14 +202,19 @@ pub fn work_doors(
     players: Query<(&Player, &Transform, &Health, Has<crate::bots::Bot>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
-    let toggle = |index: usize, state: &mut MatchState, fx: &mut EventWriter<FxEvent>| {
+    // Everyone standing, for picking the side a door swings to.
+    let bodies: Vec<Vec3> = players.iter().filter(|(_, _, h, _)| h.alive()).map(|(_, t, ..)| t.translation).collect();
+    let toggle = |index: usize, from: Vec3, state: &mut MatchState, fx: &mut EventWriter<FxEvent>| {
         let Some(status) = state.doors.get_mut(index) else {
             return;
         };
         if *status == door::BROKEN {
             return;
         }
-        *status = if *status == door::OPEN { door::CLOSED } else { door::OPEN };
+        let Some(spec) = map.doors.get(index) else {
+            return;
+        };
+        *status = if door::is_open(*status) { door::CLOSED } else { swing_for(spec, from, &bodies) };
         if let Some(spec) = map.doors.get(index) {
             fx.write(FxEvent::Sound { sfx: Sfx::DoorOpen, at: Some(spec.center + Vec3::Y) });
         }
@@ -173,9 +224,9 @@ pub fn work_doors(
             continue;
         };
         let index = index as usize;
-        let near = players.iter().any(|(p, t, h, _)| p.id == order.player && h.alive() && map.doors.get(index).is_some_and(|d| d.center.distance(t.translation) < DOOR_REACH + 0.6));
-        if near {
-            toggle(index, &mut state, &mut fx);
+        let near = players.iter().find(|(p, t, h, _)| p.id == order.player && h.alive() && map.doors.get(index).is_some_and(|d| d.center.distance(t.translation) < DOOR_REACH + 0.6));
+        if let Some((_, from, ..)) = near {
+            toggle(index, from.translation, &mut state, &mut fx);
         }
     }
     // Bots open any closed door they walk into.
@@ -183,9 +234,16 @@ pub fn work_doors(
         if !bot || !health.alive() {
             continue;
         }
-        let close = map.doors.iter().position(|d| d.center.xz().distance(transform.translation.xz()) < 0.9 && (d.center.y - transform.translation.y).abs() < 1.0);
-        if let Some(index) = close.filter(|i| state.doors.get(*i) == Some(&door::CLOSED)) {
-            toggle(index, &mut state, &mut fx);
+        // Anywhere against the leaf, not just square in the middle of it: a bot pushing at
+        // the edge of a closed door would otherwise stand there forever.
+        let at = transform.translation;
+        let close = map.doors.iter().enumerate().position(|(i, d)| {
+            let (along, across) = if d.along_x { (Vec3::X, Vec3::Z) } else { (Vec3::Z, Vec3::X) };
+            let off = at - d.center;
+            state.doors.get(i) == Some(&door::CLOSED) && off.dot(across).abs() < 1.0 && off.dot(along).abs() < d.width * 0.5 + 0.35 && (d.center.y - at.y).abs() < 1.0
+        });
+        if let Some(index) = close {
+            toggle(index, transform.translation, &mut state, &mut fx);
         }
     }
 }
@@ -371,5 +429,26 @@ mod tests {
         assert!(closed_half.x > closed_half.z && open_half.z > open_half.x);
         // The open panel sits beside the opening, at its hinge end.
         assert!(open.x < spec.center.x - 0.5 && (open.z - spec.center.z).abs() > 0.5);
+        // The other way round: the same hinge, the other side of the wall.
+        let (back, back_half) = door_leaf(&spec, door::OPEN_BACK);
+        assert_eq!(back_half, open_half);
+        assert!((back.x - open.x).abs() < 1e-5 && (back.z - spec.center.z) * (open.z - spec.center.z) < 0.0);
+        assert_eq!(door_leaf(&spec, door::OPEN).0, open);
+        assert!(door::is_open(door::OPEN) && door::is_open(door::OPEN_BACK) && !door::is_open(door::CLOSED));
+    }
+
+    #[test]
+    fn doors_swing_away_from_the_opener_and_never_into_someone() {
+        let spec = DoorSpec { center: Vec3::new(0.0, 0.0, 0.0), along_x: true, width: 1.7, height: 2.35 };
+        // Opened from the -z side with nobody about: it swings away, to +z.
+        let opener = Vec3::new(0.0, 0.0, -0.8);
+        assert_eq!(swing_for(&spec, opener, &[opener]), door::OPEN);
+        // Somebody standing right where the leaf would land on the +z side: it swings back instead.
+        let (leaf, _) = door_leaf(&spec, door::OPEN);
+        let inside = Vec3::new(leaf.x + 0.1, 0.0, leaf.z);
+        assert_eq!(swing_for(&spec, opener, &[opener, inside]), door::OPEN_BACK);
+        let (back, back_half) = door_leaf(&spec, door::OPEN_BACK);
+        assert!(!body_overlaps(opener, 1.8, crate::player::BODY_RADIUS, back, back_half));
+        assert!(!body_overlaps(inside, 1.8, crate::player::BODY_RADIUS, back, back_half));
     }
 }

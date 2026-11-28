@@ -705,12 +705,30 @@ fn update_shapes(
             contacts.push((Vec2::new(offset.dot(right), offset.dot(forward)) / RADAR_RANGE, color));
         }
     };
+    let team = (me.team as usize).min(1);
+    let uav = state.uav[team] > 0.0;
+    let sweep = state.sweep[team] > 0.0;
+    let tracker = matches!(oz_sim::player::perk(&content, me), Some(PerkEffect::Tracker));
     for (other, player, other_health) in &others {
         if other_health.alive() {
             let friend = player.team == me.team;
-            // Opponents only show when they are close enough to hear, or while your team's UAV is up.
-            let uav = state.uav[(me.team as usize).min(1)] > 0.0;
-            contact(other.translation, if player.team == 0 { TEAL } else { CORAL }, if friend || uav { RADAR_RANGE } else { 16.0 });
+            let effect = state.roster.iter().find(|r| r.id == player.id).and_then(|r| content.perks.get(r.perk as usize)).map(|p| p.effect);
+            let (ghost, silent) = (matches!(effect, Some(PerkEffect::Ghost)), matches!(effect, Some(PerkEffect::Quiet)));
+            let loud = player.flags & oz_sim::player::flags::LOUD != 0;
+            let on_feet = player.flags & oz_sim::player::flags::STANCE == 0;
+            // Opponents show when they are close enough to hear (Dead Silence halves that), when
+            // they fire something loud, while your team's UAV is up (Ghosts stay hidden from it,
+            // not from the advanced UAV), or - with Tracker - whenever they are up and about nearby.
+            let range = if friend || sweep || loud || (uav && !ghost) {
+                RADAR_RANGE
+            } else if tracker && on_feet && !silent {
+                oz_core::content::TRACKER_RANGE
+            } else if silent {
+                8.0
+            } else {
+                16.0
+            };
+            contact(other.translation, if player.team == 0 { TEAL } else { CORAL }, range);
         }
     }
     for station in &stations {
@@ -718,6 +736,16 @@ fn update_shapes(
     }
     for enemy in &enemies {
         contact(enemy.translation, RED, RADAR_RANGE);
+    }
+    // An enemy EMP: the radar shows nothing but drifting static.
+    if rules.pvp && state.emp[team] > 0.0 {
+        contacts.clear();
+        let t = state.emp[team] * 7.0;
+        for k in 0..7 {
+            let a = (t.floor() * 1.7 + k as f32 * 2.399).sin() * 43_758.545;
+            let b = (t.floor() * 2.3 + k as f32 * 1.618).cos() * 12_345.678;
+            contacts.push((Vec2::new(a.fract(), b.fract()) * 0.9, Color::srgba(0.7, 0.75, 0.8, 0.5)));
+        }
     }
 
     let index = arsenal.current as usize;
