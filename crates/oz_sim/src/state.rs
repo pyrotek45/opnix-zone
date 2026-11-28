@@ -153,6 +153,9 @@ pub struct MatchState {
     pub reroll: bool,
     #[serde(default)]
     pub change_in: f32,
+    /// Co-op match from the lobby, once it is over: seconds until everyone goes back to it.
+    #[serde(default)]
+    pub back_in: f32,
     /// Domination points, or search and destroy's sites, bomb and rounds.
     #[serde(default)]
     pub obj: crate::objective::Objective,
@@ -179,6 +182,9 @@ pub struct RosterEntry {
     /// What they are holding, so everyone sees their real attachments.
     pub weapon: u8,
     pub parts: [u8; oz_core::arsenal::SLOT_COUNT],
+    /// A guest still building the world after the lobby reloaded (see `session::Loading`).
+    #[serde(default)]
+    pub loading: bool,
 }
 
 impl MatchState {
@@ -233,6 +239,8 @@ pub enum PlayerCommand {
     Pickup,
     /// Change your name (cleaned up and made unique by the authority).
     Rename(String),
+    /// A guest has built the world of the host's relaunch `epoch` and is in (see `session::Loading`).
+    Arrived(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,11 +257,13 @@ pub enum LobbyAction {
     Weather(i8),
     /// Host only: step the game mode (the lobby relaunches on the new rules).
     Mode(i8),
-    /// Host only: step the map (random town, a themed town, or a fixed layout).
+    /// Host only: step the map within its kind (the large random town's themes, or the set maps).
     Map(i8),
-    /// Host only: step the map size (small, medium, large); the map list follows it.
+    /// Host only: a random town: step its size (small, medium, large).
     MapSize(i8),
-    /// Host only: a fresh roll of the current map choice.
+    /// Host only: switch between a random town and a set (hand-built) map.
+    MapKind,
+    /// Host only: a random town rolls new streets.
     NewMap,
     /// Host only: step the score limit.
     ScoreLimit(i8),
@@ -267,6 +277,9 @@ pub enum LobbyAction {
     Respawn(i8),
     /// Host only, in a co-op match started from the lobby: everyone back to the lobby.
     BackToLobby,
+    /// Host only, during any match started from the lobby: end it now and take everyone
+    /// (guests and bots too) back to the same lobby.
+    EndMatch,
 }
 
 #[derive(Event, Clone, Debug)]

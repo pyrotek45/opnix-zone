@@ -712,7 +712,8 @@ fn the_host_switches_mode_and_map_from_the_lobby() {
     // the host stops on.
     lobby(&mut app, LobbyAction::MapSize(-1));
     assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::MediumTown, "a size starts on its random town");
-    lobby(&mut app, LobbyAction::Map(1));
+    // A set map instead: the first one of about the same size.
+    lobby(&mut app, LobbyAction::MapKind);
     run_for(&mut app, 3.0);
     let tower = rules_of(&app);
     assert_eq!(tower.recipe.layout, Layout::OfficeTower);
@@ -722,6 +723,11 @@ fn the_host_switches_mode_and_map_from_the_lobby() {
     // Back to team deathmatch in the suburbs (large): the hostiles are gone, bots fill two
     // teams again. Domination, search and destroy and horde sit between.
     step_mode(&mut app, 4);
+    // A set map has no size to change: back to a random town first, then large, then a theme.
+    lobby(&mut app, LobbyAction::MapSize(1));
+    assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::OfficeTower);
+    lobby(&mut app, LobbyAction::MapKind);
+    assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::MediumTown);
     lobby(&mut app, LobbyAction::MapSize(1));
     lobby(&mut app, LobbyAction::Map(1));
     run_for(&mut app, 3.0);
@@ -768,12 +774,20 @@ fn the_map_size_setting_brings_back_the_small_maps() {
     let size = small.team_size as usize;
     assert_eq!(teams(&mut app), [(1, size - 1), (0, size)]);
 
-    // The map list now holds the small maps only: the town, Crossroads, Dockyard, and round.
+    // The other kind: the set maps, from the small ones (Crossroads, Dockyard) up; a new roll
+    // only means something for a random town.
+    let next = |app: &App| oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map);
+    lobby(&mut app, LobbyAction::MapKind);
+    assert_eq!(next(&app), Layout::Crossroads);
     lobby(&mut app, LobbyAction::Map(1));
-    assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::Crossroads);
-    lobby(&mut app, LobbyAction::Map(1));
-    lobby(&mut app, LobbyAction::Map(1));
-    assert_eq!(oz_sim::versus::choice_layout(app.world().resource::<MatchState>().next_map), Layout::SmallTown);
+    assert_eq!(next(&app), Layout::Dockyard);
+    lobby(&mut app, LobbyAction::NewMap);
+    assert!(!app.world().resource::<MatchState>().reroll, "a set map is the same every time");
+    lobby(&mut app, LobbyAction::MapSize(1));
+    assert_eq!(next(&app), Layout::Dockyard, "a set map has its own size");
+    // Back to a random town: the small one again.
+    lobby(&mut app, LobbyAction::MapKind);
+    assert_eq!(next(&app), Layout::SmallTown);
     run_for(&mut app, 2.0);
     // A new roll of the small town is new streets, still small.
     lobby(&mut app, LobbyAction::NewMap);
@@ -825,6 +839,49 @@ fn a_coop_mode_starts_from_the_lobby_and_comes_back_to_it() {
     assert_eq!(back.mode, lobby_rules.mode);
     assert_eq!(back.recipe, lobby_rules.recipe);
     assert_eq!(local_player(&mut app).1, "TEST");
+    let state = app.world().resource::<MatchState>().clone();
+    assert_eq!((state.next_mode, state.next_map), (6, 1), "the lobby still has horde on Blackfen picked, ready to go again");
+
+    // Again, and this time the squad is overrun: after the results everyone is back on their own.
+    lobby(&mut app, LobbyAction::Start);
+    run_for(&mut app, 6.5);
+    assert!(rules_of(&app).horde);
+    app.world_mut().resource_mut::<MatchState>().phase = Phase::Lost;
+    run_for(&mut app, 2.0);
+    assert!(rules_of(&app).horde, "the results stay up for a while");
+    assert!(app.world().resource::<MatchState>().back_in > 0.0);
+    run_for(&mut app, oz_sim::versus::COOP_RESULTS);
+    assert_eq!(phase(&app), Phase::Lobby);
+    assert_eq!(rules_of(&app).recipe, lobby_rules.recipe, "the same lobby");
+    assert_eq!(app.world().resource::<MatchState>().next_mode, 6);
+}
+
+#[test]
+fn the_host_ends_a_match_and_everyone_is_back_in_the_same_lobby() {
+    let mut app = app();
+    let mut rules = deathmatch_rules(31);
+    rules.team_size = 3;
+    rules.score_limit = 0;
+    start(&mut app, MatchSetup::offline(rules, "TEST"));
+    lobby(&mut app, LobbyAction::TimeLimit(1));
+    let lobby_rules = rules_of(&app);
+    // Ending needs a match: in the lobby it does nothing.
+    lobby(&mut app, LobbyAction::EndMatch);
+    run_for(&mut app, 0.5);
+    assert_eq!(rules_of(&app), lobby_rules);
+    lobby(&mut app, LobbyAction::Start);
+    run_for(&mut app, 6.0);
+    assert_eq!(phase(&app), Phase::Live);
+    let map_before = app.world().resource::<Map>().0.clone();
+    lobby(&mut app, LobbyAction::EndMatch);
+    run_for(&mut app, 0.5);
+    let state = app.world().resource::<MatchState>().clone();
+    assert_eq!(state.phase, Phase::Lobby, "straight back to the lobby");
+    assert_eq!(rules_of(&app), lobby_rules, "with the same settings");
+    assert_eq!(state.team_size, 3);
+    assert!(!std::sync::Arc::ptr_eq(&map_before, &app.world().resource::<Map>().0), "on a fresh copy of the map");
+    assert_eq!(teams(&mut app), [(1, 2), (0, 3)]);
+    assert_eq!(local_player(&mut app), (0, "TEST".to_string(), 0));
 }
 
 #[test]
@@ -902,6 +959,104 @@ fn names(app: &App) -> Vec<String> {
     app.world().resource::<MatchState>().roster.iter().filter(|r| !r.bot).map(|r| r.name.clone()).collect()
 }
 
+/// Host and guest are both in the same lobby: same rules and world, the guest still
+/// connected, every player on both machines, and nobody still loading in.
+fn together_in_the_lobby(host: &mut App, client: &mut App) -> bool {
+    *client.world().resource::<State<MatchPhase>>().get() == MatchPhase::Active
+        && matches!(client.world().resource::<NetLink>(), NetLink::Client(_))
+        && rules_of(host).pvp
+        && rules_of(client) == rules_of(host)
+        && client.world().resource::<Map>().recipe == host.world().resource::<Map>().recipe
+        && phase(host) == Phase::Lobby
+        && phase(client) == Phase::Lobby
+        && count_players(client) == count_players(host)
+        && host.world().resource::<MatchState>().roster.iter().all(|r| !r.loading)
+}
+
+/// Each human's team as the host has it, and as the guest sees it.
+fn human_teams(app: &App) -> Vec<(u8, u8)> {
+    app.world().resource::<MatchState>().roster.iter().filter(|r| !r.bot).map(|r| (r.id, r.team)).collect()
+}
+
+#[test]
+fn host_and_guest_play_match_after_match_and_always_come_back_to_the_same_lobby() {
+    let (mut host, mut client) = (app(), app());
+    let mut rules = deathmatch_rules(41);
+    rules.team_size = 2;
+    start(&mut host, net::host_setup(rules, "HOST", "127.0.0.1:0", false).unwrap());
+    let NetLink::Host(link) = host.world().resource::<NetLink>() else { panic!("not hosting") };
+    let addr = link.host.local_addr().unwrap().to_string();
+    let world = client.world_mut();
+    net::join(&mut world.commands(), &addr, "guest");
+    world.flush();
+    pump(&mut host, &mut client, "the guest joins", |host, client| {
+        *client.world().resource::<State<MatchPhase>>().get() == MatchPhase::Active && count_players(client) == 4 && names(host).contains(&"GUEST".to_string())
+    });
+    let (guest, ..) = local_player(&mut client);
+    let lobby_rules = rules_of(&host);
+
+    // Match 1, team deathmatch: guests cannot start it, the host can, and ends it early.
+    client.world_mut().send_event(CommandEvent { player: guest, command: PlayerCommand::Lobby(LobbyAction::Start) });
+    pump(&mut host, &mut client, "a guest's START reaches the host", |_, _| true);
+    for _ in 0..30 {
+        host.update();
+        client.update();
+    }
+    assert_eq!(host.world().resource::<MatchState>().countdown, 0.0, "only the host starts the match");
+    lobby(&mut host, LobbyAction::Start);
+    pump(&mut host, &mut client, "match 1 starts for both", |host, client| phase(host) == Phase::Live && phase(client) == Phase::Live);
+    lobby(&mut host, LobbyAction::EndMatch);
+    pump(&mut host, &mut client, "the host ends match 1: both back in the lobby", together_in_the_lobby);
+    assert_eq!(rules_of(&host), lobby_rules, "the same lobby");
+    assert_eq!(human_teams(&host), vec![(0, 0), (guest, 1)], "on their two teams");
+    assert_eq!(local_player(&mut client).0, guest, "the guest keeps their seat");
+
+    // Match 2, horde: picking it gathers every human on the squad, on both machines.
+    lobby(&mut host, LobbyAction::Mode(-1));
+    pump(&mut host, &mut client, "the co-op pick gathers the squad", |host, client| {
+        human_teams(host) == vec![(0, 0), (guest, 0)] && human_teams(client) == human_teams(host) && client.world().resource::<MatchState>().next_mode == 6
+    });
+    pump(&mut host, &mut client, "the pick settles", |host, _| host.world().resource::<MatchState>().change_in <= 0.0);
+    lobby(&mut host, LobbyAction::Start);
+    pump(&mut host, &mut client, "the horde starts for both", |host, client| {
+        rules_of(host).horde && rules_of(client) == rules_of(host) && *client.world().resource::<State<MatchPhase>>().get() == MatchPhase::Active && count_players(client) == count_players(host)
+    });
+    assert_eq!(local_player(&mut client).2, 0);
+    // The squad is overrun: after the results both are back in the lobby, horde still picked.
+    host.world_mut().resource_mut::<MatchState>().phase = Phase::Lost;
+    pump(&mut host, &mut client, "both come back from the horde", together_in_the_lobby);
+    assert_eq!(rules_of(&host), lobby_rules);
+    assert_eq!(client.world().resource::<MatchState>().next_mode, 6, "the lobby still shows horde");
+    assert_eq!(human_teams(&host), vec![(0, 0), (guest, 0)], "the squad stays together for another go");
+
+    // Match 3, back to versus: the teams are dealt out again, and it ends on its own.
+    lobby(&mut host, LobbyAction::Mode(1));
+    pump(&mut host, &mut client, "versus deals the humans out to both teams", |host, client| {
+        human_teams(host) == vec![(0, 0), (guest, 1)] && human_teams(client) == human_teams(host) && client.world().resource::<MatchState>().next_mode == 0
+    });
+    pump(&mut host, &mut client, "the pick settles", |host, _| host.world().resource::<MatchState>().change_in <= 0.0);
+    lobby(&mut host, LobbyAction::Start);
+    pump(&mut host, &mut client, "match 3 starts for both", |host, client| phase(host) == Phase::Live && phase(client) == Phase::Live);
+    {
+        let mut state = host.world_mut().resource_mut::<MatchState>();
+        state.phase = Phase::Won;
+        state.winner = 1;
+        state.timer = 0.5;
+    }
+    pump(&mut host, &mut client, "after the results both are back in the lobby", together_in_the_lobby);
+    assert_eq!(rules_of(&host), lobby_rules);
+    assert_eq!(human_teams(&host), vec![(0, 0), (guest, 1)]);
+
+    // And a fourth: a different mode again (terrorist hunt), started straight away.
+    step_mode(&mut host, -4);
+    pump(&mut host, &mut client, "both reload on the hunt", |host, client| rules_of(host).hunt && together_in_the_lobby(host, client));
+    lobby(&mut host, LobbyAction::Start);
+    pump(&mut host, &mut client, "the hunt starts for both", |host, client| phase(host) == Phase::Live && phase(client) == Phase::Live);
+    lobby(&mut host, LobbyAction::EndMatch);
+    pump(&mut host, &mut client, "and back once more", |host, client| rules_of(host).hunt && together_in_the_lobby(host, client));
+    assert!(matches!(client.world().resource::<NetLink>(), NetLink::Client(_)), "the guest was never dropped");
+}
+
 #[test]
 fn host_and_guest_change_maps_modes_and_names_together() {
     use oz_core::worldgen::Layout;
@@ -933,7 +1088,7 @@ fn host_and_guest_change_maps_modes_and_names_together() {
 
     // The space station: both machines build it, and everyone keeps their seat.
     lobby(&mut host, LobbyAction::MapSize(-1));
-    lobby(&mut host, LobbyAction::Map(1));
+    lobby(&mut host, LobbyAction::MapKind);
     lobby(&mut host, LobbyAction::Map(1));
     pump(&mut host, &mut client, "both rebuild on the new map", |host, client| {
         let (h, c) = (host.world().resource::<Map>().recipe, client.world().resource::<Map>().recipe);

@@ -95,6 +95,47 @@ pub struct Carry {
     pub seats: Vec<Seat>,
     pub time_mode: u8,
     pub weather_mode: u8,
+    /// Back from a co-op match: the host's co-op pick (mode, map) the lobby still shows.
+    pub pick: Option<(u8, u8)>,
+}
+
+/// Authority: a guest who kept their seat through a relaunch and is still building the new
+/// world. The lobby will not start until everyone is in (or [`LOADING_WAIT`] runs out).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Loading {
+    pub waited: f32,
+}
+
+/// Longest the host's START waits for a guest still loading in.
+pub const LOADING_WAIT: f32 = 20.0;
+
+/// Client: tells the host this machine has built the world of the latest relaunch.
+pub fn announce_arrival(link: Res<NetLink>, local: Query<&Player, With<LocalPlayer>>, mut orders: EventWriter<crate::state::CommandEvent>) {
+    if let (NetLink::Client(link), Ok(player)) = (&*link, local.single()) {
+        orders.write(crate::state::CommandEvent { player: player.id, command: crate::state::PlayerCommand::Arrived(link.epoch) });
+    }
+}
+
+/// Authority: a guest is in once they say so for this relaunch; nobody waits forever.
+pub fn mark_arrived(mut commands: Commands, time: Res<Time<Real>>, link: Res<NetLink>, mut orders: EventReader<crate::state::CommandEvent>, mut loading: Query<(Entity, &Player, &mut Loading)>) {
+    let epoch = match &*link {
+        NetLink::Host(host) => host.epoch,
+        _ => 0,
+    };
+    for order in orders.read() {
+        if let crate::state::PlayerCommand::Arrived(at) = order.command
+            && at == epoch
+            && let Some((entity, ..)) = loading.iter().find(|(_, p, _)| p.id == order.player)
+        {
+            commands.entity(entity).remove::<Loading>();
+        }
+    }
+    for (entity, _, mut wait) in &mut loading {
+        wait.waited += time.delta_secs();
+        if wait.waited > LOADING_WAIT {
+            commands.entity(entity).remove::<Loading>();
+        }
+    }
 }
 
 /// Put a setup here and the next frame starts that match.
@@ -123,8 +164,11 @@ pub fn relaunch(
     players: Query<(&Player, Has<LocalPlayer>, Has<crate::bots::Bot>)>,
     mut pending: ResMut<PendingMatch>,
     mut next: ResMut<NextState<MatchPhase>>,
+    mut back: ResMut<crate::versus::LobbyReturn>,
 ) {
     let Some(rules) = request.0.take() else { return };
+    // Back from a co-op match to the lobby it started from: the same teams and the same pick.
+    let saved = if !old.pvp && rules.pvp { back.0.take().filter(|saved| saved.rules == rules) } else { None };
     // (id, name, team, this machine's player)
     let mut humans: Vec<(u8, String, u8, bool)> = players.iter().filter(|(.., bot)| !bot).map(|(p, local, _)| (p.id, p.name.clone(), p.team, local)).collect();
     let mut link = std::mem::take(&mut *link);
@@ -138,9 +182,13 @@ pub fn relaunch(
     }
     humans.sort_by_key(|h| h.0);
     for (index, human) in humans.iter_mut().enumerate() {
-        // Hunt and co-op put every human on the squad; leaving one deals them out to both teams.
+        // Hunt and co-op put every human on the squad; leaving one deals them out to both teams
+        // (or back to the teams they had in the lobby before a co-op match).
+        let before = saved.as_ref().and_then(|saved| saved.teams.iter().find(|(id, _)| *id == human.0)).map(|(_, team)| *team);
         human.2 = if rules.hunt || !rules.pvp {
             0
+        } else if let Some(team) = before {
+            team.min(1)
         } else if old.hunt || !old.pvp {
             (index % 2) as u8
         } else {
@@ -160,7 +208,7 @@ pub fn relaunch(
         player_name: local.as_ref().map_or_else(|| "SERVER".to_string(), |l| l.1.clone()),
         local_player: local.as_ref().map(|l| l.0),
         local_team: local.as_ref().map_or(0, |l| l.2),
-        carry: Some(Carry { seats, time_mode: state.time_mode, weather_mode: state.weather_mode }),
+        carry: Some(Carry { seats, time_mode: state.time_mode, weather_mode: state.weather_mode, pick: saved.map(|saved| saved.pick) }),
     });
     end_match(&mut next);
 }
@@ -263,7 +311,11 @@ pub fn start_pending_match(
         let now = time.elapsed_secs();
         for seat in &carry.seats {
             let spawn = spawn_point(&map, seat.id, rules.pvp.then_some(seat.team));
-            commands.spawn((player_bundle(&catalog, &rules, &map, seat.id, seat.name.clone(), seat.team), ids.next(), crate::net::remote_seat(now, spawn)));
+            let mut guest = commands.spawn((player_bundle(&catalog, &rules, &map, seat.id, seat.name.clone(), seat.team), ids.next(), crate::net::remote_seat(now, spawn)));
+            // A guest still connected rebuilds this world too; until they say so they are loading.
+            if matches!(setup.link, NetLink::Host(ref host) if host.peers.values().any(|id| *id == seat.id)) {
+                guest.insert(Loading { waited: 0.0 });
+            }
         }
     }
     if let NetLink::Host(host) = &mut setup.link {
@@ -287,8 +339,8 @@ pub fn start_pending_match(
         },
         time_mode: carry.time_mode,
         weather_mode: carry.weather_mode,
-        next_mode: rules.mode,
-        next_map: crate::versus::map_choice(&rules),
+        next_mode: carry.pick.map_or(rules.mode, |pick| pick.0),
+        next_map: carry.pick.map_or_else(|| crate::versus::map_choice(&rules), |pick| pick.1),
         ..default()
     });
     commands.insert_resource(Relaunched(setup.carry.is_some()));

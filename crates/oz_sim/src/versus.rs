@@ -63,6 +63,52 @@ pub fn maps_of_size(size: MapSize) -> Vec<u8> {
     maps
 }
 
+/// The lobby's two kinds of map: a random town rolls new streets every seed (by size, and
+/// for the large town by theme); a set map is hand-built and the same every time.
+pub fn is_random_map(choice: u8) -> bool {
+    rolls_streets(choice)
+}
+
+/// The random towns of one size: the large one in any theme first, then each theme.
+pub fn random_maps_of_size(size: MapSize) -> Vec<u8> {
+    maps_of_size(size).into_iter().filter(|c| is_random_map(*c)).collect()
+}
+
+/// Every set (hand-built) versus map, smallest first.
+pub fn set_maps() -> Vec<u8> {
+    let mut maps: Vec<u8> = (0..MAPS).filter(|c| !is_random_map(*c)).collect();
+    maps.sort_by_key(|c| choice_size(*c));
+    maps
+}
+
+/// The other kind of map at about the same size: a set map for a random town, the random
+/// town of that size for a set map.
+pub fn other_kind(choice: u8) -> u8 {
+    let size = choice_size(choice);
+    if is_random_map(choice) {
+        let set = set_maps();
+        set.iter().copied().find(|m| choice_size(*m) == size).unwrap_or(set[0])
+    } else {
+        random_maps_of_size(size)[0]
+    }
+}
+
+/// The next map of the same kind: through the themes of the large random town, or through
+/// the set maps.
+pub fn step_map(choice: u8, step: i8) -> u8 {
+    let maps = if is_random_map(choice) { random_maps_of_size(choice_size(choice)) } else { set_maps() };
+    let at = maps.iter().position(|m| *m == choice).unwrap_or(0);
+    maps[(at as i32 + step as i32).rem_euclid(maps.len() as i32) as usize]
+}
+
+/// The lobby's name for a large random town's theme.
+pub fn theme_title(choice: u8) -> &'static str {
+    match choice {
+        0 => "ANY (ROLLED)",
+        c => map_title(c),
+    }
+}
+
 /// Most players a team should have on a map of this size (spawns and lanes stay sensible).
 pub fn team_cap(size: MapSize) -> u8 {
     match size {
@@ -206,9 +252,21 @@ pub fn coop_rules(modes: &Modes, mode: u8, map: u8, squad: u8, threat: f32, seed
     Some(rules)
 }
 
+/// The lobby a co-op match was started from: its rules, the host's co-op pick (mode, map)
+/// and every human's team, so everyone comes back to the same lobby.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedLobby {
+    pub rules: Rules,
+    pub pick: (u8, u8),
+    pub teams: Vec<(u8, u8)>,
+}
+
 /// The authority keeps the lobby it left for a co-op match, to come back to afterwards.
 #[derive(Resource, Default)]
-pub struct LobbyReturn(pub Option<Rules>);
+pub struct LobbyReturn(pub Option<SavedLobby>);
+
+/// Seconds the results of a co-op match stay up before everyone goes back to the lobby.
+pub const COOP_RESULTS: f32 = 15.0;
 
 /// The rules for switching the lobby to `mode`: that mode's own defaults, on the same map,
 /// keeping the host's bot, time-limit choices, with room for every human already here.
@@ -291,12 +349,12 @@ pub fn update_roster(
     content: Res<Content>,
     rules: Option<Res<Rules>>,
     mut state: ResMut<MatchState>,
-    mut players: Query<(&mut Player, &Health, &PlayerInput, &mut Arsenal, Has<Bot>)>,
+    mut players: Query<(&mut Player, &Health, &PlayerInput, &mut Arsenal, Has<Bot>, Has<crate::session::Loading>)>,
     mut fx: EventWriter<FxEvent>,
 ) {
     let pvp = rules.is_some_and(|r| r.pvp);
     for id in std::mem::take(&mut state.credits) {
-        if let Some((mut player, _, _, mut arsenal, _)) = players.iter_mut().find(|(p, ..)| p.id == id) {
+        if let Some((mut player, _, _, mut arsenal, ..)) = players.iter_mut().find(|(p, ..)| p.id == id) {
             player.kills += 1;
             if pvp {
                 player.streak += 1;
@@ -319,7 +377,8 @@ pub fn update_roster(
     }
     let mut roster: Vec<RosterEntry> = players
         .iter()
-        .map(|(p, health, input, arsenal, bot)| RosterEntry {
+        .map(|(p, health, input, arsenal, bot, loading)| RosterEntry {
+            loading,
             id: p.id,
             name: p.name.clone(),
             team: p.team,
@@ -440,8 +499,14 @@ pub fn run_versus(
                 }
             }
             LobbyAction::Start if host && state.phase == Phase::Lobby && state.countdown <= 0.0 && state.change_in <= 0.0 && relaunch.0.is_none() => {
-                state.countdown = COUNTDOWN;
-                fx.write(FxEvent::Sound { sfx: Sfx::UiAccept, at: None });
+                // Nobody is left behind: wait for every guest still building the world.
+                let loading: Vec<&str> = state.roster.iter().filter(|r| r.loading).map(|r| r.name.as_str()).collect();
+                if loading.is_empty() {
+                    state.countdown = COUNTDOWN;
+                    fx.write(FxEvent::Sound { sfx: Sfx::UiAccept, at: None });
+                } else {
+                    fx.write(FxEvent::tell(0, format!("WAITING FOR {} TO LOAD IN", loading.join(", "))));
+                }
             }
             LobbyAction::SwitchTeam if state.phase == Phase::Lobby => {
                 let humans_on = |team: u8, players: &Query<(&mut Player, &mut Health, &mut Transform, &mut Arsenal, &mut PlayerInput, Option<&Bot>)>| {
@@ -489,9 +554,23 @@ pub fn run_versus(
                         (true, true) => state.next_map = coop_mode(&modes, state.next_mode).map_or(0, |def| state.next_map % coop_maps(def)),
                         _ => {}
                     }
-                    if coop_mode(&modes, state.next_mode).is_some() {
+                    let coop_now = coop_mode(&modes, state.next_mode).is_some();
+                    if coop_now {
                         state.team_size = state.team_size.min(COOP_SQUAD);
                         rules.team_size = state.team_size;
+                    }
+                    // The teams follow the mode at once: a co-op pick puts every human on the
+                    // squad, back to versus deals them out to both teams again.
+                    if coop_now != was_coop {
+                        let mut humans: Vec<_> = players.iter_mut().filter(|(.., bot)| bot.is_none()).collect();
+                        humans.sort_by_key(|(p, ..)| p.id);
+                        for (index, (player, _, transform, ..)) in humans.iter_mut().enumerate() {
+                            let team = if coop_now { 0 } else { (index % 2) as u8 };
+                            if player.team != team {
+                                player.team = team;
+                                transform.translation = crate::player::spawn_point(&map, player.id, Some(team));
+                            }
+                        }
                     }
                     state.change_in = SETTLE;
                 }
@@ -500,20 +579,24 @@ pub fn run_versus(
                 if let Some(def) = coop_mode(&modes, state.next_mode) {
                     state.next_map = (state.next_map as i32 + step as i32).rem_euclid(coop_maps(def) as i32) as u8;
                 } else {
-                    // Through the maps of the chosen size.
-                    let maps = maps_of_size(choice_size(state.next_map));
-                    let at = maps.iter().position(|m| *m == state.next_map).unwrap_or(0);
-                    state.next_map = maps[(at as i32 + step as i32).rem_euclid(maps.len() as i32) as usize];
+                    // Through the maps of the same kind: the large town's themes, or the set maps.
+                    state.next_map = step_map(state.next_map, step);
                 }
                 state.change_in = SETTLE;
             }
-            LobbyAction::MapSize(step) if host && state.phase == Phase::Lobby && state.countdown <= 0.0 && coop_mode(&modes, state.next_mode).is_none() => {
-                let at = MapSize::ALL.iter().position(|s| *s == choice_size(state.next_map)).unwrap_or(2);
-                let size = MapSize::ALL[(at as i32 + step as i32).rem_euclid(MapSize::ALL.len() as i32) as usize];
-                state.next_map = maps_of_size(size)[0];
+            LobbyAction::MapKind if host && state.phase == Phase::Lobby && state.countdown <= 0.0 && coop_mode(&modes, state.next_mode).is_none() => {
+                state.next_map = other_kind(state.next_map);
                 state.change_in = SETTLE;
             }
-            LobbyAction::NewMap if host && state.phase == Phase::Lobby && state.countdown <= 0.0 => {
+            // The size of a random town (a set map has its own size).
+            LobbyAction::MapSize(step) if host && state.phase == Phase::Lobby && state.countdown <= 0.0 && coop_mode(&modes, state.next_mode).is_none() && is_random_map(state.next_map) => {
+                let at = MapSize::ALL.iter().position(|s| *s == choice_size(state.next_map)).unwrap_or(2);
+                let size = MapSize::ALL[(at as i32 + step as i32).rem_euclid(MapSize::ALL.len() as i32) as usize];
+                state.next_map = random_maps_of_size(size)[0];
+                state.change_in = SETTLE;
+            }
+            // A random town rolls new streets; a set map is the same every time.
+            LobbyAction::NewMap if host && state.phase == Phase::Lobby && state.countdown <= 0.0 && coop_mode(&modes, state.next_mode).is_none() && is_random_map(state.next_map) => {
                 state.reroll = true;
                 state.change_in = state.change_in.max(0.2);
             }
@@ -530,6 +613,10 @@ pub fn run_versus(
             LobbyAction::Bots if host && state.phase == Phase::Lobby => rules.no_bots = !rules.no_bots,
             LobbyAction::Respawn(step) if host && state.phase == Phase::Lobby => {
                 rules.respawn_seconds = step_value(&RESPAWNS, rules.respawn_seconds, step);
+            }
+            // The host calls it: everyone back to the same lobby (as after the results, but now).
+            LobbyAction::EndMatch if host && matches!(state.phase, Phase::Live | Phase::Won) && relaunch.0.is_none() => {
+                relaunch.0 = Some(rules.clone());
             }
             _ => {}
         }
@@ -588,7 +675,8 @@ pub fn run_versus(
                 state.countdown = 0.0;
                 let seed = rng.0.next_u64();
                 if let Some(coop) = coop_rules(&modes, state.next_mode, state.next_map, state.team_size, rules.difficulty, seed) {
-                    back.0 = Some(rules.clone());
+                    let teams = players.iter().filter(|(.., bot)| bot.is_none()).map(|(p, ..)| (p.id, p.team)).collect();
+                    back.0 = Some(SavedLobby { rules: rules.clone(), pick: (state.next_mode, state.next_map), teams });
                     relaunch.0 = Some(coop);
                 }
             } else if state.countdown <= 0.0 {
@@ -705,20 +793,47 @@ pub fn run_versus(
 }
 
 /// Authority, co-op matches: the host takes everyone back to the lobby they left (or a fresh
-/// one on the first versus mode).
-pub fn back_to_lobby(mut orders: EventReader<CommandEvent>, rules: Res<Rules>, modes: Res<Modes>, mut relaunch: ResMut<Relaunch>, mut back: ResMut<LobbyReturn>) {
-    for order in orders.read() {
-        if order.player != 0 || !matches!(order.command, PlayerCommand::Lobby(LobbyAction::BackToLobby)) || relaunch.0.is_some() || rules.pvp {
-            continue;
-        }
-        let lobby = back.0.take().or_else(|| {
-            let mode = *versus_modes(&modes).first()?;
-            let mut lobby = (modes.0[mode as usize].rules)(rules.recipe.seed ^ 0x10bb);
-            lobby.mode = mode;
-            Some(lobby)
-        });
-        relaunch.0 = lobby;
+/// one on the first versus mode), and when the match is lost (or won) everyone goes back on
+/// their own once the results have been up for [`COOP_RESULTS`] seconds.
+#[allow(clippy::too_many_arguments)]
+pub fn back_to_lobby(
+    time: Res<Time>,
+    mut orders: EventReader<CommandEvent>,
+    rules: Res<Rules>,
+    modes: Res<Modes>,
+    mut state: ResMut<MatchState>,
+    mut relaunch: ResMut<Relaunch>,
+    back: Res<LobbyReturn>,
+    mut armed: Local<bool>,
+) {
+    if rules.pvp || versus_modes(&modes).is_empty() {
+        orders.clear();
+        return;
     }
+    let mut go = false;
+    for order in orders.read() {
+        go |= order.player == 0 && matches!(order.command, PlayerCommand::Lobby(LobbyAction::BackToLobby | LobbyAction::EndMatch));
+    }
+    if state.over() {
+        if !*armed {
+            *armed = true;
+            state.back_in = COOP_RESULTS;
+        }
+        state.back_in = (state.back_in - sim_dt(&time)).max(0.0);
+        go |= state.back_in <= 0.0;
+    } else {
+        *armed = false;
+    }
+    if !go || relaunch.0.is_some() {
+        return;
+    }
+    // The saved lobby stays put until the relaunch has used it for the teams and the pick.
+    relaunch.0 = back.0.as_ref().map(|saved| saved.rules.clone()).or_else(|| {
+        let mode = *versus_modes(&modes).first()?;
+        let mut lobby = (modes.0[mode as usize].rules)(rules.recipe.seed ^ 0x10bb);
+        lobby.mode = mode;
+        Some(lobby)
+    });
 }
 
 #[cfg(test)]

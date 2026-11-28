@@ -121,7 +121,8 @@ impl Plugin for SimPlugin {
             .add_systems(Update, (net::poll_joining, session::start_pending_match).chain().before(SimSet::Receive))
             .add_systems(Update, (net::host_receive, net::client_receive).in_set(SimSet::Receive).run_if(in_state(Active)))
             .add_systems(Update, (orders::process_commands, killstreak::use_streaks, breakables::work_doors).chain().in_set(SimSet::Orders))
-            .add_systems(OnEnter(Active), breakables::spawn_breakables)
+            .add_systems(OnEnter(Active), (breakables::spawn_breakables, session::announce_arrival))
+            .add_systems(Update, session::mark_arrived.in_set(SimSet::Orders).before(orders::process_commands))
             .add_systems(Update, breakables::sync_breakables.run_if(in_state(Active)))
             .add_systems(Update, (versus::run_versus, versus::fill_teams, session::relaunch, objective::run_objectives.run_if(objective::objective_mode)).chain().in_set(SimSet::Orders).after(orders::process_commands).run_if(versus::versus))
             // Co-op matches started from the lobby go back to it.
