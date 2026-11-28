@@ -24,6 +24,9 @@ const NECK: f32 = 0.56;
 const SHOULDER: f32 = 0.44;
 /// Where the gun's grip sits relative to the shoulder line.
 const GRIP: Vec3 = Vec3::new(0.1, -0.12, -0.36);
+/// How high above the feet a gun held up blind over low cover sits (the shots leave from
+/// about here, see `oz_sim::player::shot_origin`).
+const BLIND_GUN_HEIGHT: f32 = 1.5;
 
 /// Facial expressions, in the order they are baked.
 pub mod face {
@@ -800,11 +803,17 @@ pub fn animate_rigs(time: Res<Time>, mut rigs: Query<(&mut Rig, &Pose)>, mut tra
         let look = rot(pose.pitch.clamp(-1.2, 1.2));
         // Over the top: the right arm swings up from its shoulder and back over the wall, angled
         // up, and the hand holds the gun level, pointing where the player looks.
-        let raise = 0.95 + 0.12 * kick;
+        let raise = 1.3 + 0.1 * kick;
         let shoulder = Vec3::new(0.27, SHOULDER + 0.02, 0.0);
         let (aim_at, aim_rot) = if over_top {
             let arm_rot = body_frame.inverse() * look * rot(raise);
-            (aim_at.lerp(shoulder - arm_rot * Vec3::new(0.27, 0.02, 0.0), b), arm_rot)
+            let at = shoulder - arm_rot * Vec3::new(0.27, 0.02, 0.0);
+            // Where that puts the gun, above the feet: then reach up (the arm slides out of
+            // its shoulder) until it is clear over waist-high cover, where the shots come from.
+            let grip = |at: Vec3| hip_y + 0.06 + (body_frame * (at + arm_rot * GRIP)).y;
+            let reach = (BLIND_GUN_HEIGHT - grip(at)).clamp(0.0, 0.45);
+            let at = at + body_frame.inverse() * Vec3::Y * reach;
+            (aim_at.lerp(at, b), arm_rot)
         } else if pose.blind {
             (aim_at, body_frame.inverse() * look)
         } else {
