@@ -24,7 +24,7 @@ mod themes;
 mod zombie_maps;
 
 pub use themes::Theme;
-pub use zombie_maps::{SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeVent, HordeWindow, HordeZone, WallBuy, perk_id};
+pub use zombie_maps::{CHALK_FRAME, SILL as HORDE_SILL, HordeDoor, HordeLayout, HordeMachine, HordeWindow, HordeZone, WallBuy, chalk_fit, perk_id};
 use shapes::{Furnish, Plan, Roof};
 
 use crate::{collide::{Aabb, Ramp, StaticWorld}, economy::Ore, model::{Hull, Paint}, noise, rng::Rng};

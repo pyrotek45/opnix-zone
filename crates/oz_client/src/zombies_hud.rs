@@ -17,7 +17,10 @@ use crate::{
     view::WorldCamera,
 };
 use bevy::{pbr::NotShadowCaster, prelude::*};
-use oz_core::arsenal::assemble;
+use oz_core::{
+    arsenal::assemble,
+    worldgen::{CHALK_FRAME, chalk_fit},
+};
 use oz_sim::{
     prelude::*,
     zombies::{self, Interact, act, crate_phase, drop, forge_phase, kind, perk},
@@ -133,15 +136,28 @@ fn facing_rotation(facing: Vec2) -> Quat {
 fn dress_map(mut commands: Commands, map: Res<Map>, content: Res<Content>, art: Res<Art>, mut meshes: ResMut<Assets<Mesh>>) {
     let Some(layout) = map.horde.as_deref() else { return };
     let guns: Vec<Baked> = content.weapons.iter().map(|w| art.bake(&assemble(w, &w.defaults), &mut meshes)).collect();
-    // Wall buys: the gun's outline in chalk, in a chalk frame.
+    // Wall buys: the gun's outline in chalk, centred in its chalk frame and sized to fit it
+    // (long guns shrink, small ones grow a little). The frame's local Z runs along the wall,
+    // X out of it.
     for buy in &layout.buys {
         let Some(def) = content.weapons.get(buy.weapon as usize) else { continue };
-        let outline = art.bake(&chalk(&assemble(def, &def.defaults), Paint::White), &mut meshes);
+        let model = chalk(&assemble(def, &def.defaults), Paint::White);
+        let (scale, mid) = model.bounds().map_or((1.0, Vec3::ZERO), |(lo, hi)| chalk_fit(lo, hi));
+        let outline = art.bake(&model, &mut meshes);
         let n = Vec3::new(buy.normal.x, 0.0, buy.normal.y);
         let rot = Quat::from_rotation_y(f32::atan2(-n.z, n.x));
         let root = commands.spawn((MatchEntity, Transform::from_translation(buy.pos + n * 0.03).with_rotation(rot), Visibility::Inherited)).id();
-        baked(&mut commands, &art, root, &outline, Transform::from_scale(Vec3::new(0.08, 1.15, 1.15)));
-        for (at, size) in [(Vec3::new(0.0, 0.42, 0.0), Vec3::new(0.02, 0.03, 1.5)), (Vec3::new(0.0, -0.42, 0.0), Vec3::new(0.02, 0.03, 1.5)), (Vec3::new(0.0, 0.0, 0.74), Vec3::new(0.02, 0.87, 0.03)), (Vec3::new(0.0, 0.0, -0.74), Vec3::new(0.02, 0.87, 0.03))] {
+        // Flattened against the wall: barely any depth.
+        let flat = 0.08;
+        let size = Vec3::new(flat, scale, scale);
+        baked(&mut commands, &art, root, &outline, Transform { translation: -mid * size, scale: size, ..default() });
+        let (w, h) = (CHALK_FRAME.x, CHALK_FRAME.y);
+        for (at, size) in [
+            (Vec3::new(0.0, h * 0.5, 0.0), Vec3::new(0.02, 0.03, w + 0.03)),
+            (Vec3::new(0.0, -h * 0.5, 0.0), Vec3::new(0.02, 0.03, w + 0.03)),
+            (Vec3::new(0.0, 0.0, w * 0.5), Vec3::new(0.02, h + 0.03, 0.03)),
+            (Vec3::new(0.0, 0.0, -w * 0.5), Vec3::new(0.02, h + 0.03, 0.03)),
+        ] {
             piece(&mut commands, &art, root, Shape::Cube, Paint::Bone, at, size, Quat::IDENTITY);
         }
     }
@@ -333,8 +349,10 @@ fn update_drops(mut commands: Commands, art: Res<Art>, time: Res<Time>, state: R
             continue;
         }
         let root = commands.spawn((MatchEntity, DropLook(i), Transform::from_translation(d.at), Visibility::Inherited)).id();
-        let paint = [Paint::Glow, Paint::Green, Paint::Red, Paint::Spark][d.kind as usize % 4];
-        let shape = [Shape::Cube, Shape::Cylinder, Shape::Shard, Shape::Cone][d.kind as usize % 4];
+        const PAINTS: [Paint; 7] = [Paint::Glow, Paint::Green, Paint::Red, Paint::Spark, Paint::Wood, Paint::Gold, Paint::Aether];
+        const SHAPES: [Shape; 7] = [Shape::Cube, Shape::Cylinder, Shape::Shard, Shape::Cone, Shape::Cube, Shape::Cylinder, Shape::Shard];
+        let paint = PAINTS[d.kind as usize % PAINTS.len()];
+        let shape = SHAPES[d.kind as usize % SHAPES.len()];
         piece(&mut commands, &art, root, shape, paint, Vec3::ZERO, Vec3::splat(0.45), Quat::from_rotation_z(0.4));
         piece(&mut commands, &art, root, Shape::Cylinder, Paint::Aether, Vec3::new(0.0, -0.4, 0.0), Vec3::new(0.7, 0.02, 0.7), Quat::IDENTITY);
     }
@@ -370,7 +388,14 @@ fn attach_husks(mut commands: Commands, art: Res<Art>, husks: Query<(Entity, &En
     for (entity, enemy, transform) in &husks {
         let brute = enemy.kind == kind::BRUTE;
         let crawler = enemy.kind == kind::CRAWLER;
-        let (shell, plate, eye) = if brute { (Paint::Iron, Paint::Rust, Paint::Spark) } else { (Paint::Rust, Paint::Steel, Paint::Red) };
+        let volt = enemy.kind == kind::VOLT;
+        let (shell, plate, eye) = if brute {
+            (Paint::Iron, Paint::Rust, Paint::Spark)
+        } else if volt {
+            (Paint::Steel, Paint::Teal, Paint::Aether)
+        } else {
+            (Paint::Rust, Paint::Steel, Paint::Red)
+        };
         let scale = if brute { 1.4 } else { 1.0 };
         commands.entity(entity).insert(Visibility::Inherited);
         let body = commands.spawn((Transform::from_scale(Vec3::splat(scale)), Visibility::Inherited, ChildOf(entity))).id();
@@ -385,6 +410,14 @@ fn attach_husks(mut commands: Commands, art: Res<Art>, husks: Query<(Entity, &En
         piece(&mut commands, &art, torso, Shape::Cube, Paint::Copper, Vec3::new(-0.05, 0.06, -0.15), Vec3::new(0.025, 0.18, 0.025), Quat::from_rotation_z(-0.4));
         piece(&mut commands, &art, torso, Shape::Shard, if brute { Paint::Spark } else { Paint::Red }, Vec3::new(-0.08, 0.32, -0.16), Vec3::splat(0.07), Quat::IDENTITY);
         piece(&mut commands, &art, torso, Shape::Cube, Paint::Dark, Vec3::new(0.0, 0.3, 0.17), Vec3::new(0.3, 0.32, 0.08), Quat::IDENTITY);
+        if volt {
+            // An overcharged cell bulging out of the chest, with coils round it: shoot it from afar.
+            piece(&mut commands, &art, torso, Shape::Shard, Paint::Aether, Vec3::new(0.0, 0.32, -0.2), Vec3::new(0.2, 0.24, 0.14), Quat::IDENTITY);
+            for y in [0.18, 0.46] {
+                piece(&mut commands, &art, torso, Shape::Cube, Paint::Copper, Vec3::new(0.0, y, -0.17), Vec3::new(0.36, 0.035, 0.04), Quat::IDENTITY);
+            }
+            piece(&mut commands, &art, torso, Shape::Cylinder, Paint::Aether, Vec3::new(0.0, 0.62, 0.12), Vec3::new(0.06, 0.3, 0.06), Quat::from_rotation_x(0.3));
+        }
         if brute {
             piece(&mut commands, &art, torso, Shape::Cube, Paint::Iron, Vec3::new(0.3, 0.52, 0.0), Vec3::new(0.24, 0.16, 0.34), Quat::from_rotation_z(-0.3));
             piece(&mut commands, &art, torso, Shape::Cube, Paint::Iron, Vec3::new(-0.3, 0.52, 0.0), Vec3::new(0.24, 0.16, 0.34), Quat::from_rotation_z(0.3));
@@ -735,6 +768,9 @@ fn update_hud(
         }
         if h.insta > 0.0 {
             parts.push(format!("{}  {:.0}", drop::NAMES[drop::INSTA as usize], h.insta.ceil()));
+        }
+        if h.sale > 0.0 {
+            parts.push(format!("{}  {:.0}", drop::NAMES[drop::CLEARANCE as usize], h.sale.ceil()));
         }
         let line = parts.join("      ");
         if text.0 != line {

@@ -8,7 +8,7 @@
 //!   tanks, a pump house and a cold store.
 //!
 //! Besides the geometry, each map fills in a [`HordeLayout`]: the zones and the doors
-//! between them, barricaded windows where husks climb in, floor vents they rise from, chalk
+//! between them, barricaded windows (the only way husks get in) and where husks gather outside them, chalk
 //! outlines of weapons for sale, perk machines, the salvage crate's spots, the reforge and the
 //! power switch. The simulation and the client both read it; nothing here is replicated.
 
@@ -69,6 +69,11 @@ pub struct HordeWindow {
     pub inside: Vec3,
     pub outside: Vec3,
     pub zone: u8,
+    /// Where husks for this window turn up: out of sight, well outside every zone, with a
+    /// clear straight walk in to `outside`.
+    pub spawn: Vec3,
+    /// How far either side of `spawn` (along the wall) is clear too.
+    pub spread: f32,
 }
 
 impl HordeWindow {
@@ -77,13 +82,6 @@ impl HordeWindow {
         let half = if self.along_x { Vec3::new(WINDOW * 0.5, 0.0, T * 0.5 + 0.05) } else { Vec3::new(T * 0.5 + 0.05, 0.0, WINDOW * 0.5) };
         Aabb::span(self.center + Vec3::new(-half.x, SILL - 0.05, -half.z), self.center + Vec3::new(half.x, LINTEL, half.z))
     }
-}
-
-/// A floor grate or hatch that husks climb out of.
-#[derive(Clone, Copy, Debug)]
-pub struct HordeVent {
-    pub pos: Vec3,
-    pub zone: u8,
 }
 
 /// A chalk outline on a wall: buy the gun, or ammo for it once you own it.
@@ -99,7 +97,24 @@ pub struct WallBuy {
     pub zone: u8,
 }
 
-/// A machine standing against a wall: a perk dispenser, a crate spot, the reforge, the switch.
+/// The chalk frame drawn round every wall gun: width along the wall, and height (centred on
+/// [`WallBuy::pos`]).
+pub const CHALK_FRAME: Vec2 = Vec2::new(1.6, 0.8);
+/// Clear space kept between a wall gun's outline and its frame, on every side.
+pub const CHALK_MARGIN: f32 = 0.09;
+
+/// How to draw a gun model inside its chalk frame: the uniform scale, and the model-space
+/// point that goes at the frame's centre. `lo`/`hi` are the model's bounds (+Y up, -Z the
+/// muzzle; length along Z goes along the wall). Long guns shrink to fit; small ones grow a
+/// little, but not past 1.6 times life size.
+pub fn chalk_fit(lo: Vec3, hi: Vec3) -> (f32, Vec3) {
+    let size = (hi - lo).max(Vec3::splat(1e-3));
+    let room = CHALK_FRAME - Vec2::splat(CHALK_MARGIN * 2.0);
+    let scale = (room.x / size.z).min(room.y / size.y).min(1.6);
+    (scale, (lo + hi) * 0.5)
+}
+
+/// A machine standing against a wall:a perk dispenser, a crate spot, the reforge, the switch.
 #[derive(Clone, Copy, Debug)]
 pub struct HordeMachine {
     /// Floor point in front of the machine, where you stand to use it.
@@ -118,7 +133,6 @@ pub struct HordeLayout {
     pub zones: Vec<HordeZone>,
     pub doors: Vec<HordeDoor>,
     pub windows: Vec<HordeWindow>,
-    pub vents: Vec<HordeVent>,
     pub buys: Vec<WallBuy>,
     pub perks: Vec<HordeMachine>,
     /// Where the salvage crate can be; it starts at the first.
@@ -155,6 +169,7 @@ pub mod perk_id {
     pub const PATCH_UP: u8 = 3;
     pub const FLEETFOOT: u8 = 4;
     pub const SPARE_SOCKET: u8 = 5;
+    pub const SCRAP_MAGNET: u8 = 6;
 }
 
 /// An opening in a wall line, centred `at` (world coordinate along the line).
@@ -204,7 +219,13 @@ impl World {
                     let center = if along_x { Vec3::new(at, g, across) } else { Vec3::new(across, g, at) };
                     let n = if along_x { Vec2::new(0.0, out) } else { Vec2::new(out, 0.0) };
                     let n3 = Vec3::new(n.x, 0.0, n.y);
-                    lay.windows.push(HordeWindow { center, along_x, out: n, inside: center - n3 * 1.0, outside: center + n3 * 1.1, zone });
+                    lay.windows.push(HordeWindow { center, along_x, out: n, inside: center - n3 * 1.0, outside: center + n3 * 1.1, zone, spawn: center + n3 * 1.1, spread: 0.0 });
+                    // A caged lamp over the inside of every window, so the way they come in
+                    // reads at a glance in the dark.
+                    let lamp = center - n3 * (T * 0.5 + 0.06) + Vec3::Y * (LINTEL + 0.22);
+                    let half = if along_x { Vec3::new(0.32, 0.07, 0.06) } else { Vec3::new(0.06, 0.07, 0.32) };
+                    self.decor(Aabb::new(lamp, half), Paint::Glow);
+                    self.decor(Aabb::new(lamp + Vec3::Y * 0.09, half + Vec3::new(0.03, -0.05, 0.03)), Paint::Dark);
                 }
             }
         }
@@ -265,17 +286,6 @@ impl World {
         }
     }
 
-    /// A floor grate for a vent spawn.
-    fn grate(&mut self, lay: &mut HordeLayout, p: Vec2, zone: u8) {
-        let g = lay.ground;
-        self.decor(Aabb::span(Vec3::new(p.x - 0.75, g, p.y - 0.75), Vec3::new(p.x + 0.75, g + 0.03, p.y + 0.75)), Paint::Dark);
-        for k in 0..4 {
-            let x = p.x - 0.55 + k as f32 * 0.37;
-            self.decor(Aabb::span(Vec3::new(x - 0.05, g + 0.03, p.y - 0.6), Vec3::new(x + 0.05, g + 0.05, p.y + 0.6)), Paint::Iron);
-        }
-        lay.vents.push(HordeVent { pos: Vec3::new(p.x, g, p.y), zone });
-    }
-
     /// Cinder Works: the foundry compound.
     pub(super) fn cinder_works(&mut self, rng: &mut Rng) {
         let g = FOUNDRY_GROUND;
@@ -304,7 +314,7 @@ impl World {
         self.zline(&mut lay, Vec2::new(12.0, 8.0), Vec2::new(44.0, 8.0), 4.0, &[Door(19.0, 2.4), Window(38.0, 3, -1.0)], brick);
         self.zline(&mut lay, Vec2::new(-22.0, -12.0), Vec2::new(32.0, -12.0), 4.5, &[Door(0.0, 2.4), Window(22.0, 2, -1.0)], brick);
         // Outer walls.
-        self.zline(&mut lay, Vec2::new(-12.0, -12.0), Vec2::new(-12.0, 10.0), 4.5, &[Window(-6.0, 0, -1.0), Window(4.0, 0, -1.0)], brick);
+        self.zline(&mut lay, Vec2::new(-12.0, -12.0), Vec2::new(-12.0, 10.0), 4.5, &[Window(-7.0, 0, -1.0), Window(-1.0, 0, -1.0), Window(5.0, 0, -1.0)], brick);
         self.zline(&mut lay, Vec2::new(-22.0, 10.0), Vec2::new(-22.0, 32.0), 6.5, &[Window(16.0, 1, -1.0), Window(26.0, 1, -1.0)], sheet);
         self.zline(&mut lay, Vec2::new(-22.0, 32.0), Vec2::new(14.0, 32.0), 6.5, &[Window(-14.0, 1, 1.0), Window(-2.0, 1, 1.0), Window(8.0, 1, 1.0)], sheet);
         self.zline(&mut lay, Vec2::new(14.0, 32.0), Vec2::new(44.0, 32.0), 9.0, &[Window(22.0, 3, 1.0), Window(36.0, 3, 1.0)], brick);
@@ -349,7 +359,7 @@ impl World {
 
     fn foundry_courtyard(&mut self, lay: &mut HordeLayout, rng: &mut Rng) {
         let g = lay.ground;
-        // A dead flatbed and some pallets for cover; puddles; the sewer grate.
+        // A dead flatbed and some pallets for cover; puddles.
         self.solid(Aabb::span(Vec3::new(3.0, g, -8.0), Vec3::new(5.6, g + 1.3, -2.5)), Paint::Steel);
         self.solid(Aabb::span(Vec3::new(3.1, g, -9.6), Vec3::new(5.5, g + 2.2, -8.0)), Paint::Coral);
         self.decor(Aabb::span(Vec3::new(3.3, g + 1.5, -9.62), Vec3::new(5.3, g + 2.0, -9.6)), Paint::Screen);
@@ -362,7 +372,6 @@ impl World {
         for (x, z, w, d) in [(-3.0, 3.0, 2.4, 1.4), (6.5, 1.0, 1.6, 2.2), (-6.0, -2.0, 1.2, 1.0)] {
             self.flat(x - w, x + w, z - d, z + d, g + 0.006, Paint::Steel);
         }
-        self.grate(lay, Vec2::new(-4.0, -8.0), 0);
         self.lamp(Vec2::new(-10.8, 8.8));
         self.lamp(Vec2::new(10.8, -10.8));
         Self::wall_buy(lay, Vec2::new(-6.0, 9.8), Vec2::NEG_Y, gun::DMR, 500, 0);
@@ -401,6 +410,8 @@ impl World {
         Self::wall_buy(lay, Vec2::new(-21.8, 21.0), Vec2::X, gun::PDW, 1100, 1);
         let m = self.machine(lay, Vec2::new(-12.5, 10.2), Vec2::Y, 1, perk_id::IRON_HIDE, 2.2);
         lay.perks.push(m);
+        let m = self.machine(lay, Vec2::new(13.8, 14.5), Vec2::NEG_X, 1, perk_id::SCRAP_MAGNET, 2.2);
+        lay.perks.push(m);
         let c = self.machine(lay, Vec2::new(-4.0, 31.8), Vec2::NEG_Y, 1, 0, 0.0);
         lay.crates.push(c);
         let _ = rng;
@@ -410,8 +421,9 @@ impl World {
         let g = lay.ground;
         // A partition with two doorways: the clerks' office west, the generator room east.
         self.zline(lay, Vec2::new(23.0, -12.0), Vec2::new(23.0, 8.0), 4.0, &[Cut::Pass(-7.0, 1.8), Cut::Pass(3.0, 1.8)], Paint::Bone);
-        for (x, z) in [(15.5, -8.5), (19.5, -8.5), (15.5, -3.0), (19.5, -3.0)] {
-            self.desk(rng, Vec2::new(x, z), Vec2::NEG_Y, g);
+        // Desks with their chairs to the north, so the way in from the window stays clear.
+        for (x, z) in [(15.5, -7.6), (19.5, -7.6), (15.5, -2.6), (19.5, -2.6)] {
+            self.desk(rng, Vec2::new(x, z), Vec2::Y, g);
         }
         self.filing_cabinets(Vec2::new(13.0, 1.0), 3, g);
         self.filing_cabinets(Vec2::new(14.0, -11.2), 2, g);
@@ -455,7 +467,6 @@ impl World {
         self.solid(Aabb::span(Vec3::new(22.8, g + 2.6, 18.9), Vec3::new(25.2, g + 4.0, 21.3)), Paint::Iron);
         self.crates(Vec2::new(39.5, 28.0), true);
         self.crates(Vec2::new(19.0, 23.0), false);
-        self.grate(lay, Vec2::new(22.0, 16.5), 3);
         for (x, z) in [(20.0, 12.0), (38.0, 28.0), (20.0, 28.0), (40.0, 12.0)] {
             self.hanging_light(Vec2::new(x, z), g + 9.0, Paint::Glow);
         }
@@ -486,7 +497,6 @@ impl World {
         self.decor(Aabb::span(Vec3::new(-6.0, g + 1.1, -28.1), Vec3::new(-2.0, g + 1.14, -27.95)), Paint::Gold);
         self.crates(Vec2::new(8.0, -16.0), true);
         self.crates(Vec2::new(-18.0, -29.5), false);
-        self.grate(lay, Vec2::new(-6.0, -20.0), 4);
         self.lamp(Vec2::new(-21.0, -31.0));
         self.lamp(Vec2::new(11.0, -13.0));
         Self::wall_buy(lay, Vec2::new(-8.0, -12.2), Vec2::NEG_Y, gun::BURST, 1200, 4);
@@ -534,7 +544,7 @@ impl World {
             HordeZone { name: "BOARDWALK", rect: (-36.0, -10.0, -7.0, 10.0) },
             HordeZone { name: "GREENHOUSE", rect: (-14.0, 14.0, 10.0, 30.0) },
             HordeZone { name: "SPECIMEN LAB", rect: (10.0, 34.0, -12.0, 10.0) },
-            HordeZone { name: "PUMP HOUSE", rect: (-14.0, 10.0, -32.0, -10.0) },
+            HordeZone { name: "PUMP HOUSE", rect: (-26.0, -2.0, -32.0, -10.0) },
             HordeZone { name: "COLD STORE", rect: (-36.0, -14.0, 10.0, 30.0) },
         ];
         let panel = Paint::Shell;
@@ -544,17 +554,19 @@ impl World {
         self.flat(-36.0, -10.0, -7.0, 10.0, g + 0.002, Paint::Leaf);
         self.flat(-14.0, 14.0, 10.0, 30.0, g + 0.002, Paint::Bone);
         self.flat(10.0, 34.0, -12.0, 10.0, g + 0.002, Paint::Metal);
-        self.flat(-14.0, 10.0, -32.0, -10.0, g + 0.002, Paint::Concrete);
+        self.flat(-26.0, -2.0, -32.0, -10.0, g + 0.002, Paint::Concrete);
         self.flat(-36.0, -14.0, 10.0, 30.0, g + 0.002, Paint::Steel);
 
         // Shared walls.
-        self.zline(&mut lay, Vec2::new(-10.0, -10.0), Vec2::new(-10.0, 10.0), 3.4, &[Door(1.5, 2.4), Window(-8.5, 0, -1.0)], metal);
+        self.zline(&mut lay, Vec2::new(-10.0, -10.0), Vec2::new(-10.0, 10.0), 3.4, &[Door(1.5, 2.4)], metal);
         self.zline(&mut lay, Vec2::new(-36.0, 10.0), Vec2::new(14.0, 10.0), 4.2, &[Door(0.0, 2.4), Door(-25.0, 2.4)], panel);
         self.zline(&mut lay, Vec2::new(10.0, -12.0), Vec2::new(10.0, 10.0), 3.8, &[Door(0.0, 2.4)], metal);
-        self.zline(&mut lay, Vec2::new(-14.0, -10.0), Vec2::new(10.0, -10.0), 3.4, &[Door(0.0, 2.4)], metal);
+        // The pump house sits off to the south-west, so the pad's south wall looks out on the fen.
+        self.zline(&mut lay, Vec2::new(-26.0, -10.0), Vec2::new(-2.0, -10.0), 5.0, &[Door(-6.0, 2.4)], Paint::Concrete);
+        self.zline(&mut lay, Vec2::new(-2.0, -10.0), Vec2::new(10.0, -10.0), 3.4, &[Window(0.2, 0, -1.0), Window(4.5, 0, -1.0), Window(8.5, 0, -1.0)], metal);
         self.zline(&mut lay, Vec2::new(-14.0, 10.0), Vec2::new(-14.0, 30.0), 4.2, &[Door(20.0, 2.4)], panel);
         // Outer walls.
-        self.zline(&mut lay, Vec2::new(-36.0, -7.0), Vec2::new(-10.0, -7.0), 3.4, &[Window(-30.0, 1, -1.0), Window(-19.0, 1, -1.0)], metal);
+        self.zline(&mut lay, Vec2::new(-36.0, -7.0), Vec2::new(-10.0, -7.0), 3.4, &[Window(-33.0, 1, -1.0), Window(-28.5, 1, -1.0)], metal);
         self.zline(&mut lay, Vec2::new(-36.0, -7.0), Vec2::new(-36.0, 10.0), 3.4, &[Window(2.0, 1, -1.0)], metal);
         self.zline(&mut lay, Vec2::new(-14.0, 30.0), Vec2::new(14.0, 30.0), 4.2, &[Window(-7.0, 2, 1.0), Window(7.0, 2, 1.0)], glass);
         self.zline(&mut lay, Vec2::new(14.0, 10.0), Vec2::new(14.0, 30.0), 4.2, &[Window(22.0, 2, 1.0)], glass);
@@ -563,21 +575,21 @@ impl World {
         self.zline(&mut lay, Vec2::new(14.0, 10.0), Vec2::new(34.0, 10.0), 3.8, &[Window(26.0, 3, 1.0)], metal);
         self.zline(&mut lay, Vec2::new(34.0, -12.0), Vec2::new(34.0, 10.0), 3.8, &[Window(-5.0, 3, 1.0), Window(4.0, 3, 1.0)], metal);
         self.zline(&mut lay, Vec2::new(10.0, -12.0), Vec2::new(34.0, -12.0), 3.8, &[Window(22.0, 3, -1.0)], metal);
-        self.zline(&mut lay, Vec2::new(-14.0, -32.0), Vec2::new(10.0, -32.0), 5.0, &[Window(-6.0, 4, -1.0), Window(4.0, 4, -1.0)], Paint::Concrete);
-        self.zline(&mut lay, Vec2::new(-14.0, -32.0), Vec2::new(-14.0, -10.0), 5.0, &[Window(-20.0, 4, -1.0)], Paint::Concrete);
-        self.zline(&mut lay, Vec2::new(10.0, -32.0), Vec2::new(10.0, -12.0), 5.0, &[Window(-24.0, 4, 1.0)], Paint::Concrete);
+        self.zline(&mut lay, Vec2::new(-26.0, -32.0), Vec2::new(-2.0, -32.0), 5.0, &[Window(-18.0, 4, -1.0), Window(-8.0, 4, -1.0)], Paint::Concrete);
+        self.zline(&mut lay, Vec2::new(-26.0, -32.0), Vec2::new(-26.0, -10.0), 5.0, &[Window(-20.0, 4, -1.0)], Paint::Concrete);
+        self.zline(&mut lay, Vec2::new(-2.0, -32.0), Vec2::new(-2.0, -10.0), 5.0, &[Window(-24.0, 4, 1.0)], Paint::Concrete);
 
         self.buy_door(&mut lay, Vec2::new(-10.0, 1.5), false, 2.4, (0, 1), 750, true);
         self.buy_door(&mut lay, Vec2::new(0.0, 10.0), true, 2.4, (0, 2), 1000, false);
         self.buy_door(&mut lay, Vec2::new(10.0, 0.0), false, 2.4, (0, 3), 750, false);
-        self.buy_door(&mut lay, Vec2::new(0.0, -10.0), true, 2.4, (0, 4), 1250, false);
+        self.buy_door(&mut lay, Vec2::new(-6.0, -10.0), true, 2.4, (0, 4), 1250, false);
         self.buy_door(&mut lay, Vec2::new(-25.0, 10.0), true, 2.4, (1, 5), 1000, true);
         self.buy_door(&mut lay, Vec2::new(-14.0, 20.0), false, 2.4, (5, 2), 1000, false);
 
         // Roofs: the greenhouse is a lattice of glass, the rest flat.
         self.decor(Aabb::span(Vec3::new(-36.2, g + 4.2, 9.8), Vec3::new(-13.8, g + 4.45, 30.2)), Paint::Dark);
         self.decor(Aabb::span(Vec3::new(9.8, g + 3.8, -12.2), Vec3::new(34.2, g + 4.05, 10.2)), Paint::Dark);
-        self.decor(Aabb::span(Vec3::new(-14.2, g + 5.0, -32.2), Vec3::new(10.2, g + 5.25, -9.8)), Paint::Iron);
+        self.decor(Aabb::span(Vec3::new(-26.2, g + 5.0, -32.2), Vec3::new(-1.8, g + 5.25, -9.8)), Paint::Iron);
         let mut x = -14.0;
         while x <= 14.0 {
             self.decor(Aabb::span(Vec3::new(x - 0.08, g + 4.1, 10.0), Vec3::new(x + 0.08, g + 4.3, 30.0)), Paint::Dark);
@@ -615,14 +627,12 @@ impl World {
             self.decor(Aabb::new(Vec3::new(p.x, g + 0.08, p.y), Vec3::new(0.12, 0.08, 0.12)), if k % 2 == 0 { Paint::Green } else { Paint::Blue });
         }
         self.crates(Vec2::new(-7.5, 7.5), true);
-        self.crates(Vec2::new(7.8, -7.4), false);
-        self.crates(Vec2::new(-7.2, -6.2), false);
-        self.grate(lay, Vec2::new(-3.0, 7.0), 0);
-        self.grate(lay, Vec2::new(-6.5, -2.0), 0);
+        self.crates(Vec2::new(2.4, -6.2), false);
+        self.crates(Vec2::new(-7.0, -2.6), false);
         self.lamp(Vec2::new(9.0, 9.0));
         self.lamp(Vec2::new(-9.0, -9.0));
         Self::wall_buy(lay, Vec2::new(-5.0, 9.8), Vec2::NEG_Y, gun::DMR, 500, 0);
-        Self::wall_buy(lay, Vec2::new(5.0, -9.8), Vec2::Y, gun::MACHINE_PISTOL, 600, 0);
+        Self::wall_buy(lay, Vec2::new(-9.8, -5.5), Vec2::X, gun::MACHINE_PISTOL, 600, 0);
         let m = self.machine(lay, Vec2::new(9.8, 7.0), Vec2::NEG_X, 0, perk_id::PATCH_UP, 2.2);
         lay.perks.push(m);
         let _ = rng;
@@ -648,7 +658,6 @@ impl World {
         for z in [-1.4, 4.4] {
             self.decor(Aabb::span(Vec3::new(-36.0, g + 0.95, z - 0.04), Vec3::new(-10.0, g + 1.0, z + 0.04)), Paint::Wood);
         }
-        self.grate(lay, Vec2::new(-24.0, 7.5), 1);
         self.crates(Vec2::new(-16.0, -5.5), true);
         for p in [Vec2::new(-30.0, 1.5), Vec2::new(-18.0, 1.5)] {
             self.lamp(p + Vec2::new(0.0, 3.2));
@@ -715,27 +724,26 @@ impl World {
 
     fn fen_pump(&mut self, lay: &mut HordeLayout, rng: &mut Rng) {
         let g = lay.ground;
-        // Pumps on plinths, pipes along the walls, an open sump with a grate.
-        for (x, z) in [(-8.0, -26.0), (4.0, -18.0)] {
+        // Pumps on plinths, pipes along the walls.
+        for (x, z) in [(-20.0, -26.0), (-8.0, -18.0)] {
             self.solid(Aabb::span(Vec3::new(x - 1.6, g, z - 1.2), Vec3::new(x + 1.6, g + 1.6, z + 1.2)), Paint::Teal);
             self.column(Vec2::new(x, z), 0.5, g + 1.6, g + 2.6, Paint::Iron);
             self.decor(Aabb::span(Vec3::new(x - 1.62, g + 1.0, z - 0.4), Vec3::new(x - 1.6, g + 1.3, z + 0.4)), Paint::Green);
         }
         for z in [-31.2, -10.8] {
-            self.decor(Aabb::span(Vec3::new(-13.6, g + 3.6, z - 0.18), Vec3::new(9.6, g + 3.95, z + 0.18)), Paint::Copper);
+            self.decor(Aabb::span(Vec3::new(-25.6, g + 3.6, z - 0.18), Vec3::new(-2.4, g + 3.95, z + 0.18)), Paint::Copper);
         }
-        self.crates(Vec2::new(-11.5, -14.0), true);
-        self.crates(Vec2::new(7.5, -29.5), false);
-        self.grate(lay, Vec2::new(-1.0, -22.0), 4);
-        for (x, z) in [(-6.0, -15.0), (-6.0, -27.0), (5.0, -27.0)] {
+        self.crates(Vec2::new(-22.5, -12.2), true);
+        self.crates(Vec2::new(-4.5, -29.5), false);
+        for (x, z) in [(-18.0, -15.0), (-18.0, -27.0), (-7.0, -27.0)] {
             self.hanging_light(Vec2::new(x, z), g + 5.0, Paint::Glow);
         }
-        Self::wall_buy(lay, Vec2::new(-13.8, -18.0), Vec2::X, gun::BATTLE_RIFLE, 1600, 4);
-        let m = self.machine(lay, Vec2::new(9.8, -16.0), Vec2::NEG_X, 4, perk_id::SPARE_SOCKET, 2.2);
+        Self::wall_buy(lay, Vec2::new(-25.8, -15.5), Vec2::X, gun::BATTLE_RIFLE, 1600, 4);
+        let m = self.machine(lay, Vec2::new(-2.2, -14.5), Vec2::NEG_X, 4, perk_id::SPARE_SOCKET, 2.2);
         lay.perks.push(m);
-        let p = self.machine(lay, Vec2::new(-2.0, -31.8), Vec2::Y, 4, 0, 0.0);
+        let p = self.machine(lay, Vec2::new(-14.0, -31.8), Vec2::Y, 4, 0, 0.0);
         lay.power = Some(p);
-        let c = self.machine(lay, Vec2::new(-13.8, -28.0), Vec2::X, 4, 0, 0.0);
+        let c = self.machine(lay, Vec2::new(-25.8, -28.0), Vec2::X, 4, 0, 0.0);
         lay.crates.push(c);
         let _ = rng;
     }
@@ -755,6 +763,8 @@ impl World {
         }
         Self::wall_buy(lay, Vec2::new(-30.0, 10.2), Vec2::Y, gun::SHOTGUN, 1200, 5);
         let m = self.machine(lay, Vec2::new(-35.8, 13.0), Vec2::X, 5, perk_id::FLEETFOOT, 2.2);
+        lay.perks.push(m);
+        let m = self.machine(lay, Vec2::new(-14.2, 25.5), Vec2::NEG_X, 5, perk_id::SCRAP_MAGNET, 2.2);
         lay.perks.push(m);
         let c = self.machine(lay, Vec2::new(-18.0, 29.8), Vec2::NEG_Y, 5, 0, 0.0);
         lay.crates.push(c);
@@ -785,11 +795,74 @@ impl World {
 
     /// Done: no swinging doors or glass on these maps (the horde mode has its own), and the
     /// layout recorded.
-    fn finish_horde(&mut self, lay: HordeLayout) {
+    fn finish_horde(&mut self, mut lay: HordeLayout) {
         self.doors.clear();
         self.windows.clear();
         self.team_spawns = [Vec::new(), Vec::new()];
+        self.place_window_spawns(&mut lay);
         self.horde = Some(Box::new(lay));
+    }
+
+    /// Where the husks for each window turn up: straight out from it, as far as the ground
+    /// stays clear and outside every zone (about `SPAWN_OUT`, further down a narrow alley), so they always walk in to the
+    /// boards in the open and never appear inside the walls.
+    fn place_window_spawns(&self, lay: &mut HordeLayout) {
+        const SPAWN_OUT: f32 = 7.5;
+        const SPAWN_FAR: f32 = 18.0;
+        let mut statics = crate::collide::StaticWorld::new(self.recipe.half_extent);
+        for b in self.solids() {
+            statics.add(b);
+        }
+        let zones = lay.zones.clone();
+        let inside_any = |p: Vec2| zones.iter().any(|z| {
+            let (x0, x1, z0, z1) = z.rect;
+            p.x > x0 - 0.7 && p.x < x1 + 0.7 && p.y > z0 - 0.7 && p.y < z1 + 0.7
+        });
+        let clear = |p: Vec2| {
+            let y = self.height(p.x, p.y).max(lay.ground);
+            !statics.blocked(p.x, p.y, y + 0.25, 1.4, 0.5) && self.in_bounds(p.x, p.y) && self.in_bounds(p.x + 3.0, p.y + 3.0) && self.in_bounds(p.x - 3.0, p.y - 3.0)
+        };
+        for w in &mut lay.windows {
+            let start = Vec2::new(w.outside.x, w.outside.z);
+            let side = Vec2::new(-w.out.y, w.out.x);
+            // The lane from just outside the boards: the first step stays next to the wall (the
+            // boards' own zone check would see the building itself), the rest must be open ground.
+            let lane_ok = |d: f32, lateral: f32| {
+                let p = start + w.out * d + side * lateral;
+                clear(p) && (d < 1.0 || !inside_any(p))
+            };
+            let mut most = 0.0;
+            let mut d = 0.5;
+            while d <= SPAWN_FAR && lane_ok(d, 0.0) {
+                most = d;
+                d += 0.5;
+            }
+            // Out in the open if a narrow alley leads up to the window: from the far end of it.
+            let wide = |d: f32| lane_ok(d, 1.6) && lane_ok(d, -1.6);
+            let mut reach = most.min(SPAWN_OUT);
+            if !wide(reach) {
+                let mut d = reach;
+                while d <= most {
+                    if wide(d) {
+                        reach = d + 1.0f32.min(most - d);
+                        break;
+                    }
+                    d += 0.5;
+                }
+            }
+            // How wide the lane is all along (for spreading husks out a little).
+            let mut spread = 0.0;
+            for lateral in [0.4, 0.8, 1.2] {
+                let ok = (1..=((reach / 0.5) as usize)).all(|k| lane_ok(k as f32 * 0.5, lateral) && lane_ok(k as f32 * 0.5, -lateral));
+                if !ok {
+                    break;
+                }
+                spread = lateral;
+            }
+            let p = start + w.out * reach;
+            w.spawn = Vec3::new(p.x, self.height(p.x, p.y).max(lay.ground), p.y);
+            w.spread = spread;
+        }
     }
 }
 
@@ -818,7 +891,7 @@ mod tests {
             assert!(w.blocks.len() > 300 && w.blocks.len() < 4000, "{what}: {} blocks", w.blocks.len());
             assert!(lay.zones.len() >= 5 && lay.doors.len() >= 5, "{what}");
             assert!(lay.windows.len() >= 12, "{what}: {} windows", lay.windows.len());
-            assert!(lay.buys.len() >= 8 && lay.perks.len() == 6 && lay.crates.len() >= 3, "{what}");
+            assert!(lay.buys.len() >= 8 && lay.perks.len() == 7 && lay.crates.len() >= 3, "{what}");
             assert!(lay.forge.is_some() && lay.power.is_some(), "{what}");
             assert!(w.doors.is_empty() && w.windows.is_empty(), "{what}: no swinging doors or glass");
             let s = statics(&w);
@@ -835,10 +908,16 @@ mod tests {
                 // Outside really is outside: no zone holds it.
                 assert!(lay.zone_at(win.outside.xz() + win.out * 2.0).is_none(), "{what}: window {i} opens into a zone");
                 assert_eq!(lay.zone_at(win.inside.xz()), Some(win.zone), "{what}: window {i} is in the wrong zone");
-            }
-            for (i, vent) in lay.vents.iter().enumerate() {
-                clear(vent.pos, &format!("vent {i}"));
-                assert_eq!(lay.zone_at(vent.pos.xz()), Some(vent.zone), "{what}: vent {i}");
+                // Husks turn up well out in the open and walk straight in.
+                let reach = win.spawn.xz().distance(win.outside.xz());
+                assert!(reach >= 3.0, "{what}: window {i} has only {reach:.1} m of open ground outside");
+                for k in 0..=20 {
+                    let p = win.outside.lerp(win.spawn, k as f32 / 20.0);
+                    clear(Vec3::new(p.x, w.height(p.x, p.z).max(lay.ground), p.z), &format!("window {i} lane"));
+                    if k > 2 {
+                        assert!(lay.zone_at(p.xz()).is_none(), "{what}: window {i}'s lane runs through a zone at {p:?}");
+                    }
+                }
             }
             for (i, m) in lay.perks.iter().chain(&lay.crates).chain(lay.forge.iter()).chain(lay.power.iter()).enumerate() {
                 clear(m.pos, &format!("machine {i}"));
@@ -851,6 +930,12 @@ mod tests {
                 let behind = buy.pos - Vec3::new(buy.normal.x, 0.0, buy.normal.y) * 0.3;
                 assert!(s.blocked(behind.x, behind.z, lay.ground, 1.7, 0.05), "{what}: wall buy {i} is not on a wall");
                 assert_eq!(lay.zone_at(stand.xz()), Some(buy.zone), "{what}: wall buy {i}");
+                // The whole chalk frame is on solid wall (no window, door or corner under it).
+                let along = Vec3::new(-buy.normal.y, 0.0, buy.normal.x);
+                for (a, b) in [(-0.5, -0.5), (-0.5, 0.5), (0.5, -0.5), (0.5, 0.5), (0.0, 0.0)] {
+                    let p = buy.pos + along * (a * CHALK_FRAME.x) + Vec3::Y * (b * CHALK_FRAME.y) - Vec3::new(buy.normal.x, 0.0, buy.normal.y) * 0.2;
+                    assert!(s.blocked(p.x, p.z, p.y - 0.05, 0.1, 0.02), "{what}: wall buy {i}'s frame hangs off the wall at {p:?}");
+                }
             }
             for (i, door) in lay.doors.iter().enumerate() {
                 let c = door.aabb.center;
