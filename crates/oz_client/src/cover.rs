@@ -130,12 +130,14 @@ fn demo(
     let mut spot: Option<(Vec3, Vec3, Vec3)> = None; // feet, wall normal, where to look
     if which == "low" {
         // Crouched behind a waist-high crate or wall, looking out over it.
-        'o: for block in map.blocks.iter().filter(|b| b.solid && b.aabb.half.y > 0.4 && b.aabb.half.y < 0.65 && b.aabb.half.x.min(b.aabb.half.z) > 0.5) {
+        'o: for block in map.blocks.iter().filter(|b| b.solid && b.aabb.half.y > 0.4 && b.aabb.half.y < 0.65 && b.aabb.half.x.max(b.aabb.half.z) > 0.4) {
             let b = block.aabb;
             for normal in dirs {
                 let face = b.center + normal * (b.half.dot(normal.abs()) + OFFSET + 0.02);
                 let feet = Vec3::new(face.x, map.height(face.x, face.z), face.z);
-                if (b.bottom() - feet.y).abs() > 0.2 || statics.blocked(feet.x, feet.z, feet.y, 1.2, 0.3) || statics.raycast(feet + Vec3::Y * 1.5, -normal, 12.0).is_some() {
+                // Waist high from where we crouch (low cover, not a wall), with open ground beyond.
+                let rise = b.top() - feet.y;
+                if !(0.85..1.2).contains(&rise) || statics.blocked(feet.x, feet.z, feet.y, 1.2, 0.3) || statics.raycast(feet + Vec3::Y * 1.5, -normal, 25.0).is_some() {
                     continue;
                 }
                 let turn = std::env::var("OPNIX_DEMO_LOOK").ok().and_then(|d| d.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
@@ -195,6 +197,7 @@ fn demo(
         }
     }
     *done = true;
+    info!("cover demo {which}: spot {spot:?}");
     let Some((feet, normal, look)) = spot else { return };
     transform.translation = feet;
     let to = look - feet;
